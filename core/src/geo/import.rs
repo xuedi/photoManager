@@ -71,6 +71,8 @@ pub fn run(geo: &mut Geo, dir: &Path, progress: &dyn Fn(Step)) -> Result<Importe
     note("source", SOURCE)?;
     transaction.commit()?;
     geo.connection.execute_batch("ANALYZE; VACUUM")?;
+    // Without this the write-ahead log keeps a second copy of the whole database on disk.
+    geo.connection.pragma_update(None, "wal_checkpoint", "TRUNCATE")?;
 
     Ok(Imported {
         countries: countries.0,
@@ -82,17 +84,39 @@ pub fn run(geo: &mut Geo, dir: &Path, progress: &dyn Fn(Step)) -> Result<Importe
     })
 }
 
-/// The dump itself, or the zip it arrives in.
+/// The dump itself, or the zip it arrives in. GeoNames ships `cities1000.txt` as
+/// `cities1000.zip` but `shapes_simplified_low.json` as `shapes_simplified_low.json.zip`, so
+/// both spellings are looked for.
 fn find(dir: &Path, name: &str) -> Result<PathBuf> {
     let plain = dir.join(name);
     if plain.is_file() {
         return Ok(plain);
     }
-    let zipped = dir.join(format!("{name}.zip"));
-    if zipped.is_file() {
-        return Ok(zipped);
+    let stem = name.rsplit_once('.').map(|(stem, _)| stem).unwrap_or(name);
+    for zipped in [format!("{name}.zip"), format!("{stem}.zip")] {
+        let zipped = dir.join(zipped);
+        if zipped.is_file() {
+            return Ok(zipped);
+        }
     }
     Err(Error::Missing(plain))
+}
+
+/// The one file inside the zip. `cities1000.zip` holds `cities1000.txt`, so the name of the
+/// zip is not always the name of what is in it.
+fn entry_of(source: &Path, archive: &mut zip::ZipArchive<std::fs::File>) -> Result<String> {
+    let stem = source
+        .file_stem()
+        .map(|stem| stem.to_string_lossy().to_string())
+        .unwrap_or_default();
+    if archive.by_name(&stem).is_ok() {
+        return Ok(stem);
+    }
+    archive
+        .file_names()
+        .find(|name| name.starts_with(&stem))
+        .map(|name| name.to_string())
+        .ok_or_else(|| Error::Malformed(format!("{} holds no {stem}", source.display())))
 }
 
 fn read(source: &Path) -> Result<String> {
@@ -100,10 +124,7 @@ fn read(source: &Path) -> Result<String> {
         let file = std::fs::File::open(source)?;
         let mut archive =
             zip::ZipArchive::new(file).map_err(|error| Error::Malformed(format!("{}: {error}", source.display())))?;
-        let wanted = source
-            .file_stem()
-            .map(|stem| stem.to_string_lossy().to_string())
-            .unwrap_or_default();
+        let wanted = entry_of(source, &mut archive)?;
         let mut entry = archive
             .by_name(&wanted)
             .map_err(|error| Error::Malformed(format!("{} holds no {wanted}: {error}", source.display())))?;
@@ -393,6 +414,34 @@ mod tests {
         assert_eq!(once.names, twice.names);
         assert_eq!(geo.counts().unwrap().places, once.places as i64);
         assert_eq!(geo.counts().unwrap().names, once.names as i64);
+    }
+
+    #[test]
+    fn the_dumps_are_read_the_way_geonames_ships_them() {
+        let dir = std::env::temp_dir().join("photomanager-dumps-zipped");
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        for name in ["countryInfo.txt", "admin1CodesASCII.txt"] {
+            std::fs::copy(dumps().join(name), dir.join(name)).unwrap();
+        }
+        // cities1000.txt arrives as cities1000.zip, the shapes as shapes_simplified_low.json.zip.
+        for (name, archive) in [
+            ("cities1000.txt", "cities1000.zip"),
+            ("shapes_simplified_low.json", "shapes_simplified_low.json.zip"),
+        ] {
+            let file = std::fs::File::create(dir.join(archive)).unwrap();
+            let mut writer = zip::ZipWriter::new(file);
+            writer
+                .start_file(name, zip::write::SimpleFileOptions::default())
+                .unwrap();
+            std::io::Write::write_all(&mut writer, &std::fs::read(dumps().join(name)).unwrap()).unwrap();
+            writer.finish().unwrap();
+        }
+
+        let mut geo = geo("zipped");
+        let imported = run(&mut geo, &dir, &|_| {}).unwrap();
+        assert_eq!(imported.places, 149, "the same import, still in its zips");
+        assert!(imported.rings > 7);
     }
 
     #[test]

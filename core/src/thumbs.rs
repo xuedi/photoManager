@@ -144,45 +144,22 @@ impl Thumbs {
 /// JPEG bytes in, WebP bytes out: decoded at the smallest scale the DCT offers, resized to the
 /// wanted longest side, turned the right way up. Never larger than the original.
 pub fn make(jpeg: &[u8], pixels: u32, orientation: Option<i64>) -> Result<Vec<u8>> {
-    let mut decompressor = Decompressor::new().map_err(unusable)?;
-    let header = decompressor.read_header(jpeg).map_err(unusable)?;
-    if header.width == 0 || header.height == 0 {
-        return Err(Error::Unusable("no image data".to_string()));
-    }
-
-    let longest = header.width.max(header.height) as u32;
-    let wanted = pixels.min(longest);
-    let (width, height) = fit(header.width as u32, header.height as u32, wanted);
-
-    let factor = Decompressor::supported_scaling_factors()
-        .into_iter()
-        .filter(|factor| factor.scale(longest as usize) >= wanted as usize)
-        .min_by_key(|factor| factor.scale(longest as usize))
-        .unwrap_or(turbojpeg::ScalingFactor::ONE);
-    decompressor.set_scaling_factor(factor).map_err(unusable)?;
-
-    let scaled = header.scaled(factor);
-    let mut decoded = Image {
-        pixels: vec![0u8; scaled.width * scaled.height * 3],
-        width: scaled.width,
-        pitch: scaled.width * 3,
-        height: scaled.height,
-        format: PixelFormat::RGB,
+    let decoded = match fast(jpeg, pixels) {
+        Ok(decoded) => decoded,
+        // libjpeg-turbo refuses a few files that every viewer opens. They are worth a second,
+        // slower try rather than a hole in the grid.
+        Err(refused) => lenient(jpeg).map_err(|_| refused)?,
     };
-    decompressor
-        .decompress(jpeg, decoded.as_deref_mut())
-        .map_err(unusable)?;
 
-    let (pixels, width, height) = if scaled.width as u32 == width && scaled.height as u32 == height {
+    let longest = decoded.full_width.max(decoded.full_height);
+    let wanted = pixels.min(longest);
+    let (width, height) = fit(decoded.full_width, decoded.full_height, wanted);
+
+    let (pixels, width, height) = if decoded.width == width && decoded.height == height {
         (decoded.pixels, width, height)
     } else {
-        let source = Canvas::from_vec_u8(
-            scaled.width as u32,
-            scaled.height as u32,
-            decoded.pixels,
-            PixelType::U8x3,
-        )
-        .map_err(|error| Error::Unusable(error.to_string()))?;
+        let source = Canvas::from_vec_u8(decoded.width, decoded.height, decoded.pixels, PixelType::U8x3)
+            .map_err(|error| Error::Unusable(error.to_string()))?;
         let mut small = Canvas::new(width, height, PixelType::U8x3);
         Resizer::new()
             .resize(&source, &mut small, None)
@@ -192,6 +169,75 @@ pub fn make(jpeg: &[u8], pixels: u32, orientation: Option<i64>) -> Result<Vec<u8
 
     let (pixels, width, height) = turn(pixels, width, height, orientation.unwrap_or(1));
     Ok(webp::Encoder::from_rgb(&pixels, width, height).encode(QUALITY).to_vec())
+}
+
+/// The picture as red, green and blue at whatever size the decoder gave us, and how big the
+/// photo really is.
+struct Decoded {
+    pixels: Vec<u8>,
+    width: u32,
+    height: u32,
+    full_width: u32,
+    full_height: u32,
+}
+
+/// libjpeg-turbo, decoding straight to roughly the size we want. A 24 megapixel photo never
+/// exists in memory at full size.
+fn fast(jpeg: &[u8], wanted: u32) -> Result<Decoded> {
+    let mut decompressor = Decompressor::new().map_err(unusable)?;
+    let header = decompressor.read_header(jpeg).map_err(unusable)?;
+    if header.width == 0 || header.height == 0 {
+        return Err(Error::Unusable("no image data".to_string()));
+    }
+
+    let longest = header.width.max(header.height);
+    let wanted = (wanted as usize).min(longest);
+    let factor = Decompressor::supported_scaling_factors()
+        .into_iter()
+        .filter(|factor| factor.scale(longest) >= wanted)
+        .min_by_key(|factor| factor.scale(longest))
+        .unwrap_or(turbojpeg::ScalingFactor::ONE);
+    decompressor.set_scaling_factor(factor).map_err(unusable)?;
+
+    let scaled = header.scaled(factor);
+    let mut image = Image {
+        pixels: vec![0u8; scaled.width * scaled.height * 3],
+        width: scaled.width,
+        pitch: scaled.width * 3,
+        height: scaled.height,
+        format: PixelFormat::RGB,
+    };
+    decompressor.decompress(jpeg, image.as_deref_mut()).map_err(unusable)?;
+
+    Ok(Decoded {
+        pixels: image.pixels,
+        width: scaled.width as u32,
+        height: scaled.height as u32,
+        full_width: header.width as u32,
+        full_height: header.height as u32,
+    })
+}
+
+/// The second try: a decoder that minds less about how the file is put together. It cannot
+/// scale while decoding, so it reads the whole picture.
+fn lenient(jpeg: &[u8]) -> Result<Decoded> {
+    use zune_jpeg::zune_core::colorspace::ColorSpace;
+    use zune_jpeg::zune_core::options::DecoderOptions;
+
+    let mut decoder = zune_jpeg::JpegDecoder::new(std::io::Cursor::new(jpeg));
+    decoder.set_options(DecoderOptions::default().jpeg_set_out_colorspace(ColorSpace::RGB));
+    let pixels = decoder.decode().map_err(unusable)?;
+    let (width, height) = decoder
+        .dimensions()
+        .ok_or_else(|| Error::Unusable("no image data".to_string()))?;
+
+    Ok(Decoded {
+        pixels,
+        width: width as u32,
+        height: height as u32,
+        full_width: width as u32,
+        full_height: height as u32,
+    })
 }
 
 fn unusable<E: std::fmt::Display>(error: E) -> Error {
@@ -367,6 +413,14 @@ mod tests {
         let written = std::fs::metadata(&path).unwrap().modified().unwrap();
         assert!(!thumbs.store(id, Size::Small, &photo, None).unwrap());
         assert_eq!(std::fs::metadata(&path).unwrap().modified().unwrap(), written);
+    }
+
+    #[test]
+    fn the_forgiving_decoder_reads_the_same_picture() {
+        let photo = jpeg(800, 600);
+        let decoded = lenient(&photo).unwrap();
+        assert_eq!((decoded.full_width, decoded.full_height), (800, 600));
+        assert_eq!(decoded.pixels.len(), 800 * 600 * 3);
     }
 
     #[test]

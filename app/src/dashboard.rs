@@ -168,7 +168,10 @@ impl Dashboard {
             Event::Failed(why) => {
                 self.running(false);
                 self.show_counts();
-                tracing::error!(why, "scan failed");
+                self.imp().progress.set_visible(true);
+                self.imp().progress.set_fraction(0.0);
+                self.imp().progress.set_text(Some(&format!("Did not work: {why}")));
+                tracing::error!(why, "the last thing asked for failed");
             }
         }
     }
@@ -193,23 +196,28 @@ impl Dashboard {
         };
 
         let counts = library.counts();
-        if counts.photos == 0 {
-            imp.counts.set_visible(false);
-            return;
+        imp.fill_button
+            .set_visible(counts.photos > 0 && counts.thumbnails < counts.photos);
+
+        let mut rows = Vec::new();
+        if counts.photos > 0 {
+            rows.push(("Photos".to_string(), counts.photos));
+            rows.push(("Events".to_string(), counts.events));
+            rows.push(("Thumbnails".to_string(), counts.thumbnails));
         }
-        imp.fill_button.set_visible(counts.thumbnails < counts.photos);
-        let mut rows = vec![
-            ("Photos".to_string(), counts.photos),
-            ("Events".to_string(), counts.events),
-            ("Thumbnails".to_string(), counts.thumbnails),
-            ("Places".to_string(), counts.places),
-        ];
+        if counts.places > 0 {
+            rows.push(("Places".to_string(), counts.places));
+        }
         rows.extend(
             library
                 .issue_counts()
                 .into_iter()
                 .map(|(kind, count)| (capitalised(&kind), count)),
         );
+        if rows.is_empty() {
+            imp.counts.set_visible(false);
+            return;
+        }
 
         let dumps = library.dump_date();
         for (title, count) in rows {
