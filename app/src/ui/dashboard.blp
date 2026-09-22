@@ -1,0 +1,61 @@
+using Gtk 4.0;
+using Adw 1;
+
+template $PmDashboard: Adw.Bin {
+  child: Adw.StatusPage {
+    icon-name: "view-grid-symbolic";
+    title: "Dashboard";
+    description: "What the library holds and what it is missing.";
+
+    child: Box {
+      orientation: vertical;
+      spacing: 18;
+      halign: center;
+
+      Box {
+        orientation: horizontal;
+        spacing: 12;
+        halign: center;
+
+        Button scan_button {
+          label: "Scan the Library";
+          action-name: "win.scan";
+
+          styles [
+            "suggested-action",
+            "pill",
+          ]
+
+          accessibility {
+            label: "Scan the Library";
+          }
+        }
+
+        Button cancel_button {
+          label: "Cancel";
+          visible: false;
+          action-name: "win.cancel-scan";
+
+          styles [
+            "pill",
+          ]
+
+          accessibility {
+            label: "Cancel";
+          }
+        }
+      }
+
+      ProgressBar progress {
+        visible: false;
+        show-text: true;
+        width-request: 360;
+      }
+
+      Adw.PreferencesGroup counts {
+        width-request: 360;
+        visible: false;
+      }
+    };
+  };
+}

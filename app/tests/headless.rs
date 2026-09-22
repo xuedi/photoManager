@@ -92,6 +92,17 @@ fn the_app_can_be_clicked_through_headless() {
         assert_eq!(state(&ui, lib)["view"], view, "clicking {tab} shows {view}");
     }
 
+    ui.run(&["click", "Scan the Library", "--role", "button"], lib);
+    let scanned = scanned(&ui, lib);
+    let photos = photomanager_core::fixtures::photo_count() as u64;
+    assert_eq!(scanned["photos"].as_u64(), Some(photos), "the scan found every photo");
+    assert_eq!(scanned["events"].as_u64(), Some(6));
+    assert!(
+        scanned["issues"].as_u64().unwrap() > 0,
+        "the stand-in library has issues to report"
+    );
+    assert_eq!(scanned["scanning"], false);
+
     ui.run(&["act", "win.show-view", "'suggestions'"], lib);
     let state = state(&ui, lib);
     assert_eq!(state["view"], "suggestions");
@@ -108,6 +119,18 @@ fn the_app_can_be_clicked_through_headless() {
         (shot["width"].as_u64(), shot["height"].as_u64()),
         (Some(1024), Some(768))
     );
+}
+
+/// The scan runs off the main thread, so the counts appear a moment after the click.
+fn scanned(ui: &Ui, library: &Path) -> Value {
+    for _ in 0..60 {
+        let state = state(ui, library);
+        if state["scanning"] == false && state["photos"].as_u64().unwrap_or(0) > 0 {
+            return state;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(500));
+    }
+    panic!("the scan never finished");
 }
 
 fn state(ui: &Ui, library: &Path) -> Value {

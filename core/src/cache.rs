@@ -75,6 +75,7 @@ pub struct Known {
     pub content_id: Option<String>,
 }
 
+#[derive(Debug)]
 pub struct Cache {
     connection: Connection,
     file: PathBuf,
@@ -144,6 +145,14 @@ impl Cache {
     pub fn photo_count(&self) -> Result<i64> {
         self.connection
             .query_row("SELECT count(*) FROM photo", [], |row| row.get(0))
+    }
+
+    pub fn event_count(&self) -> Result<i64> {
+        self.connection.query_row(
+            "SELECT count(*) FROM (SELECT DISTINCT country, city, event_text FROM photo WHERE event_text IS NOT NULL)",
+            [],
+            |row| row.get(0),
+        )
     }
 
     pub fn issue_count(&self) -> Result<i64> {

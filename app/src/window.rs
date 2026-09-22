@@ -1,7 +1,13 @@
+use std::rc::Rc;
+
 use adw::prelude::*;
 use adw::subclass::prelude::*;
 use gtk::glib;
 use gtk::glib::subclass::InitializingObject;
+use photomanager_core::scan::Mode;
+
+use crate::dashboard::Dashboard;
+use crate::library::Library;
 
 pub const VIEWS: [&str; 4] = ["dashboard", "gallery", "tools", "suggestions"];
 
@@ -15,6 +21,8 @@ mod imp {
         pub stack: TemplateChild<adw::ViewStack>,
         #[template_child]
         pub import_button: TemplateChild<gtk::Button>,
+        #[template_child]
+        pub dashboard: TemplateChild<Dashboard>,
     }
 
     #[glib::object_subclass]
@@ -24,6 +32,7 @@ mod imp {
         type ParentType = adw::ApplicationWindow;
 
         fn class_init(klass: &mut Self::Class) {
+            Dashboard::ensure_type();
             klass.bind_template();
         }
 
@@ -57,6 +66,14 @@ impl Window {
         glib::Object::builder().property("application", app).build()
     }
 
+    pub fn set_library(&self, library: Option<Rc<Library>>) {
+        self.imp().dashboard.set_library(library);
+    }
+
+    pub fn scan(&self, mode: Mode) {
+        self.imp().dashboard.scan(mode);
+    }
+
     pub fn visible_view(&self) -> String {
         self.imp()
             .stack
@@ -86,6 +103,12 @@ impl Window {
                 }
             })
             .build();
-        self.add_action_entries([show_view]);
+        let scan = gtk::gio::ActionEntry::builder("scan")
+            .activate(|window: &Window, _, _| window.imp().dashboard.scan(Mode::Reconcile))
+            .build();
+        let cancel = gtk::gio::ActionEntry::builder("cancel-scan")
+            .activate(|window: &Window, _, _| window.imp().dashboard.cancel())
+            .build();
+        self.add_action_entries([show_view, scan, cancel]);
     }
 }

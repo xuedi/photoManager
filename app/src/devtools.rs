@@ -5,10 +5,12 @@ use adw::prelude::*;
 use gtk::{gio, glib};
 use photomanager_core::paths::Paths;
 use std::path::Path;
+use std::rc::Rc;
 
+use crate::library::Library;
 use crate::window::Window;
 
-pub fn install(app: &adw::Application, window: &Window, paths: &Paths) {
+pub fn install(app: &adw::Application, window: &Window, paths: &Paths, library: Option<Rc<Library>>) {
     let dump_state = gio::ActionEntry::builder("dump-state")
         .parameter_type(Some(glib::VariantTy::STRING))
         .activate(glib::clone!(
@@ -18,7 +20,7 @@ pub fn install(app: &adw::Application, window: &Window, paths: &Paths) {
             paths,
             move |_: &adw::Application, _, parameter| {
                 let target = parameter.and_then(|value| value.str()).unwrap_or_default();
-                write_out(target, &state(&window, &paths));
+                write_out(target, &state(&window, &paths, library.as_deref()));
             }
         ))
         .build();
@@ -42,13 +44,18 @@ pub fn install(app: &adw::Application, window: &Window, paths: &Paths) {
     app.add_action_entries([dump_state, snapshot]);
 }
 
-fn state(window: &Window, paths: &Paths) -> String {
+fn state(window: &Window, paths: &Paths, library: Option<&Library>) -> String {
+    let counts = library.map(|library| library.counts()).unwrap_or_default();
     serde_json::json!({
         "version": photomanager_core::VERSION,
         "library": paths.library().display().to_string(),
         "view": window.visible_view(),
         "width": window.width(),
         "height": window.height(),
+        "photos": counts.photos,
+        "events": counts.events,
+        "issues": counts.issues,
+        "scanning": library.map(|library| library.is_scanning()).unwrap_or(false),
     })
     .to_string()
 }

@@ -54,11 +54,7 @@ template $PmWindow: Adw.ApplicationWindow {
         title: "Dashboard";
         icon-name: "view-grid-symbolic";
 
-        child: Adw.StatusPage {
-          icon-name: "view-grid-symbolic";
-          title: "Dashboard";
-          description: "What the library holds and what it is missing.";
-        };
+        child: $PmDashboard dashboard {};
       }
 
       Adw.ViewStackPage {
@@ -110,6 +106,13 @@ Adw.WindowTitle window_title {
 }
 
 menu primary_menu {
+  section {
+    item {
+      label: "_Rebuild Cache";
+      action: "app.rebuild-cache";
+    }
+  }
+
   section {
     item {
       label: "_About Photo Manager";
