@@ -123,7 +123,7 @@ mod tests {
         std::fs::create_dir_all(&dir).unwrap();
         let before = dir.join("before.jpg");
         let after = dir.join("after.jpg");
-        std::fs::write(&before, include_bytes!("fixtures/gray.jpg")).unwrap();
+        std::fs::write(&before, include_bytes!("fixtures/p01.jpg")).unwrap();
         std::fs::copy(&before, &after).unwrap();
 
         let written = std::process::Command::new("exiftool")

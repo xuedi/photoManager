@@ -280,7 +280,7 @@ mod tests {
         let dir = std::env::temp_dir().join("photomanager-metadata-broken");
         std::fs::create_dir_all(&dir).unwrap();
         let file = dir.join("truncated.jpg");
-        std::fs::write(&file, &include_bytes!("fixtures/gray.jpg")[..40]).unwrap();
+        std::fs::write(&file, &include_bytes!("fixtures/p01.jpg")[..40]).unwrap();
 
         assert!(Exiv2.read(&file, &std::fs::read(&file).unwrap()).is_err());
         std::fs::remove_dir_all(&dir).unwrap();

@@ -8,13 +8,24 @@ use std::io::{Error, ErrorKind, Result};
 use std::path::Path;
 use std::process::Command;
 
-const GRAY: &[u8] = include_bytes!("gray.jpg");
-const RED: &[u8] = include_bytes!("red.jpg");
-const BLUE: &[u8] = include_bytes!("blue.jpg");
+/// One distinct image per photo, so every photo has its own content id.
+const IMAGES: [&[u8]; 12] = [
+    include_bytes!("p01.jpg"),
+    include_bytes!("p02.jpg"),
+    include_bytes!("p03.jpg"),
+    include_bytes!("p04.jpg"),
+    include_bytes!("p05.jpg"),
+    include_bytes!("p06.jpg"),
+    include_bytes!("p07.jpg"),
+    include_bytes!("p08.jpg"),
+    include_bytes!("p09.jpg"),
+    include_bytes!("p10.jpg"),
+    include_bytes!("p11.jpg"),
+    include_bytes!("p12.jpg"),
+];
 
 struct Photo {
     path: &'static str,
-    image: &'static [u8],
     metadata: &'static [&'static str],
 }
 
@@ -24,12 +35,10 @@ const PLACES_DENMARK: &str = "-TagsList=places/inDenmark/Copenhagen";
 const PHOTOS: &[Photo] = &[
     Photo {
         path: "China/IMG_3140.JPG",
-        image: GRAY,
         metadata: &["-DateTimeOriginal=2006:09:14 10:12:00", "-Model=Canon PowerShot A640"],
     },
     Photo {
         path: "China/2006-09-00 Besuch Ben/P1000001.JPG",
-        image: RED,
         metadata: &[
             "-DateTimeOriginal=2006:08:21 09:30:00",
             "-Model=Panasonic DMC-LS1",
@@ -40,7 +49,6 @@ const PHOTOS: &[Photo] = &[
     },
     Photo {
         path: "China/2006-09-00 Besuch Ben/2006-08-21/P1000002.JPG",
-        image: BLUE,
         metadata: &[
             "-DateTimeOriginal=2006:08:21 16:45:00",
             "-Model=Panasonic DMC-LS1",
@@ -50,12 +58,10 @@ const PHOTOS: &[Photo] = &[
     },
     Photo {
         path: "China/2008-01-00 Holiday SOUTHTOUR/IMG_0001.JPG",
-        image: GRAY,
         metadata: &["-TagsList=places/inChina", "-TagsList=mixed/food"],
     },
     Photo {
         path: "Denmark/2018-10-00 Wedding Trip to Copenhagen/DSCF0001.JPG",
-        image: RED,
         metadata: &[
             "-DateTimeOriginal=2018:10:06 14:02:11",
             "-Model=X100S",
@@ -66,12 +72,10 @@ const PHOTOS: &[Photo] = &[
     },
     Photo {
         path: "Denmark/2018-10-00 Wedding Trip to Copenhagen/DSCF0002.JPG",
-        image: BLUE,
         metadata: &["-DateTimeOriginal=2018:10:06 14:03:40", "-Model=X100S"],
     },
     Photo {
         path: "Germany/2019-07-13 Sommerfest/img_0657.jpg",
-        image: GRAY,
         metadata: &[
             "-DateTimeOriginal=2019:07:13 18:20:00",
             "-Orientation#=6",
@@ -84,7 +88,6 @@ const PHOTOS: &[Photo] = &[
     },
     Photo {
         path: "Germany/2019-07-13 Sommerfest/p1000003.jpg",
-        image: RED,
         metadata: &[
             "-DateTimeOriginal=2019:07:13 19:05:00",
             "-XMP-xmp:CreateDate=2019:07:13 17:05:00Z",
@@ -94,7 +97,6 @@ const PHOTOS: &[Photo] = &[
     },
     Photo {
         path: "Germany/2019-07-13 Sommerfest/IMAG0001.jpg",
-        image: BLUE,
         metadata: &[
             "-DateTimeOriginal=2019:07:13 20:41:00",
             "-TagsList=people/family/Anna",
@@ -104,7 +106,6 @@ const PHOTOS: &[Photo] = &[
     },
     Photo {
         path: "Ireland/2008-10-03 Galway/Kira/IMG_0002.JPG",
-        image: GRAY,
         metadata: &[
             "-DateTimeOriginal=2008:10:03 11:15:00",
             "-TagsList=places/inIreland/Galway",
@@ -112,7 +113,6 @@ const PHOTOS: &[Photo] = &[
     },
     Photo {
         path: "Ireland/2008-10-03 Galway/IMG_0003.JPG",
-        image: RED,
         metadata: &[
             "-DateTimeOriginal=2008:10:03 12:47:00",
             "-TagsList=places/inNetherland/Amsterdam",
@@ -121,7 +121,6 @@ const PHOTOS: &[Photo] = &[
     },
     Photo {
         path: "Greece/0000-00-00 Aeron ilands/IMG_0004.JPG",
-        image: BLUE,
         metadata: &["-TagsList=places/inGreece/athens", "-TagsList=mixed/discusting"],
     },
 ];
@@ -157,10 +156,10 @@ pub fn build(root: &Path) -> Result<()> {
         std::fs::remove_dir_all(root)?;
     }
 
-    for photo in PHOTOS {
+    for (index, photo) in PHOTOS.iter().enumerate() {
         let file = root.join(photo.path);
         std::fs::create_dir_all(file.parent().expect("a parent directory"))?;
-        std::fs::write(&file, photo.image)?;
+        std::fs::write(&file, IMAGES[index % IMAGES.len()])?;
 
         let status = Command::new("exiftool")
             .arg("-overwrite_original")

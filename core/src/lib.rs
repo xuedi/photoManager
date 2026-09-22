@@ -1,7 +1,9 @@
+pub mod cache;
 pub mod identity;
 pub mod layout;
 pub mod metadata;
 pub mod paths;
+pub mod scan;
 
 #[cfg(feature = "fixtures")]
 pub mod fixtures;
