@@ -1,3 +1,4 @@
+pub mod identity;
 pub mod layout;
 pub mod paths;
 
