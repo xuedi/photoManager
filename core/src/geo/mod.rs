@@ -6,6 +6,7 @@
 
 pub mod import;
 pub mod lookup;
+pub mod reverse;
 
 use std::path::{Path, PathBuf};
 
