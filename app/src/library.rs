@@ -8,13 +8,15 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use photomanager_core::cache::Cache;
 use photomanager_core::metadata::Exiv2;
 use photomanager_core::paths::Paths;
-use photomanager_core::scan::{self, Mode, Progress, Summary};
+use photomanager_core::scan::{self, Mode, Progress, Summary, Thumbnails};
+use photomanager_core::thumbs::{Size, Thumbs};
 
 #[derive(Debug)]
 pub enum Event {
     Counted(usize),
     Done(usize, usize),
     Finished(Summary),
+    Filled(Thumbnails),
     Failed(String),
 }
 
@@ -23,11 +25,13 @@ pub struct Counts {
     pub photos: i64,
     pub events: i64,
     pub issues: i64,
+    pub thumbnails: i64,
 }
 
 #[derive(Debug)]
 pub struct Library {
     paths: Paths,
+    thumbs: Thumbs,
     cache: RefCell<Option<Cache>>,
     scanning: Cell<bool>,
     cancel: Arc<AtomicBool>,
@@ -38,6 +42,7 @@ impl Library {
     pub fn open(paths: Paths) -> Result<Rc<Library>, String> {
         let cache = Cache::open(&paths.cache_db()).map_err(|error| error.to_string())?;
         Ok(Rc::new(Library {
+            thumbs: Thumbs::new(paths.thumbs_dir()),
             paths,
             cache: RefCell::new(Some(cache)),
             scanning: Cell::new(false),
@@ -48,6 +53,10 @@ impl Library {
 
     pub fn paths(&self) -> &Paths {
         &self.paths
+    }
+
+    pub fn thumbs(&self) -> &Thumbs {
+        &self.thumbs
     }
 
     pub fn is_scanning(&self) -> bool {
@@ -67,6 +76,7 @@ impl Library {
             photos: cache.photo_count().unwrap_or_default(),
             events: cache.event_count().unwrap_or_default(),
             issues: cache.issue_count().unwrap_or_default(),
+            thumbnails: self.thumbs.count(Size::Small) as i64,
         }
     }
 
@@ -109,6 +119,7 @@ impl Library {
 
         let (sender, receiver) = async_channel::unbounded();
         let library = self.paths.library().to_path_buf();
+        let thumbs = self.thumbs.clone();
         let cancel = self.cancel.clone();
         let progress = sender.clone();
 
@@ -117,6 +128,7 @@ impl Library {
                 &mut cache,
                 &library,
                 &Exiv2,
+                &thumbs,
                 mode,
                 &|step| {
                     let _ = progress.send_blocking(match step {
@@ -146,6 +158,61 @@ impl Library {
                         this.finish(cache, None);
                         Event::Failed(why)
                     }
+                    Message::Filled(done) => {
+                        this.scanning.set(false);
+                        Event::Filled(done)
+                    }
+                };
+                report(event);
+            }
+        });
+    }
+
+    /// Makes the thumbnails the scan could not make, reading only the photos that lack one.
+    pub fn fill_thumbnails<F: Fn(Event) + 'static>(self: &Rc<Self>, report: F) {
+        if self.scanning.get() {
+            return;
+        }
+        let photos = match self.cache.borrow().as_ref() {
+            Some(cache) => cache.pictures().unwrap_or_default(),
+            None => return,
+        };
+        self.scanning.set(true);
+        self.cancel.store(false, Ordering::Relaxed);
+
+        let (sender, receiver) = async_channel::unbounded();
+        let library = self.paths.library().to_path_buf();
+        let thumbs = self.thumbs.clone();
+        let cancel = self.cancel.clone();
+        let progress = sender.clone();
+
+        std::thread::spawn(move || {
+            let done = scan::thumbnails(
+                &photos,
+                &library,
+                &thumbs,
+                &|step| {
+                    let _ = progress.send_blocking(match step {
+                        Progress::Counted(total) => Message::Counted(total),
+                        Progress::Done(done, total) => Message::Done(done, total),
+                    });
+                },
+                &cancel,
+            );
+            let _ = sender.send_blocking(Message::Filled(done));
+        });
+
+        let this = self.clone();
+        gtk::glib::spawn_future_local(async move {
+            while let Ok(message) = receiver.recv().await {
+                let event = match message {
+                    Message::Counted(total) => Event::Counted(total),
+                    Message::Done(done, total) => Event::Done(done, total),
+                    Message::Filled(done) => {
+                        this.scanning.set(false);
+                        Event::Filled(done)
+                    }
+                    _ => continue,
                 };
                 report(event);
             }
@@ -164,5 +231,6 @@ enum Message {
     Counted(usize),
     Done(usize, usize),
     Finished(Summary, Cache),
+    Filled(Thumbnails),
     Failed(String, Cache),
 }

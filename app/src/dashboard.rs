@@ -107,6 +107,17 @@ impl Dashboard {
                     "scan finished"
                 );
             }
+            Event::Filled(done) => {
+                self.running(false);
+                self.show_counts();
+                tracing::info!(
+                    made = done.made,
+                    missing = done.missing,
+                    failed = done.failed,
+                    seconds = done.seconds,
+                    "thumbnails filled in"
+                );
+            }
             Event::Failed(why) => {
                 self.running(false);
                 self.show_counts();

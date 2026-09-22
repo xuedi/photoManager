@@ -12,6 +12,7 @@ use crate::cache::{Cache, Fingerprint, Known};
 use crate::identity::content_id;
 use crate::layout::Placement;
 use crate::metadata::{Metadata, Reader};
+use crate::thumbs::{Size, Thumbs};
 
 const BATCH: usize = 500;
 
@@ -68,6 +69,7 @@ pub struct Summary {
     pub moved: usize,
     pub gone: usize,
     pub issues: usize,
+    pub thumbnails: usize,
     pub seconds: u64,
     pub cancelled: bool,
 }
@@ -90,6 +92,7 @@ enum Outcome {
         content_id: Option<String>,
         metadata: Box<Metadata>,
         existed: bool,
+        thumbnail: bool,
     },
     Failed(String),
 }
@@ -98,6 +101,7 @@ pub fn run(
     cache: &mut Cache,
     library: &Path,
     reader: &dyn Reader,
+    thumbs: &Thumbs,
     mode: Mode,
     progress: &(dyn Fn(Progress) + Sync),
     cancel: &AtomicBool,
@@ -121,7 +125,7 @@ pub fn run(
                 if cancel.load(Ordering::Relaxed) {
                     return;
                 }
-                let _ = sender.send(examine(&known, file, rel_path, reader, mode));
+                let _ = sender.send(examine(&known, file, rel_path, reader, thumbs, mode));
             });
         });
 
@@ -153,7 +157,14 @@ pub fn run(
     Ok(summary)
 }
 
-fn examine(known: &HashMap<String, Known>, file: &Path, rel_path: &str, reader: &dyn Reader, mode: Mode) -> Found {
+fn examine(
+    known: &HashMap<String, Known>,
+    file: &Path,
+    rel_path: &str,
+    reader: &dyn Reader,
+    thumbs: &Thumbs,
+    mode: Mode,
+) -> Found {
     let Ok(fingerprint) = fingerprint(file) else {
         return Found {
             rel_path: rel_path.to_string(),
@@ -180,11 +191,18 @@ fn examine(known: &HashMap<String, Known>, file: &Path, rel_path: &str, reader: 
         Err(error) => Outcome::Failed(error.to_string()),
         Ok(bytes) => match reader.read(file, &bytes) {
             Err(error) => Outcome::Failed(error.to_string()),
-            Ok(metadata) => Outcome::Read {
-                content_id: content_id(&bytes),
-                metadata: Box::new(metadata),
-                existed,
-            },
+            Ok(metadata) => {
+                let content_id = content_id(&bytes);
+                let thumbnail = content_id
+                    .as_deref()
+                    .is_some_and(|id| picture(thumbs, id, &bytes, metadata.orientation));
+                Outcome::Read {
+                    content_id,
+                    metadata: Box::new(metadata),
+                    existed,
+                    thumbnail,
+                }
+            }
         },
     };
     Found {
@@ -227,7 +245,11 @@ fn store(
                     content_id,
                     metadata,
                     existed,
+                    thumbnail,
                 } => {
+                    if *thumbnail {
+                        summary.thumbnails += 1;
+                    }
                     summary.read += 1;
                     match existed {
                         true => summary.changed += 1,
@@ -281,6 +303,80 @@ fn store(
     }
     found.clear();
     Ok(())
+}
+
+/// The thumbnail for one photo, from bytes we already hold. A photo we cannot draw is not an
+/// error worth stopping for: the grid shows nothing for it and the scan carries on.
+fn picture(thumbs: &Thumbs, content_id: &str, bytes: &[u8], orientation: Option<i64>) -> bool {
+    match thumbs.store(content_id, Size::Small, bytes, orientation) {
+        Ok(made) => made,
+        Err(error) => {
+            tracing::debug!(%error, content_id, "no thumbnail");
+            false
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct Thumbnails {
+    pub missing: usize,
+    pub made: usize,
+    pub failed: usize,
+    pub seconds: u64,
+    pub cancelled: bool,
+}
+
+/// Fills in the photos the scan never had the bytes for, reading only those files.
+pub fn thumbnails(
+    photos: &[crate::cache::Picture],
+    library: &Path,
+    thumbs: &Thumbs,
+    progress: &(dyn Fn(Progress) + Sync),
+    cancel: &AtomicBool,
+) -> Thumbnails {
+    use std::sync::atomic::AtomicUsize;
+
+    let started = Instant::now();
+    let missing: Vec<&crate::cache::Picture> = photos
+        .iter()
+        .filter(|picture| !thumbs.has(&picture.content_id, Size::Small))
+        .collect();
+    progress(Progress::Counted(missing.len()));
+
+    let total = missing.len();
+    let done = AtomicUsize::new(0);
+    let made = AtomicUsize::new(0);
+    let failed = AtomicUsize::new(0);
+
+    missing.par_iter().for_each(|photo| {
+        if cancel.load(Ordering::Relaxed) {
+            return;
+        }
+        match std::fs::read(library.join(&photo.rel_path)) {
+            Ok(bytes) if picture(thumbs, &photo.content_id, &bytes, photo.orientation) => {
+                made.fetch_add(1, Ordering::Relaxed);
+            }
+            Ok(_) => {
+                failed.fetch_add(1, Ordering::Relaxed);
+            }
+            Err(error) => {
+                tracing::debug!(%error, photo = photo.rel_path, "cannot be read");
+                failed.fetch_add(1, Ordering::Relaxed);
+            }
+        }
+        let seen = done.fetch_add(1, Ordering::Relaxed) + 1;
+        if seen.is_multiple_of(50) || seen == total {
+            progress(Progress::Done(seen, total));
+        }
+    });
+
+    Thumbnails {
+        missing: total,
+        made: made.into_inner(),
+        failed: failed.into_inner(),
+        seconds: started.elapsed().as_secs(),
+        cancelled: cancel.load(Ordering::Relaxed),
+    }
 }
 
 fn note_strays(cache: &mut Cache, strays: &[Stray]) -> crate::cache::Result<usize> {
@@ -371,6 +467,7 @@ mod tests {
     struct Setup {
         library: PathBuf,
         cache: Cache,
+        thumbs: Thumbs,
     }
 
     fn setup(name: &str) -> Setup {
@@ -380,6 +477,7 @@ mod tests {
         crate::fixtures::build(&library).expect("build the fixture library");
         Setup {
             cache: Cache::open(&base.join("cache.db")).unwrap(),
+            thumbs: Thumbs::new(base.join("thumbs")),
             library,
         }
     }
@@ -390,11 +488,17 @@ mod tests {
                 &mut self.cache,
                 &self.library,
                 &Exiv2,
+                &self.thumbs,
                 mode,
                 &|_| {},
                 &AtomicBool::new(false),
             )
             .unwrap()
+        }
+
+        fn fill(&self, cancel: bool) -> Thumbnails {
+            let photos = self.cache.pictures().unwrap();
+            thumbnails(&photos, &self.library, &self.thumbs, &|_| {}, &AtomicBool::new(cancel))
         }
 
         fn issues(&self) -> Vec<(String, i64)> {
@@ -534,6 +638,7 @@ mod tests {
             &mut setup.cache,
             &setup.library,
             &Exiv2,
+            &setup.thumbs,
             Mode::Reconcile,
             &|_| {},
             &cancel,
@@ -553,6 +658,7 @@ mod tests {
             &mut setup.cache,
             &setup.library,
             &Exiv2,
+            &setup.thumbs,
             Mode::Reconcile,
             &|progress| seen.lock().unwrap().push(progress),
             &AtomicBool::new(false),
@@ -562,5 +668,63 @@ mod tests {
         let seen = seen.into_inner().unwrap();
         assert!(matches!(seen.first(), Some(Progress::Counted(n)) if *n == summary.photos));
         assert!(matches!(seen.last(), Some(Progress::Done(done, total)) if done == total));
+    }
+
+    #[test]
+    fn a_scan_leaves_a_thumbnail_per_photo_and_the_photos_alone() {
+        let mut setup = setup("thumbs");
+        let before = snapshot(&setup.library);
+
+        let summary = setup.scan(Mode::Reconcile);
+        assert_eq!(summary.thumbnails, crate::fixtures::photo_count());
+        assert_eq!(setup.thumbs.count(Size::Small), crate::fixtures::photo_count());
+        assert_eq!(
+            setup.thumbs.count(Size::Large),
+            0,
+            "the bigger size waits to be asked for"
+        );
+        assert_eq!(before, snapshot(&setup.library), "the scan changed the library");
+
+        let again = setup.scan(Mode::Reconcile);
+        assert_eq!(again.thumbnails, 0, "nothing was read, nothing was made");
+        assert_eq!(setup.fill(false).missing, 0, "none are missing");
+    }
+
+    #[test]
+    fn the_fill_in_pass_restores_exactly_what_is_gone() {
+        let mut setup = setup("fill");
+        setup.scan(Mode::Reconcile);
+        let one = setup
+            .cache
+            .known("Germany/2019-07-13 Sommerfest/img_0657.jpg")
+            .unwrap()
+            .unwrap()
+            .content_id
+            .unwrap();
+        setup.thumbs.forget(&one).unwrap();
+        assert!(!setup.thumbs.has(&one, Size::Small));
+
+        let filled = setup.fill(false);
+        assert_eq!((filled.missing, filled.made, filled.failed), (1, 1, 0));
+        assert!(setup.thumbs.has(&one, Size::Small));
+        assert_eq!(setup.thumbs.count(Size::Small), crate::fixtures::photo_count());
+    }
+
+    #[test]
+    fn a_cancelled_fill_in_pass_keeps_what_it_finished() {
+        let mut setup = setup("fill-cancelled");
+        setup.scan(Mode::Reconcile);
+        let ids = setup.cache.content_ids().unwrap();
+        for id in &ids {
+            setup.thumbs.forget(id).unwrap();
+        }
+
+        let stopped = setup.fill(true);
+        assert!(stopped.cancelled);
+        assert_eq!(stopped.made, 0);
+        assert_eq!(setup.thumbs.count(Size::Small), 0);
+
+        let finished = setup.fill(false);
+        assert_eq!(finished.made, ids.len());
     }
 }

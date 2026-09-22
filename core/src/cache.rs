@@ -68,6 +68,14 @@ pub struct Fingerprint {
     pub inode: u64,
 }
 
+/// A photo as the thumbnail pass needs it: where it is, what it is, how it sits.
+#[derive(Debug, Clone)]
+pub struct Picture {
+    pub rel_path: String,
+    pub content_id: String,
+    pub orientation: Option<i64>,
+}
+
 #[derive(Debug, Clone)]
 pub struct Known {
     pub id: i64,
@@ -207,6 +215,29 @@ impl Cache {
                 },
             ))
         })?;
+        rows.collect()
+    }
+
+    /// Every photo we could make a thumbnail of.
+    pub fn pictures(&self) -> Result<Vec<Picture>> {
+        let mut statement = self
+            .connection
+            .prepare("SELECT rel_path, content_id, orientation FROM photo WHERE content_id IS NOT NULL")?;
+        let rows = statement.query_map([], |row| {
+            Ok(Picture {
+                rel_path: row.get(0)?,
+                content_id: row.get(1)?,
+                orientation: row.get(2)?,
+            })
+        })?;
+        rows.collect()
+    }
+
+    pub fn content_ids(&self) -> Result<std::collections::HashSet<String>> {
+        let mut statement = self
+            .connection
+            .prepare("SELECT DISTINCT content_id FROM photo WHERE content_id IS NOT NULL")?;
+        let rows = statement.query_map([], |row| row.get(0))?;
         rows.collect()
     }
 
