@@ -41,12 +41,14 @@ fn the_window_carries_every_view_and_switches_between_them() {
         })
         .flatten()
         .collect();
-    for wanted in ["Import", "Main Menu"] {
+    for wanted in ["Import", "Main Menu", "Scan the Library"] {
         assert!(
             named.iter().any(|name| name == wanted),
             "no button called {wanted}: {named:?}"
         );
     }
+
+    scans_into_its_cache();
 }
 
 /// The window scans the library it was given, and nothing else.
