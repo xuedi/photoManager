@@ -1,7 +1,7 @@
 app := "photomanager"
 dev := "--features devtools"
 session := "photomanager-ui"
-library := env("PHOTOMANAGER_LIBRARY", home_dir() / "Nextcloud/Photos")
+fixture_dir := "/tmp/photomanager-fixture"
 
 _default:
     @just --list --unsorted
@@ -21,17 +21,21 @@ release:
 # format, lint and test everything
 check:
     cargo fmt --check
-    cargo clippy --workspace --all-targets {{dev}} -- -D warnings
-    cargo test --workspace {{dev}}
+    cargo clippy --workspace --all-targets {{dev}} --features photomanager-core/fixtures -- -D warnings
+    cargo test --workspace {{dev}} --features photomanager-core/fixtures
 
 # format the code and apply what clippy can fix
 fix:
     cargo fmt
-    cargo clippy --workspace --all-targets {{dev}} --fix --allow-dirty -- -D warnings
+    cargo clippy --workspace --all-targets {{dev}} --features photomanager-core/fixtures --fix --allow-dirty -- -D warnings
 
 # unit tests, without the ones that need a display
 test:
-    cargo test --workspace {{dev}}
+    cargo test --workspace {{dev}} --features photomanager-core/fixtures
+
+# write a small stand-in library to develop against
+fixture dir=fixture_dir:
+    cargo run -q -p photomanager-core --features fixtures --example fixture -- {{dir}}
 
 # every test, inside a private headless session
 test-ui: build
@@ -40,14 +44,14 @@ test-ui: build
     pinchy --session {{session}} up
     trap 'pinchy --session {{session}} down' EXIT
     PHOTOMANAGER_UI_TESTS=1 pinchy --session {{session}} run -- \
-        cargo test --workspace {{dev}} -- --test-threads=1
+        cargo test --workspace {{dev}} --features photomanager-core/fixtures -- --test-threads=1
 
 # click the real binary through a private headless session
 smoke: build
     cargo test -p {{app}} {{dev}} --test headless -- --ignored --nocapture
 
 # start a session with the app in it, to look at it
-ui dir=library: build
+ui dir=fixture_dir: build (fixture dir)
     #!/usr/bin/env bash
     set -euo pipefail
     pinchy --session {{session}} up

@@ -63,7 +63,7 @@ impl Drop for Ui {
 #[ignore]
 fn the_app_can_be_clicked_through_headless() {
     let library = std::env::temp_dir().join("photomanager-smoke-library");
-    std::fs::create_dir_all(&library).expect("create the stand-in library");
+    photomanager_core::fixtures::build(&library).expect("build the stand-in library");
     let ui = Ui::start(&library);
     let lib = library.as_path();
 
