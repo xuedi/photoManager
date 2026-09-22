@@ -4,6 +4,7 @@ pub mod layout;
 pub mod metadata;
 pub mod paths;
 pub mod scan;
+pub mod thumbs;
 
 #[cfg(feature = "fixtures")]
 pub mod fixtures;
