@@ -1,4 +1,5 @@
 pub mod cache;
+pub mod geo;
 pub mod identity;
 pub mod layout;
 pub mod metadata;

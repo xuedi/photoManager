@@ -1,0 +1,68 @@
+# ================================
+#
+#
+# CountryCodes:
+# ============
+#
+# The official ISO country code for the United Kingdom is 'GB'. The code 'UK' is reserved.
+#
+# A list of dependent countries is available here:
+# https://spreadsheets.google.com/ccc?key=pJpyPy-J5JSNhe7F_KxwiCA&hl=en
+#
+#
+# The countrycode XK temporarily stands for Kosvo:
+# http://geonames.wordpress.com/2010/03/08/xk-country-code-for-kosovo/								
+#
+#
+# CS (Serbia and Montenegro) with geonameId = 8505033 no longer exists.
+# AN (the Netherlands Antilles) with geonameId = 8505032 was dissolved on 10 October 2010.
+#
+#
+# Currencies :
+# ============
+#
+# A number of territories are not included in ISO 4217, because their currencies are not per se an independent currency,															
+# but a variant of another currency. These currencies are:
+#
+# 1. FO : Faroese krona (1:1 pegged to the Danish krone)				
+# 2. GG : Guernsey pound (1:1 pegged to the pound sterling)
+# 3. JE : Jersey pound (1:1 pegged to the pound sterling)			
+# 4. IM : Isle of Man pound (1:1 pegged to the pound sterling)																		
+# 5. TV : Tuvaluan dollar (1:1 pegged to the Australian dollar).											
+# 6. CK : Cook Islands dollar (1:1 pegged to the New Zealand dollar).				
+#	
+# The following non-ISO codes are, however, sometimes used: GGP for the Guernsey pound, 																		
+# JEP for the Jersey pound and IMP for the Isle of Man pound (http://en.wikipedia.org/wiki/ISO_4217)																		
+#	
+#																		
+# A list of currency symbols is available here : http://forum.geonames.org/gforum/posts/list/437.page																		
+# another list with fractional units is here: http://forum.geonames.org/gforum/posts/list/1961.page																		
+#																		
+#																		
+# Languages :																		
+# ===========																		
+#																		
+# The column 'languages' lists the languages spoken in a country ordered by the number of speakers. The language code is a 'locale' 																		
+# where any two-letter primary-tag is an ISO-639 language abbreviation and any two-letter initial subtag is an ISO-3166 country code.																		
+#																		
+# Example : es-AR is the Spanish variant spoken in Argentina.																		
+#																		
+#ISO	ISO3	ISO-Numeric	fips	Country	Capital	Area(in sq km)	Population	Continent	tld	CurrencyCode	CurrencyName	Phone	Postal Code Format	Postal Code Regex	Languages	geonameid	neighbours	EquivalentFipsCode
+CA	CAN	124	CA	Canada	Ottawa	9984670	37058856	NA	.ca	CAD	Dollar	1	@#@ #@#	^([ABCEGHJKLMNPRSTVXY]\d[ABCEGHJKLMNPRSTVWXYZ]) ?(\d[ABCEGHJKLMNPRSTVWXYZ]\d)$ 	en-CA,fr-CA,iu	6251999	US	
+CH	CHE	756	SZ	Switzerland	Bern	41290	8516543	EU	.ch	CHF	Franc	41	####	^(\d{4})$	de-CH,fr-CH,it-CH,rm	2658434	DE,IT,LI,FR,AT	
+CN	CHN	156	CH	China	Beijing	9596960	1411778724	AS	.cn	CNY	Yuan Renminbi	86	######	^(\d{6})$	zh-CN,yue,wuu,dta,ug,za	1814991	LA,BT,TJ,KZ,MN,AF,NP,MM,KG,PK,KP,RU,VN,IN	
+DE	DEU	276	GM	Germany	Berlin	357021	82927922	EU	.de	EUR	Euro	49	#####	^(\d{5})$	de	2921044	CH,PL,NL,DK,BE,CZ,LU,FR,AT	
+DK	DNK	208	DA	Denmark	Copenhagen	43094	5797446	EU	.dk	DKK	Krone	45	####	^(\d{4})$	da-DK,en,fo,de-DK	2623032	DE	
+FR	FRA	250	FR	France	Paris	547030	66987244	EU	.fr	EUR	Euro	33	#####	^(\d{5})$	fr-FR,frp,br,co,ca,eu,oc	3017382	CH,DE,BE,LU,IT,AD,MC,ES	
+GB	GBR	826	UK	United Kingdom	London	244820	66488991	EU	.uk	GBP	Pound	44	@# #@@|@## #@@|@@# #@@|@@## #@@|@#@ #@@|@@#@ #@@|GIR0AA	^([Gg][Ii][Rr]\s?0[Aa]{2})|((([A-Za-z][0-9]{1,2})|(([A-Za-z][A-Ha-hJ-Yj-y][0-9]{1,2})|(([A-Za-z][0-9][A-Za-z])|([A-Za-z][A-Ha-hJ-Yj-y][0-9]?[A-Za-z]))))\s?[0-9][A-Za-z]{2})$	en-GB,cy-GB,gd	2635167	IE	
+GR	GRC	300	GR	Greece	Athens	131940	10727668	EU	.gr	EUR	Euro	30	### ##	^(\d{5})$	el-GR,en,fr	390903	AL,MK,TR,BG	
+HN	HND	340	HO	Honduras	Tegucigalpa	112090	9587522	NA	.hn	HNL	Lempira	504	#####	^(\d{6})$	es-HN,cab,miq	3608932	GT,NI,SV	
+IE	IRL	372	EI	Ireland	Dublin	70280	4853506	EU	.ie	EUR	Euro	353	@@@ @@@@	^(D6W|[AC-FHKNPRTV-Y][0-9]{2})\s?([AC-FHKNPRTV-Y0-9]{4})	en-IE,ga-IE	2963597	GB	
+IT	ITA	380	IT	Italy	Rome	301230	60431283	EU	.it	EUR	Euro	39	#####	^(\d{5})$	it-IT,de-IT,fr-IT,sc,ca,co,sl	3175395	CH,VA,SI,SM,FR,AT	
+NL	NLD	528	NL	The Netherlands	Amsterdam	41526	17231017	EU	.nl	EUR	Euro	31	#### @@	^(\d{4}\s?[a-zA-Z]{2})$	nl-NL,fy-NL	2750405	DE,BE	
+PA	PAN	591	PM	Panama	Panama City	78200	4176873	NA	.pa	PAB	Balboa	507	#####	^(\d{5})$	es-PA,en	3703430	CR,CO	
+RE	REU	638	RE	Reunion	Saint-Denis	2517	776948	AF	.re	EUR	Euro	262	#####	^((97|98)(4|7|8)\d{2})$	fr-RE	935317		
+SN	SEN	686	SG	Senegal	Dakar	196190	15854360	AF	.sn	XOF	Franc	221	#####	^(\d{5})$	fr-SN,wo,fuc,mnk	2245662	GN,MR,GW,GM,ML	
+SV	SLV	222	ES	El Salvador	San Salvador	21040	6420744	NA	.sv	USD	Dollar	503	CP ####	^(?:CP)*(\d{4})$	es-SV	3585968	GT,HN	
+US	USA	840	US	United States	Washington	9629091	327167434	NA	.us	USD	Dollar	1	#####-####	^\d{5}(-\d{4})?$	en-US,es-US,haw,fr	6252001	CA,MX,CU	
+ZA	ZAF	710	SF	South Africa	Pretoria	1219912	57779622	AF	.za	ZAR	Rand	27	####	^(\d{4})$	zu,xh,af,nso,en-ZA,tn,st,ts,ss,ve,nr	953987	ZW,SZ,MZ,BW,NA,LS	

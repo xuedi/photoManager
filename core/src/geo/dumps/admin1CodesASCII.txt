@@ -1,0 +1,62 @@
+CA.08	Ontario	Ontario	6093943
+CH.SO	Solothurn	Solothurn	2658563
+CH.GE	Geneva	Geneva	2660645
+CH.BS	Basel-City	Basel-City	2661602
+CH.BL	Basel-Landschaft	Basel-Landschaft	2661603
+CH.AG	Aargau	Aargau	2661876
+CN.29	Yunnan	Yunnan	1785694
+CN.23	Shanghai	Shanghai	1796231
+CN.31	Hainan	Hainan	1809054
+CN.22	Beijing	Beijing	2038349
+DE.13	Saxony	Saxony	2842566
+DE.04	Hamburg	Hamburg	2911297
+DE.03	Bremen	Bremen	2944387
+DE.16	State of Berlin	State of Berlin	2950157
+DE.02	Bavaria	Bavaria	2951839
+DE.01	Baden-Wurttemberg	Baden-Wurttemberg	2953481
+DK.17	Capital Region	Capital Region	6418538
+FR.93	Provence-Alpes-Côte d'Azur	Provence-Alpes-Cote d'Azur	2985244
+FR.11	Île-de-France	Ile-de-France	3012874
+FR.44	Grand Est	Grand Est	11071622
+FR.84	Auvergne-Rhône-Alpes	Auvergne-Rhone-Alpes	11071625
+GB.ENG	England	England	6269131
+GR.ESYE31	Attica	Attica	6692632
+GR.ESYE12	Central Macedonia	Central Macedonia	6697801
+HN.16	Santa Bárbara Department	Santa Barbara Department	3601689
+IE.C	Connacht	Connacht	7521313
+IE.L	Leinster	Leinster	7521314
+IT.09	Lombardy	Lombardy	3174618
+NL.11	South Holland	South Holland	2743698
+NL.07	North Holland	North Holland	2749879
+PA.06	Herrera Province	Herrera Province	3708710
+RE.RE	Reunion	Reunion	6690283
+SN.14	Saint-Louis	Saint-Louis	2246451
+SV.14	Usulutan	Usulutan	3582882
+US.AR	Arkansas	Arkansas	4099753
+US.FL	Florida	Florida	4155751
+US.GA	Georgia	Georgia	4197000
+US.MD	Maryland	Maryland	4361885
+US.MO	Missouri	Missouri	4398678
+US.TN	Tennessee	Tennessee	4662168
+US.TX	Texas	Texas	4736286
+US.AL	Alabama	Alabama	4829764
+US.IA	Iowa	Iowa	4862182
+US.IL	Illinois	Illinois	4896861
+US.IN	Indiana	Indiana	4921868
+US.ME	Maine	Maine	4971068
+US.MI	Michigan	Michigan	5001836
+US.MN	Minnesota	Minnesota	5037779
+US.NE	Nebraska	Nebraska	5073708
+US.NH	New Hampshire	New Hampshire	5090174
+US.NJ	New Jersey	New Jersey	5101760
+US.NY	New York	New York	5128638
+US.OH	Ohio	Ohio	5165418
+US.WI	Wisconsin	Wisconsin	5279468
+US.CA	California	California	5332921
+US.ID	Idaho	Idaho	5596512
+US.WA	Washington	Washington	5815135
+US.KY	Kentucky	Kentucky	6254925
+US.MA	Massachusetts	Massachusetts	6254926
+US.PA	Pennsylvania	Pennsylvania	6254927
+US.VA	Virginia	Virginia	6254928
+ZA.05	Eastern Cape	Eastern Cape	1085593
