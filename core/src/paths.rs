@@ -126,8 +126,14 @@ mod tests {
     #[test]
     fn falls_back_to_the_xdg_defaults_below_home() {
         let paths = resolve(&[("HOME", "/home/someone")]).unwrap();
-        assert_eq!(paths.cache_db(), PathBuf::from("/home/someone/.cache").join(APP_ID).join("cache.db"));
-        assert_eq!(paths.app_db(), PathBuf::from("/home/someone/.local/share").join(APP_ID).join("app.db"));
+        assert_eq!(
+            paths.cache_db(),
+            PathBuf::from("/home/someone/.cache").join(APP_ID).join("cache.db")
+        );
+        assert_eq!(
+            paths.app_db(),
+            PathBuf::from("/home/someone/.local/share").join(APP_ID).join("app.db")
+        );
         assert_eq!(paths.library(), Path::new("/home/someone/Nextcloud/Photos"));
     }
 
@@ -152,7 +158,10 @@ mod tests {
         ])
         .unwrap();
         assert_eq!(paths.cache_dir(), PathBuf::from("/home/someone/.cache").join(APP_ID));
-        assert_eq!(paths.data_dir(), PathBuf::from("/home/someone/.local/share").join(APP_ID));
+        assert_eq!(
+            paths.data_dir(),
+            PathBuf::from("/home/someone/.local/share").join(APP_ID)
+        );
     }
 
     #[test]
@@ -170,8 +179,14 @@ mod tests {
     #[test]
     fn refuses_a_missing_library_and_never_creates_one() {
         let missing = PathBuf::from("/tmp/photomanager-does-not-exist");
-        let err = Paths::resolve(env(&[("HOME", "/home/someone"), (LIBRARY_VAR, "/tmp/photomanager-does-not-exist")]), |_| false)
-            .unwrap_err();
+        let err = Paths::resolve(
+            env(&[
+                ("HOME", "/home/someone"),
+                (LIBRARY_VAR, "/tmp/photomanager-does-not-exist"),
+            ]),
+            |_| false,
+        )
+        .unwrap_err();
         assert_eq!(err, PathsError::LibraryMissing(missing.clone()));
         assert!(!missing.exists());
     }
@@ -192,8 +207,16 @@ mod tests {
         ])
         .unwrap();
         for path in paths.all() {
-            assert!(path.starts_with("/tmp/pm-test-home"), "{} escapes the test home", path.display());
-            assert!(!path.starts_with(&real_home), "{} points into the real home", path.display());
+            assert!(
+                path.starts_with("/tmp/pm-test-home"),
+                "{} escapes the test home",
+                path.display()
+            );
+            assert!(
+                !path.starts_with(&real_home),
+                "{} points into the real home",
+                path.display()
+            );
         }
     }
 }

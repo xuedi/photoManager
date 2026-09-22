@@ -1,0 +1,119 @@
+using Gtk 4.0;
+using Adw 1;
+
+template $PmWindow: Adw.ApplicationWindow {
+  title: "Photo Manager";
+  default-width: 1100;
+  default-height: 760;
+  width-request: 360;
+  height-request: 294;
+
+  Adw.Breakpoint {
+    condition ("max-width: 620sp")
+
+    setters {
+      header.title-widget: window_title;
+      switcher_bar.reveal: true;
+    }
+  }
+
+  content: Adw.ToolbarView {
+    [top]
+    Adw.HeaderBar header {
+      title-widget: Adw.ViewSwitcher {
+        stack: stack;
+        policy: wide;
+      };
+
+      [start]
+      Button import_button {
+        label: "Import";
+        tooltip-text: "Import photos into the library";
+
+        accessibility {
+          label: "Import";
+        }
+      }
+
+      [end]
+      MenuButton {
+        icon-name: "open-menu-symbolic";
+        tooltip-text: "Main Menu";
+        menu-model: primary_menu;
+        primary: true;
+
+        accessibility {
+          label: "Main Menu";
+        }
+      }
+    }
+
+    content: Adw.ViewStack stack {
+      Adw.ViewStackPage {
+        name: "dashboard";
+        title: "Dashboard";
+        icon-name: "view-grid-symbolic";
+
+        child: Adw.StatusPage {
+          icon-name: "view-grid-symbolic";
+          title: "Dashboard";
+          description: "What the library holds and what it is missing.";
+        };
+      }
+
+      Adw.ViewStackPage {
+        name: "gallery";
+        title: "Gallery";
+        icon-name: "image-x-generic-symbolic";
+
+        child: Adw.StatusPage {
+          icon-name: "image-x-generic-symbolic";
+          title: "Gallery";
+          description: "Browse by country, event and tag, and pick the photos to work on.";
+        };
+      }
+
+      Adw.ViewStackPage {
+        name: "tools";
+        title: "Tools";
+        icon-name: "applications-utilities-symbolic";
+
+        child: Adw.StatusPage {
+          icon-name: "applications-utilities-symbolic";
+          title: "Tools";
+          description: "Fix location, dates, tags, people, folders and file names in bulk.";
+        };
+      }
+
+      Adw.ViewStackPage {
+        name: "suggestions";
+        title: "Suggestions";
+        icon-name: "starred-symbolic";
+
+        child: Adw.StatusPage {
+          icon-name: "starred-symbolic";
+          title: "Suggestions";
+          description: "Ready-made fixes to review and apply.";
+        };
+      }
+    };
+
+    [bottom]
+    Adw.ViewSwitcherBar switcher_bar {
+      stack: stack;
+    }
+  };
+}
+
+Adw.WindowTitle window_title {
+  title: "Photo Manager";
+}
+
+menu primary_menu {
+  section {
+    item {
+      label: "_About Photo Manager";
+      action: "app.about";
+    }
+  }
+}
