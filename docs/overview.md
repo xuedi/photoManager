@@ -12,15 +12,22 @@ flowchart LR
     end
     subgraph core [core]
         paths
+        scan --> cache[(cache)]
+        scan --> metadata
+        scan --> identity
+        scan --> layout
         fixtures[fixtures<br/>test data]
     end
     application --> paths
-    photos[(photo library)] -. read .-> core
+    window --> library[library<br/>scan off the main thread]
+    library --> scan
+    photos[(photo library)] -. read .-> scan
 ```
 
-`core` holds everything that does not need a display: where things live on disk, and later the
-scan, the caches and the engine that writes metadata. It has no GTK dependency, so it can be
-tested without a session.
+`core` holds everything that does not need a display: where things live on disk, reading a
+photo's metadata, identifying it by its image data, reading its folder names, the scan and the
+cache it fills. It has no GTK dependency, so it can be tested without a session. What the cache
+holds and how a scan works: [cache.md](cache.md).
 
 `app` holds the GTK application: the window, its views, and the actions they expose. The user
 interface is written in Blueprint, compiled to GtkBuilder XML by the build script and bundled
@@ -47,6 +54,9 @@ shortcuts and tests all use:
 | Action | Does |
 |--------|------|
 | `win.show-view` | show one of `dashboard`, `gallery`, `tools`, `suggestions` |
+| `win.scan` | read what changed in the library into the cache |
+| `win.cancel-scan` | stop a running scan |
+| `app.rebuild-cache` | throw the cache away and read everything again, after confirmation |
 | `app.about` | the about dialog |
 | `app.quit` | quit |
 | `app.dump-state` | write the current state as JSON (only with `devtools`) |

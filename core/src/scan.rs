@@ -149,6 +149,7 @@ pub fn run(
     }
     summary.seconds = started.elapsed().as_secs();
     summary.photos = cache.photo_count()? as usize;
+    summary.issues = cache.issue_count()? as usize;
     Ok(summary)
 }
 

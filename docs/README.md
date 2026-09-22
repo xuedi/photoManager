@@ -5,3 +5,4 @@ How the parts of photoManager work. One file per subsystem, added when the subsy
 | Document | Subsystem |
 |----------|-----------|
 | [overview.md](overview.md) | the two crates, where data lives, actions, how it is run and tested |
+| [cache.md](cache.md) | what the application remembers about the photos, how a scan fills it, what an issue is |
