@@ -128,7 +128,11 @@ mod tests {
 
         let written = std::process::Command::new("exiftool")
             .args(["-overwrite_original", "-q", "-TagsList=places/inChina/Beijing"])
-            .args(["-DateTimeOriginal=2006:09:14 10:12:00", "-GPSLatitude=39.9", "-GPSLatitudeRef=N"])
+            .args([
+                "-DateTimeOriginal=2006:09:14 10:12:00",
+                "-GPSLatitude=39.9",
+                "-GPSLatitudeRef=N",
+            ])
             .arg(&after)
             .status()
             .unwrap();
@@ -137,14 +141,25 @@ mod tests {
 
         let id = |path: &std::path::Path| content_id(&std::fs::read(path).unwrap()).unwrap();
         assert_eq!(id(&before), id(&after), "metadata moved the id");
-        assert_eq!(image_hash(&before), image_hash(&after), "ExifTool disagrees with itself");
+        assert_eq!(
+            image_hash(&before),
+            image_hash(&after),
+            "ExifTool disagrees with itself"
+        );
 
         std::fs::remove_dir_all(&dir).unwrap();
     }
 
     fn image_hash(path: &std::path::Path) -> String {
         let out = std::process::Command::new("exiftool")
-            .args(["-s3", "-api", "RequestAll=3", "-api", "ImageHashType=SHA256", "-ImageDataHash"])
+            .args([
+                "-s3",
+                "-api",
+                "RequestAll=3",
+                "-api",
+                "ImageHashType=SHA256",
+                "-ImageDataHash",
+            ])
             .arg(path)
             .output()
             .unwrap();

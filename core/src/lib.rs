@@ -1,5 +1,6 @@
 pub mod identity;
 pub mod layout;
+pub mod metadata;
 pub mod paths;
 
 #[cfg(feature = "fixtures")]
