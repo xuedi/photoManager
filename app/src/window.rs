@@ -74,6 +74,10 @@ impl Window {
         self.imp().dashboard.scan(mode);
     }
 
+    pub fn fill_thumbnails(&self) {
+        self.imp().dashboard.fill_thumbnails();
+    }
+
     pub fn visible_view(&self) -> String {
         self.imp()
             .stack
@@ -106,9 +110,12 @@ impl Window {
         let scan = gtk::gio::ActionEntry::builder("scan")
             .activate(|window: &Window, _, _| window.imp().dashboard.scan(Mode::Reconcile))
             .build();
+        let fill = gtk::gio::ActionEntry::builder("fill-thumbnails")
+            .activate(|window: &Window, _, _| window.imp().dashboard.fill_thumbnails())
+            .build();
         let cancel = gtk::gio::ActionEntry::builder("cancel-scan")
             .activate(|window: &Window, _, _| window.imp().dashboard.cancel())
             .build();
-        self.add_action_entries([show_view, scan, cancel]);
+        self.add_action_entries([show_view, scan, fill, cancel]);
     }
 }

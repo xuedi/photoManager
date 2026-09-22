@@ -102,6 +102,11 @@ fn the_app_can_be_clicked_through_headless() {
         "the stand-in library has issues to report"
     );
     assert_eq!(scanned["scanning"], false);
+    assert_eq!(
+        scanned["thumbnails"].as_u64(),
+        Some(photos),
+        "every photo got a thumbnail while it was scanned"
+    );
 
     ui.run(&["act", "win.show-view", "'suggestions'"], lib);
     let state = state(&ui, lib);

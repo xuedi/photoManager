@@ -18,6 +18,8 @@ mod imp {
         #[template_child]
         pub scan_button: TemplateChild<gtk::Button>,
         #[template_child]
+        pub fill_button: TemplateChild<gtk::Button>,
+        #[template_child]
         pub cancel_button: TemplateChild<gtk::Button>,
         #[template_child]
         pub progress: TemplateChild<gtk::ProgressBar>,
@@ -81,6 +83,21 @@ impl Dashboard {
         library.scan(mode, move |event| dashboard.report(event));
     }
 
+    pub fn fill_thumbnails(&self) {
+        let Some(library) = self.imp().library.borrow().clone() else {
+            return;
+        };
+        if library.is_scanning() {
+            return;
+        }
+        self.running(true);
+        self.imp().progress.set_fraction(0.0);
+        self.imp().progress.set_text(Some("Looking for thumbnails"));
+
+        let dashboard = self.clone();
+        library.fill_thumbnails(move |event| dashboard.report(event));
+    }
+
     pub fn cancel(&self) {
         if let Some(library) = self.imp().library.borrow().as_ref() {
             library.cancel_scan();
@@ -126,10 +143,13 @@ impl Dashboard {
         }
     }
 
-    fn running(&self, scanning: bool) {
-        self.imp().scan_button.set_visible(!scanning);
-        self.imp().cancel_button.set_visible(scanning);
-        self.imp().progress.set_visible(scanning);
+    fn running(&self, busy: bool) {
+        self.imp().scan_button.set_visible(!busy);
+        self.imp().cancel_button.set_visible(busy);
+        self.imp().progress.set_visible(busy);
+        if busy {
+            self.imp().fill_button.set_visible(false);
+        }
     }
 
     fn show_counts(&self) {
@@ -146,9 +166,11 @@ impl Dashboard {
             imp.counts.set_visible(false);
             return;
         }
+        imp.fill_button.set_visible(counts.thumbnails < counts.photos);
         let mut rows = vec![
             ("Photos".to_string(), counts.photos),
             ("Events".to_string(), counts.events),
+            ("Thumbnails".to_string(), counts.thumbnails),
         ];
         rows.extend(
             library

@@ -55,6 +55,7 @@ fn state(window: &Window, paths: &Paths, library: Option<&Library>) -> String {
         "photos": counts.photos,
         "events": counts.events,
         "issues": counts.issues,
+        "thumbnails": counts.thumbnails,
         "scanning": library.map(|library| library.is_scanning()).unwrap_or(false),
     })
     .to_string()

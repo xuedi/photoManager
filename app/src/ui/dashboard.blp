@@ -31,6 +31,20 @@ template $PmDashboard: Adw.Bin {
           }
         }
 
+        Button fill_button {
+          label: "Make Missing Thumbnails";
+          visible: false;
+          action-name: "win.fill-thumbnails";
+
+          styles [
+            "pill",
+          ]
+
+          accessibility {
+            label: "Make Missing Thumbnails";
+          }
+        }
+
         Button cancel_button {
           label: "Cancel";
           visible: false;

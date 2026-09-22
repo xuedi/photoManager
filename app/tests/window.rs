@@ -91,6 +91,40 @@ fn scans_into_its_cache() {
     assert!(opened.counts().issues > 0, "the fixture has photos worth looking at");
     assert!(!opened.is_scanning());
     assert!(cache_db.starts_with(&base), "the cache stayed in the test home");
+
+    assert_eq!(
+        opened.counts().thumbnails as usize,
+        photomanager_core::fixtures::photo_count(),
+        "the scan made a thumbnail per photo"
+    );
+    assert!(
+        paths_of(&opened).iter().all(|path| path.starts_with(&base)),
+        "the thumbnails stayed in the test home"
+    );
+
+    // One is thrown away; the fill-in pass makes exactly that one again.
+    let picture = library.join("Germany/2019-07-13 Sommerfest/img_0657.jpg");
+    let content = photomanager_core::identity::content_id(&std::fs::read(&picture).unwrap()).unwrap();
+    opened.thumbs().forget(&content).unwrap();
+    assert_eq!(
+        opened.counts().thumbnails as usize,
+        photomanager_core::fixtures::photo_count() - 1
+    );
+
+    WidgetExt::activate_action(&window, "win.fill-thumbnails", None).unwrap();
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
+    while opened.is_scanning() && std::time::Instant::now() < deadline {
+        context.iteration(false);
+    }
+    assert_eq!(
+        opened.counts().thumbnails as usize,
+        photomanager_core::fixtures::photo_count(),
+        "the fill-in pass made the missing one"
+    );
+}
+
+fn paths_of(library: &Library) -> Vec<std::path::PathBuf> {
+    vec![library.thumbs().root().to_path_buf()]
 }
 
 fn buttons(widget: &gtk::Widget) -> Vec<gtk::Widget> {
