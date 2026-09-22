@@ -5,6 +5,7 @@
 //! photo cache this file is disposable: it is built from the dumps and can be made again.
 
 pub mod import;
+pub mod lookup;
 
 use std::path::{Path, PathBuf};
 
