@@ -4,6 +4,8 @@ use std::path::{Path, PathBuf};
 use crate::APP_ID;
 
 pub const LIBRARY_VAR: &str = "PHOTOMANAGER_LIBRARY";
+/// A directory that already holds the GeoNames dumps, so nothing has to be downloaded.
+pub const DUMPS_VAR: &str = "PHOTOMANAGER_GEONAMES";
 const DEFAULT_LIBRARY: &str = "Nextcloud/Photos";
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -11,6 +13,7 @@ pub struct Paths {
     cache: PathBuf,
     data: PathBuf,
     library: PathBuf,
+    dumps: Option<PathBuf>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -65,6 +68,7 @@ impl Paths {
             cache: base("XDG_CACHE_HOME", ".cache").join(APP_ID),
             data: base("XDG_DATA_HOME", ".local/share").join(APP_ID),
             library,
+            dumps: non_empty(DUMPS_VAR).map(PathBuf::from).filter(|p| p.is_absolute()),
         })
     }
 
@@ -82,6 +86,16 @@ impl Paths {
 
     pub fn thumbs_dir(&self) -> PathBuf {
         self.cache.join("thumbs")
+    }
+
+    /// Where the downloaded GeoNames dumps are kept.
+    pub fn dumps_dir(&self) -> PathBuf {
+        self.cache.join("geonames")
+    }
+
+    /// Dumps that are already on this machine, so the download can be skipped.
+    pub fn local_dumps(&self) -> Option<&Path> {
+        self.dumps.as_deref()
     }
 
     pub fn cache_db(&self) -> PathBuf {
@@ -102,6 +116,7 @@ impl Paths {
             self.cache.clone(),
             self.data.clone(),
             self.thumbs_dir(),
+            self.dumps_dir(),
             self.cache_db(),
             self.app_db(),
             self.geo_db(),
@@ -189,6 +204,22 @@ mod tests {
         .unwrap_err();
         assert_eq!(err, PathsError::LibraryMissing(missing.clone()));
         assert!(!missing.exists());
+    }
+
+    #[test]
+    fn dumps_on_this_machine_are_used_instead_of_a_download() {
+        let paths = resolve(&[("HOME", "/home/someone")]).unwrap();
+        assert_eq!(paths.local_dumps(), None);
+        assert_eq!(
+            paths.dumps_dir(),
+            PathBuf::from("/home/someone/.cache").join(APP_ID).join("geonames")
+        );
+
+        let given = resolve(&[("HOME", "/home/someone"), (DUMPS_VAR, "/tmp/geonames")]).unwrap();
+        assert_eq!(given.local_dumps(), Some(Path::new("/tmp/geonames")));
+
+        let relative = resolve(&[("HOME", "/home/someone"), (DUMPS_VAR, "geonames")]).unwrap();
+        assert_eq!(relative.local_dumps(), None, "only an absolute path is taken");
     }
 
     #[test]

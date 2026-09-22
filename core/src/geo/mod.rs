@@ -4,6 +4,7 @@
 //! The data is from [GeoNames](https://www.geonames.org/), licensed under CC BY 4.0. Like the
 //! photo cache this file is disposable: it is built from the dumps and can be made again.
 
+pub mod download;
 pub mod import;
 pub mod lookup;
 pub mod reverse;

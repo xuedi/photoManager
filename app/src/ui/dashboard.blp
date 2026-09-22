@@ -45,6 +45,19 @@ template $PmDashboard: Adw.Bin {
           }
         }
 
+        Button places_button {
+          label: "Get Place Data";
+          action-name: "win.get-places";
+
+          styles [
+            "pill",
+          ]
+
+          accessibility {
+            label: "Get Place Data";
+          }
+        }
+
         Button cancel_button {
           label: "Cancel";
           visible: false;

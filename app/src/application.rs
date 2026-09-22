@@ -93,13 +93,21 @@ fn ask_to_rebuild(window: &Window, library: Option<Rc<Library>>) {
 }
 
 fn show_about(window: &Window) {
-    adw::AboutDialog::builder()
+    let about = adw::AboutDialog::builder()
         .application_name("Photo Manager")
         .application_icon(APP_ID)
         .version(VERSION)
         .developer_name("Daniel Koch")
         .license_type(gtk::License::Unknown)
         .comments("Manage the data of a personal photo library.")
-        .build()
-        .present(Some(window));
+        .build();
+    about.add_legal_section(
+        "Place Data",
+        None,
+        gtk::License::Custom,
+        Some(
+            "Place names, coordinates and country outlines are from GeoNames              (https://www.geonames.org/), licensed under CC BY 4.0              (https://creativecommons.org/licenses/by/4.0/).",
+        ),
+    );
+    about.present(Some(window));
 }

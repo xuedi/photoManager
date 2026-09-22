@@ -10,6 +10,11 @@ use std::process::Command;
 
 const SESSION: &str = "photomanager-smoke";
 
+/// The checked-in excerpt, so the smoke test never asks GeoNames for anything.
+fn dumps() -> PathBuf {
+    Path::new(env!("CARGO_MANIFEST_DIR")).join("../core/src/geo/dumps")
+}
+
 struct Ui {
     dir: PathBuf,
 }
@@ -30,6 +35,9 @@ impl Ui {
             .args(["--session", SESSION, "--json"])
             .args(args)
             .env("PHOTOMANAGER_LIBRARY", library)
+            .env("PHOTOMANAGER_GEONAMES", dumps())
+            .env("XDG_CACHE_HOME", self.dir.join("cache"))
+            .env("XDG_DATA_HOME", self.dir.join("data"))
             .output()
             .expect("run pinchy, is it installed?");
         let json: Value = serde_json::from_slice(&output.stdout).unwrap_or(Value::Null);
@@ -108,6 +116,10 @@ fn the_app_can_be_clicked_through_headless() {
         "every photo got a thumbnail while it was scanned"
     );
 
+    ui.run(&["click", "Get Place Data", "--role", "button"], lib);
+    let places = settled(&ui, lib, "places");
+    assert_eq!(places["places"].as_u64(), Some(149), "the excerpt was imported");
+
     ui.run(&["act", "win.show-view", "'suggestions'"], lib);
     let state = state(&ui, lib);
     assert_eq!(state["view"], "suggestions");
@@ -128,14 +140,19 @@ fn the_app_can_be_clicked_through_headless() {
 
 /// The scan runs off the main thread, so the counts appear a moment after the click.
 fn scanned(ui: &Ui, library: &Path) -> Value {
+    settled(ui, library, "photos")
+}
+
+/// Waits until nothing is running any more and the count asked about is there.
+fn settled(ui: &Ui, library: &Path, count: &str) -> Value {
     for _ in 0..60 {
         let state = state(ui, library);
-        if state["scanning"] == false && state["photos"].as_u64().unwrap_or(0) > 0 {
+        if state["scanning"] == false && state[count].as_u64().unwrap_or(0) > 0 {
             return state;
         }
         std::thread::sleep(std::time::Duration::from_millis(500));
     }
-    panic!("the scan never finished");
+    panic!("{count} never arrived");
 }
 
 fn state(ui: &Ui, library: &Path) -> Value {

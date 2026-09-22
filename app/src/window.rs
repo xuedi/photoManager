@@ -113,9 +113,12 @@ impl Window {
         let fill = gtk::gio::ActionEntry::builder("fill-thumbnails")
             .activate(|window: &Window, _, _| window.imp().dashboard.fill_thumbnails())
             .build();
+        let places = gtk::gio::ActionEntry::builder("get-places")
+            .activate(|window: &Window, _, _| window.imp().dashboard.get_places())
+            .build();
         let cancel = gtk::gio::ActionEntry::builder("cancel-scan")
             .activate(|window: &Window, _, _| window.imp().dashboard.cancel())
             .build();
-        self.add_action_entries([show_view, scan, fill, cancel]);
+        self.add_action_entries([show_view, scan, fill, places, cancel]);
     }
 }

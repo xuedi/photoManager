@@ -1,11 +1,14 @@
 //! The library as the window sees it: the cache, and a scan running off the main thread.
 
 use std::cell::{Cell, RefCell};
+use std::path::Path;
 use std::rc::Rc;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 
 use photomanager_core::cache::Cache;
+use photomanager_core::geo::Geo;
+use photomanager_core::geo::import::Imported;
 use photomanager_core::metadata::Exiv2;
 use photomanager_core::paths::Paths;
 use photomanager_core::scan::{self, Mode, Progress, Summary, Thumbnails};
@@ -17,6 +20,10 @@ pub enum Event {
     Done(usize, usize),
     Finished(Summary),
     Filled(Thumbnails),
+    /// The place data is in, with what the import found.
+    Places(Imported),
+    /// A line to show while something long is running.
+    Note(String),
     Failed(String),
 }
 
@@ -26,6 +33,7 @@ pub struct Counts {
     pub events: i64,
     pub issues: i64,
     pub thumbnails: i64,
+    pub places: i64,
 }
 
 #[derive(Debug)]
@@ -33,6 +41,7 @@ pub struct Library {
     paths: Paths,
     thumbs: Thumbs,
     cache: RefCell<Option<Cache>>,
+    geo: RefCell<Option<Geo>>,
     scanning: Cell<bool>,
     cancel: Arc<AtomicBool>,
     last: RefCell<Option<Summary>>,
@@ -41,7 +50,11 @@ pub struct Library {
 impl Library {
     pub fn open(paths: Paths) -> Result<Rc<Library>, String> {
         let cache = Cache::open(&paths.cache_db()).map_err(|error| error.to_string())?;
+        let geo = Geo::open(&paths.geo_db())
+            .map_err(|error| tracing::error!(%error, "the place data cannot be opened"))
+            .ok();
         Ok(Rc::new(Library {
+            geo: RefCell::new(geo),
             thumbs: Thumbs::new(paths.thumbs_dir()),
             paths,
             cache: RefCell::new(Some(cache)),
@@ -77,7 +90,97 @@ impl Library {
             events: cache.event_count().unwrap_or_default(),
             issues: cache.issue_count().unwrap_or_default(),
             thumbnails: self.thumbs.count(Size::Small) as i64,
+            places: self.place_count(),
         }
+    }
+
+    fn place_count(&self) -> i64 {
+        self.geo
+            .borrow()
+            .as_ref()
+            .and_then(|geo| geo.counts().ok())
+            .map(|counts| counts.places)
+            .unwrap_or_default()
+    }
+
+    /// When the dumps the place data was built from were last changed.
+    pub fn dump_date(&self) -> Option<String> {
+        self.geo.borrow().as_ref().and_then(|geo| geo.dump_date())
+    }
+
+    /// Downloads the GeoNames dumps and imports them. The only thing here that uses the network,
+    /// and only because the button was pressed.
+    pub fn get_places<F: Fn(Event) + 'static>(self: &Rc<Self>, report: F) {
+        if self.scanning.get() {
+            return;
+        }
+        let Some(mut geo) = self.geo.borrow_mut().take() else {
+            report(Event::Failed("the place data is busy".to_string()));
+            return;
+        };
+        self.scanning.set(true);
+        self.cancel.store(false, Ordering::Relaxed);
+
+        let (sender, receiver) = async_channel::unbounded();
+        let local = self.paths.local_dumps().map(Path::to_path_buf);
+        let dumps = local.clone().unwrap_or_else(|| self.paths.dumps_dir());
+        let cancel = self.cancel.clone();
+        let progress = sender.clone();
+
+        std::thread::spawn(move || {
+            let fetched = match local {
+                Some(_) => Ok(Vec::new()),
+                None => photomanager_core::geo::download::run(
+                    &dumps,
+                    &|step| {
+                        let _ = progress.send_blocking(Message::Note(format!(
+                            "Downloading {} ({} of {})",
+                            step.file,
+                            step.done + 1,
+                            step.of
+                        )));
+                    },
+                    &cancel,
+                ),
+            };
+            let outcome = fetched.and_then(|_| {
+                photomanager_core::geo::import::run(&mut geo, &dumps, &|step| {
+                    let _ = progress.send_blocking(match step {
+                        photomanager_core::geo::import::Step::Reading(file) => Message::Note(format!("Reading {file}")),
+                        photomanager_core::geo::import::Step::Places(done, total) => Message::Done(done, total),
+                    });
+                })
+            });
+            let _ = sender.send_blocking(match outcome {
+                Ok(imported) => Message::Places(imported, geo),
+                Err(error) => Message::PlacesFailed(error.to_string(), geo),
+            });
+        });
+
+        let this = self.clone();
+        gtk::glib::spawn_future_local(async move {
+            while let Ok(message) = receiver.recv().await {
+                let event = match message {
+                    Message::Note(line) => Event::Note(line),
+                    Message::Done(done, total) => Event::Done(done, total),
+                    Message::Places(imported, geo) => {
+                        this.put_back(geo);
+                        Event::Places(imported)
+                    }
+                    Message::PlacesFailed(why, geo) => {
+                        this.put_back(geo);
+                        Event::Failed(why)
+                    }
+                    _ => continue,
+                };
+                report(event);
+            }
+        });
+    }
+
+    fn put_back(&self, geo: Geo) {
+        *self.geo.borrow_mut() = Some(geo);
+        self.scanning.set(false);
     }
 
     pub fn issue_counts(&self) -> Vec<(String, i64)> {
@@ -162,6 +265,7 @@ impl Library {
                         this.scanning.set(false);
                         Event::Filled(done)
                     }
+                    _ => continue,
                 };
                 report(event);
             }
@@ -232,5 +336,8 @@ enum Message {
     Done(usize, usize),
     Finished(Summary, Cache),
     Filled(Thumbnails),
+    Places(Imported, Geo),
+    PlacesFailed(String, Geo),
+    Note(String),
     Failed(String, Cache),
 }

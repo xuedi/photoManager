@@ -64,6 +64,13 @@ fn scans_into_its_cache() {
             "XDG_CACHE_HOME" => Some(base.join("cache").to_string_lossy().to_string()),
             "XDG_DATA_HOME" => Some(base.join("data").to_string_lossy().to_string()),
             "PHOTOMANAGER_LIBRARY" => Some(library.to_string_lossy().to_string()),
+            // The checked-in excerpt stands in for the download: the same path, no network.
+            "PHOTOMANAGER_GEONAMES" => Some(
+                std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+                    .join("../core/src/geo/dumps")
+                    .to_string_lossy()
+                    .to_string(),
+            ),
             _ => None,
         },
         |path| path.is_dir(),
@@ -121,6 +128,15 @@ fn scans_into_its_cache() {
         photomanager_core::fixtures::photo_count(),
         "the fill-in pass made the missing one"
     );
+
+    assert_eq!(opened.counts().places, 0, "no place data before it is asked for");
+    WidgetExt::activate_action(&window, "win.get-places", None).unwrap();
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(60);
+    while opened.is_scanning() && std::time::Instant::now() < deadline {
+        context.iteration(false);
+    }
+    assert_eq!(opened.counts().places, 149, "the excerpt was imported");
+    assert_eq!(opened.dump_date().map(|date| date.len()), Some(19));
 }
 
 fn paths_of(library: &Library) -> Vec<std::path::PathBuf> {

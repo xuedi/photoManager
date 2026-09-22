@@ -21,6 +21,10 @@ just check     # format, lint, test
 By default the library is expected at `~/Nextcloud/Photos`; `PHOTOMANAGER_LIBRARY` points it
 somewhere else.
 
+## Data from others
+
+Place names and country outlines come from GeoNames, under CC BY 4.0. See [NOTICE](NOTICE).
+
 ## Documentation
 
 Architecture notes per subsystem: [docs/README.md](docs/README.md).

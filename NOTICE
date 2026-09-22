@@ -1,0 +1,13 @@
+# Notice
+
+Photo Manager uses data from other people. This file names them, as their licences ask.
+
+## GeoNames
+
+Place names, coordinates, administrative areas and country outlines come from
+[GeoNames](https://www.geonames.org/), from the dumps `cities1000`, `admin1CodesASCII`,
+`countryInfo` and `shapes_simplified_low`. The data is licensed under
+[CC BY 4.0](https://creativecommons.org/licenses/by/4.0/).
+
+The dumps are downloaded only when you ask for them. An excerpt of a few hundred rows is kept
+in `core/src/geo/dumps` so the tests run without a network.

@@ -20,6 +20,8 @@ mod imp {
         #[template_child]
         pub fill_button: TemplateChild<gtk::Button>,
         #[template_child]
+        pub places_button: TemplateChild<gtk::Button>,
+        #[template_child]
         pub cancel_button: TemplateChild<gtk::Button>,
         #[template_child]
         pub progress: TemplateChild<gtk::ProgressBar>,
@@ -98,6 +100,22 @@ impl Dashboard {
         library.fill_thumbnails(move |event| dashboard.report(event));
     }
 
+    /// Fetches the place data. Nothing else here touches the network.
+    pub fn get_places(&self) {
+        let Some(library) = self.imp().library.borrow().clone() else {
+            return;
+        };
+        if library.is_scanning() {
+            return;
+        }
+        self.running(true);
+        self.imp().progress.set_fraction(0.0);
+        self.imp().progress.set_text(Some("Asking GeoNames"));
+
+        let dashboard = self.clone();
+        library.get_places(move |event| dashboard.report(event));
+    }
+
     pub fn cancel(&self) {
         if let Some(library) = self.imp().library.borrow().as_ref() {
             library.cancel_scan();
@@ -135,6 +153,18 @@ impl Dashboard {
                     "thumbnails filled in"
                 );
             }
+            Event::Note(line) => progress.set_text(Some(&line)),
+            Event::Places(imported) => {
+                self.running(false);
+                self.show_counts();
+                tracing::info!(
+                    places = imported.places,
+                    names = imported.names,
+                    countries = imported.countries,
+                    seconds = imported.seconds,
+                    "place data imported"
+                );
+            }
             Event::Failed(why) => {
                 self.running(false);
                 self.show_counts();
@@ -147,6 +177,7 @@ impl Dashboard {
         self.imp().scan_button.set_visible(!busy);
         self.imp().cancel_button.set_visible(busy);
         self.imp().progress.set_visible(busy);
+        self.imp().places_button.set_visible(!busy);
         if busy {
             self.imp().fill_button.set_visible(false);
         }
@@ -171,6 +202,7 @@ impl Dashboard {
             ("Photos".to_string(), counts.photos),
             ("Events".to_string(), counts.events),
             ("Thumbnails".to_string(), counts.thumbnails),
+            ("Places".to_string(), counts.places),
         ];
         rows.extend(
             library
@@ -179,8 +211,15 @@ impl Dashboard {
                 .map(|(kind, count)| (capitalised(&kind), count)),
         );
 
+        let dumps = library.dump_date();
         for (title, count) in rows {
-            let row = adw::ActionRow::builder().title(title).build();
+            let mut row = adw::ActionRow::builder().title(&title);
+            if title == "Places"
+                && let Some(date) = dumps.as_deref()
+            {
+                row = row.subtitle(format!("GeoNames dumps of {date}"));
+            }
+            let row = row.build();
             let value = gtk::Label::builder().label(count.to_string()).build();
             value.add_css_class("dim-label");
             row.add_suffix(&value);

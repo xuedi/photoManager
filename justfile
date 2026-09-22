@@ -55,7 +55,9 @@ ui dir=fixture_dir: build (fixture dir)
     #!/usr/bin/env bash
     set -euo pipefail
     pinchy --session {{session}} up
-    PHOTOMANAGER_LIBRARY={{dir}} pinchy --session {{session}} launch -- ./target/debug/{{app}}
+    PHOTOMANAGER_LIBRARY={{dir}} \
+    XDG_CACHE_HOME={{dir}}-home/cache XDG_DATA_HOME={{dir}}-home/data \
+        pinchy --session {{session}} launch -- ./target/debug/{{app}}
     pinchy --session {{session}} tree
 
 # a screenshot of that session
