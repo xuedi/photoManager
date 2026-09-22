@@ -1,0 +1,119 @@
+//! Drives the real binary in a private headless GNOME session, the way a person would click
+//! through it. Needs `pinchy` plus mutter, at-spi2-core and gstreamer, so it is ignored by
+//! default: run it with `just smoke`.
+
+#![cfg(feature = "devtools")]
+
+use serde_json::Value;
+use std::path::{Path, PathBuf};
+use std::process::Command;
+
+const SESSION: &str = "photomanager-smoke";
+
+struct Ui {
+    dir: PathBuf,
+}
+
+impl Ui {
+    fn start(library: &Path) -> Ui {
+        let dir = std::env::temp_dir().join("photomanager-smoke");
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).expect("create the work directory");
+        let ui = Ui { dir };
+        ui.run(&["up", "--size", "1024x768"], library);
+        ui.run(&["launch", "--", env!("CARGO_BIN_EXE_photomanager")], library);
+        ui
+    }
+
+    fn run(&self, args: &[&str], library: &Path) -> Value {
+        let output = Command::new("pinchy")
+            .args(["--session", SESSION, "--json"])
+            .args(args)
+            .env("PHOTOMANAGER_LIBRARY", library)
+            .output()
+            .expect("run pinchy, is it installed?");
+        let json: Value = serde_json::from_slice(&output.stdout).unwrap_or(Value::Null);
+        assert!(
+            output.status.success(),
+            "pinchy {args:?} failed: {json} {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        json
+    }
+
+    /// Actions are activated over D-Bus and run on the next main loop iteration.
+    fn wait_for_file(&self, path: &Path) {
+        for _ in 0..50 {
+            if path.exists() {
+                return;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(100));
+        }
+        panic!("{} never appeared", path.display());
+    }
+}
+
+impl Drop for Ui {
+    fn drop(&mut self) {
+        let _ = Command::new("pinchy").args(["--session", SESSION, "down"]).output();
+    }
+}
+
+#[test]
+#[ignore]
+fn the_app_can_be_clicked_through_headless() {
+    let library = std::env::temp_dir().join("photomanager-smoke-library");
+    std::fs::create_dir_all(&library).expect("create the stand-in library");
+    let ui = Ui::start(&library);
+    let lib = library.as_path();
+
+    let tree = ui.run(&["tree"], lib);
+    let tabs: Vec<&str> = tree
+        .as_array()
+        .expect("a tree")
+        .iter()
+        .filter(|node| node["role"] == "tab")
+        .filter_map(|node| node["name"].as_str())
+        .collect();
+    assert_eq!(tabs, ["Dashboard", "Gallery", "Tools", "Suggestions"]);
+    assert!(
+        tree.as_array()
+            .unwrap()
+            .iter()
+            .any(|node| node["name"] == "Import" && node["role"] == "button"),
+        "the import button must be findable by name"
+    );
+
+    let actions = ui.run(&["actions"], lib);
+    assert_eq!(actions["app_id"], "org.beijingcode.PhotoManager");
+
+    for (view, tab) in [("gallery", "Gallery"), ("tools", "Tools"), ("dashboard", "Dashboard")] {
+        ui.run(&["click", tab, "--role", "tab"], lib);
+        assert_eq!(state(&ui, lib)["view"], view, "clicking {tab} shows {view}");
+    }
+
+    ui.run(&["act", "win.show-view", "'suggestions'"], lib);
+    let state = state(&ui, lib);
+    assert_eq!(state["view"], "suggestions");
+    assert_eq!(state["library"], library.to_str().unwrap());
+    assert_eq!(state["version"], env!("CARGO_PKG_VERSION"));
+
+    let png = ui.dir.join("window.png");
+    ui.run(&["act", "app.snapshot", &format!("'{}'", png.display())], lib);
+    ui.wait_for_file(&png);
+    assert_eq!(&std::fs::read(&png).unwrap()[1..4], b"PNG");
+
+    let shot = ui.run(&["shot", ui.dir.join("screen.png").to_str().unwrap()], lib);
+    assert_eq!(
+        (shot["width"].as_u64(), shot["height"].as_u64()),
+        (Some(1024), Some(768))
+    );
+}
+
+fn state(ui: &Ui, library: &Path) -> Value {
+    let file = ui.dir.join("state.json");
+    let _ = std::fs::remove_file(&file);
+    ui.run(&["act", "app.dump-state", &format!("'{}'", file.display())], library);
+    ui.wait_for_file(&file);
+    serde_json::from_slice(&std::fs::read(&file).unwrap()).expect("state as json")
+}

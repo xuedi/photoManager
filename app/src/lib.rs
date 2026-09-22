@@ -1,4 +1,6 @@
 pub mod application;
+#[cfg(feature = "devtools")]
+pub mod devtools;
 pub mod window;
 
 use gtk::gio;

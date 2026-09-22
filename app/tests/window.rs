@@ -5,17 +5,14 @@ use photomanager::window::{VIEWS, Window};
 /// test harness runs test functions in parallel.
 #[test]
 fn the_window_carries_every_view_and_switches_between_them() {
-    if std::env::var_os("WAYLAND_DISPLAY").is_none() && std::env::var_os("DISPLAY").is_none() {
-        eprintln!("no display: skipped, run it with `just test-ui`");
+    if std::env::var("PHOTOMANAGER_UI_TESTS").unwrap_or_default() != "1" {
+        eprintln!("widget tests want a display of their own: run them with `just test-ui`");
         return;
     }
     photomanager::register_resources();
     adw::init().expect("initialise libadwaita");
 
-    let app = adw::Application::builder()
-        .application_id("org.beijingcode.PhotoManager.Tests")
-        .build();
-    let window = Window::new(&app);
+    let window: Window = gtk::glib::Object::builder().build();
 
     assert_eq!(window.visible_view(), "dashboard");
 

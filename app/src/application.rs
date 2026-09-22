@@ -15,6 +15,8 @@ pub fn build(paths: Paths) -> adw::Application {
         }
         let window = Window::new(app);
         setup_actions(app, &window);
+        #[cfg(feature = "devtools")]
+        crate::devtools::install(app, &window, &paths);
         window.present();
         tracing::info!(library = %paths.library().display(), "library opened");
     });
