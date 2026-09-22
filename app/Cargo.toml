@@ -1,0 +1,13 @@
+[package]
+name = "photomanager"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+photomanager-core.workspace = true
+tracing.workspace = true
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+
+[features]
+devtools = []

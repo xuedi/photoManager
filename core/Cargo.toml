@@ -1,0 +1,11 @@
+[package]
+name = "photomanager-core"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+tracing.workspace = true
+
+[features]
+fixtures = []
