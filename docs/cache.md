@@ -45,8 +45,8 @@ flowchart TD
     gone[rows without a file] --> row
 ```
 
-Each file is read exactly once per scan; the same bytes feed the hasher and the metadata
-reader. Files are read on a worker pool, and one thread writes them to SQLite in batches of a
+Each file is read exactly once per scan; the same bytes feed the hasher, the metadata reader and
+the [thumbnail](thumbnails.md) maker. Files are read on a worker pool, and one thread writes them to SQLite in batches of a
 few hundred rows.
 
 Unchanged means same size, same modification time and same inode. A second scan of an untouched

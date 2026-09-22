@@ -16,18 +16,23 @@ flowchart LR
         scan --> metadata
         scan --> identity
         scan --> layout
+        scan --> thumbs[(thumbnails)]
+        geo[(places)]
         fixtures[fixtures<br/>test data]
     end
     application --> paths
     window --> library[library<br/>scan off the main thread]
     library --> scan
+    library --> geo
     photos[(photo library)] -. read .-> scan
+    geonames[GeoNames dumps] -. downloaded on request .-> geo
 ```
 
 `core` holds everything that does not need a display: where things live on disk, reading a
 photo's metadata, identifying it by its image data, reading its folder names, the scan and the
-cache it fills. It has no GTK dependency, so it can be tested without a session. What the cache
-holds and how a scan works: [cache.md](cache.md).
+cache it fills, the thumbnails, and the place data. It has no GTK dependency, so it can be
+tested without a session. What the cache holds and how a scan works: [cache.md](cache.md); the
+small pictures: [thumbnails.md](thumbnails.md); names and coordinates: [places.md](places.md).
 
 `app` holds the GTK application: the window, its views, and the actions they expose. The user
 interface is written in Blueprint, compiled to GtkBuilder XML by the build script and bundled
@@ -39,12 +44,16 @@ as a GResource, so the binary carries its own interface.
 |------|-------|----------|
 | photo library | `~/Nextcloud/Photos`, or `PHOTOMANAGER_LIBRARY` | the truth, never rewritten without a confirmed preview |
 | cache | `$XDG_CACHE_HOME/org.beijingcode.PhotoManager` | disposable, rebuilt from the photos |
+| thumbnails | `…/thumbs` in the cache | disposable, made again while scanning |
+| GeoNames dumps | `…/geonames` in the cache | disposable, downloaded on request |
+| place data | `$XDG_DATA_HOME/…/geo.db` | disposable, built from the dumps |
 | settings, presets, journal | `$XDG_DATA_HOME/org.beijingcode.PhotoManager` | kept |
 
 Every location is resolved in one place, from the environment. Pointing `HOME`, `XDG_*` and
 `PHOTOMANAGER_LIBRARY` somewhere else moves the whole application, which is how tests keep away
 from real photos. In a debug build the application refuses to start when the library is not
-there instead of creating one.
+there instead of creating one. `PHOTOMANAGER_GEONAMES` points at dumps that are already on the
+machine, and then nothing is downloaded.
 
 ## Actions
 
@@ -55,6 +64,8 @@ shortcuts and tests all use:
 |--------|------|
 | `win.show-view` | show one of `dashboard`, `gallery`, `tools`, `suggestions` |
 | `win.scan` | read what changed in the library into the cache |
+| `win.fill-thumbnails` | make the thumbnails the scan could not make |
+| `win.get-places` | fetch the GeoNames dumps and import them |
 | `win.cancel-scan` | stop a running scan |
 | `app.rebuild-cache` | throw the cache away and read everything again, after confirmation |
 | `app.about` | the about dialog |

@@ -6,3 +6,5 @@ How the parts of photoManager work. One file per subsystem, added when the subsy
 |----------|-----------|
 | [overview.md](overview.md) | the two crates, where data lives, actions, how it is run and tested |
 | [cache.md](cache.md) | what the application remembers about the photos, how a scan fills it, what an issue is |
+| [thumbnails.md](thumbnails.md) | the small pictures a grid draws, keyed by the image rather than the path |
+| [places.md](places.md) | turning place names into coordinates and back, without the network |
