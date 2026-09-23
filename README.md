@@ -18,11 +18,11 @@ every change, and never lose a byte of the original image.</p>
 
 ---
 
-A photo library that has been going for twenty years has been through a few programs, and each one
-left its own mess behind. Tags in four different fields that disagree. Dates in XMP that are two
-hours behind the same date in EXIF. Eleven thousand photos that say which city they were taken in,
-and only seven hundred that carry the coordinates. A keyword that ended up in the rating label
-because some old version put it there.
+A photo library that has been going for years has been through a few programs, and each one left
+its own mess behind. Tags in four different fields that disagree. Dates in XMP that are hours
+behind the same date in EXIF. Thousands of photos that say which city they were taken in, and only
+a fraction that carry the coordinates. A keyword that ended up in the rating label because some old
+version put it there.
 
 photoManager is a GNOME application for fixing exactly that, in bulk, on your own machine. It is
 not another viewer. It is the thing that finds what is wrong, shows you what it would change, and

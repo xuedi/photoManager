@@ -1,7 +1,7 @@
 # The cache
 
 The photos are the truth. The cache is what the application remembers about them so it does not
-have to read 37 GB every time it wants to answer a question. It can be deleted at any moment and
+have to read the whole library every time it wants to answer a question. It can be deleted at any moment and
 filled again from the files, and it is never the place where a piece of photo information only
 exists.
 

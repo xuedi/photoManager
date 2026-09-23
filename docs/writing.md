@@ -141,7 +141,7 @@ known on the next start.
 
 ## Taking it back
 
-An undo puts values back, not files. Keeping a copy of 37 GB is not on, and it is not needed: only
+An undo puts values back, not files. Keeping a second copy of every photo is not on, and it is not needed: only
 metadata is ever changed and the image data is proved not to have moved, so restoring the old field
 values restores the photo. Fields that were not there before are removed.
 
