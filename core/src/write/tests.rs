@@ -244,6 +244,15 @@ fn a_directory_that_cannot_be_written_is_a_reason_not_a_panic() {
     let was = std::fs::metadata(&dir).unwrap().permissions();
 
     std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o500)).unwrap();
+    // Root ignores the write bit, so where the restriction does not bite there is nothing to test.
+    let probe = dir.join(".probe");
+    if std::fs::write(&probe, b"x").is_ok() {
+        let _ = std::fs::remove_file(&probe);
+        std::fs::set_permissions(&dir, was).unwrap();
+        eprintln!("skipped: this user writes into a directory that has no write bit");
+        return;
+    }
+
     let outcome = setup.write(BARE, Change::of([Field::Rating(Some(1))]));
     std::fs::set_permissions(&dir, was).unwrap();
 
