@@ -604,9 +604,11 @@ impl Preview {
         ));
         self.add_column("", &picking, false);
 
-        self.add_text_column("Photo", true, Item::photo);
-        self.add_text_column("Change", true, Item::change);
-        self.add_text_column("State", false, Item::state);
+        // Each column is at least wide enough to read; a narrower window scrolls the table
+        // sideways inside itself instead of widening the window.
+        self.add_text_column("Photo", true, 28, Item::photo);
+        self.add_text_column("Change", true, 20, Item::change);
+        self.add_text_column("State", false, 12, Item::state);
 
         let asking = gtk::SignalListItemFactory::new();
         asking.connect_setup(|_, item| {
@@ -632,12 +634,13 @@ impl Preview {
         self.add_column("", &asking, false);
     }
 
-    fn add_text_column(&self, title: &str, expand: bool, what: fn(&Item) -> String) {
+    fn add_text_column(&self, title: &str, expand: bool, chars: i32, what: fn(&Item) -> String) {
         let factory = gtk::SignalListItemFactory::new();
-        factory.connect_setup(|_, item| {
+        factory.connect_setup(move |_, item| {
             let label = gtk::Label::builder()
                 .xalign(0.0)
                 .ellipsize(pango::EllipsizeMode::Middle)
+                .width_chars(chars)
                 .build();
             listed(item).set_child(Some(&label));
         });
