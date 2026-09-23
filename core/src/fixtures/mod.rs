@@ -2,7 +2,8 @@
 //! loose file in a country folder, sub-folders, photos without GPS but with a place tag, a
 //! photo without any date, XMP dates that disagree with EXIF, and one without tags at all. The
 //! tags are as untidy as real ones: a second spelling of a root, case twins, a typo. One photo
-//! carries the small picture cameras embed, the rest do not.
+//! carries the small picture cameras embed, the rest do not. The one turned by its orientation is
+//! stored wider than tall, so the right way up it stands taller than wide.
 //!
 //! Only for tests and for looking at the application without touching real photos.
 

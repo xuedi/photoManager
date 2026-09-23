@@ -116,7 +116,11 @@ fn raw_json(source: &rexiv2::Metadata) -> String {
     let groups = [source.get_exif_tags(), source.get_iptc_tags(), source.get_xmp_tags()];
     for group in groups.into_iter().flatten() {
         for tag in group {
-            let values = source.get_tag_multiple_strings(&tag).unwrap_or_default();
+            // Asked for a list, gexiv2 repeats a plain XMP text once per character of it.
+            let values = match rexiv2::get_tag_type(&tag) {
+                Ok(rexiv2::TagType::XmpText) => Vec::new(),
+                _ => source.get_tag_multiple_strings(&tag).unwrap_or_default(),
+            };
             let value = match values.len() {
                 0 => match source.get_tag_string(&tag) {
                     Ok(single) => serde_json::Value::String(single),
