@@ -1,8 +1,9 @@
 //! What the library is and what it is missing, in one look at the cache. Every number that can be
 //! clicked carries the filter it counts, so a click shows exactly the photos the number promised.
 
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::BTreeMap;
 
+use crate::browse::TagTree;
 use crate::cache::{Cache, Result};
 use crate::filter::{Filter, Gap, Kind};
 use crate::scan::IssueKind;
@@ -131,7 +132,7 @@ impl Survey {
 
     /// Every number on the dashboard that can be clicked, with what the click shows.
     pub fn numbers(&self) -> Vec<(i64, Filter)> {
-        let mut numbers = vec![(self.photos, Filter::of(Kind::All))];
+        let mut numbers = vec![(self.photos, Filter::all())];
         numbers.extend(
             self.coverage
                 .iter()
@@ -302,157 +303,9 @@ fn tidy(cache: &Cache) -> Result<Vec<Finding>> {
     Ok(found)
 }
 
-/// Every tag path and every level above it.
-struct TagTree {
-    nodes: BTreeSet<String>,
-}
-
-impl TagTree {
-    fn of(paths: &[String]) -> TagTree {
-        let mut nodes = BTreeSet::new();
-        for path in paths {
-            let mut at = 0;
-            for part in path.split('/') {
-                at += part.len();
-                nodes.insert(path[..at].to_string());
-                at += 1;
-            }
-        }
-        TagTree { nodes }
-    }
-
-    fn children(&self, parent: &str) -> Vec<&str> {
-        self.nodes
-            .iter()
-            .filter_map(|node| node.strip_prefix(parent)?.strip_prefix('/'))
-            .filter(|rest| !rest.is_empty() && !rest.contains('/'))
-            .collect()
-    }
-
-    fn siblings(&self) -> BTreeMap<&str, Vec<&str>> {
-        let mut by_parent: BTreeMap<&str, Vec<&str>> = BTreeMap::new();
-        for node in &self.nodes {
-            let (parent, leaf) = node.rsplit_once('/').unwrap_or(("", node));
-            by_parent.entry(parent).or_default().push(leaf);
-        }
-        by_parent
-    }
-
-    /// Paths that are the same but for case, highest level only: `People` and `people` are one
-    /// finding, not one more for every tag below them.
-    fn case_twins(&self) -> Vec<Vec<String>> {
-        let mut by_lower: BTreeMap<String, Vec<String>> = BTreeMap::new();
-        for node in &self.nodes {
-            by_lower.entry(node.to_lowercase()).or_default().push(node.clone());
-        }
-        by_lower
-            .iter()
-            .filter(|(lower, spellings)| {
-                let parent_is_twin = lower
-                    .rsplit_once('/')
-                    .and_then(|(parent, _)| by_lower.get(parent))
-                    .is_some_and(|above| above.len() > 1);
-                spellings.len() > 1 && !parent_is_twin
-            })
-            .map(|(_, spellings)| spellings.clone())
-            .collect()
-    }
-
-    /// Sibling tags a letter or two apart: a hint that one is a typo of the other, never a verdict.
-    fn look_alikes(&self) -> Vec<(String, String)> {
-        let mut found = Vec::new();
-        for (parent, leaves) in self.siblings() {
-            for (at, one) in leaves.iter().enumerate() {
-                for other in &leaves[at + 1..] {
-                    if alike(one, other) {
-                        let path = |leaf: &str| match parent {
-                            "" => leaf.to_string(),
-                            _ => format!("{parent}/{leaf}"),
-                        };
-                        found.push((path(one), path(other)));
-                    }
-                }
-            }
-        }
-        found
-    }
-}
-
-/// Long enough to be a word, a letter apart (two in a long one), and not two years of the same
-/// thing (`2006 Summer`, `2007 Summer`).
-fn alike(one: &str, other: &str) -> bool {
-    let (one, other) = (one.to_lowercase(), other.to_lowercase());
-    let shorter = one.chars().count().min(other.chars().count());
-    if one == other || shorter < 5 {
-        return false;
-    }
-    let letters = |text: &str| text.chars().filter(|c| !c.is_ascii_digit()).collect::<String>();
-    if one.chars().any(|c| c.is_ascii_digit()) && letters(&one) == letters(&other) {
-        return false;
-    }
-    let allowed = if shorter < 8 { 1 } else { 2 };
-    distance(&one, &other) <= allowed
-}
-
-fn distance(one: &str, other: &str) -> usize {
-    let other: Vec<char> = other.chars().collect();
-    let mut previous: Vec<usize> = (0..=other.len()).collect();
-    for (i, a) in one.chars().enumerate() {
-        let mut current = vec![i + 1];
-        for (j, b) in other.iter().enumerate() {
-            let substitute = previous[j] + usize::from(a != *b);
-            current.push(substitute.min(previous[j + 1] + 1).min(current[j] + 1));
-        }
-        previous = current;
-    }
-    previous[other.len()]
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    fn tree(paths: &[&str]) -> TagTree {
-        TagTree::of(&paths.iter().map(|path| path.to_string()).collect::<Vec<_>>())
-    }
-
-    #[test]
-    fn twins_are_reported_at_the_highest_level_only() {
-        let tags = tree(&["People/Kira", "people/Kira", "people/Ben", "mixed/funny", "mixed/Funny"]);
-        assert_eq!(
-            tags.case_twins(),
-            [
-                vec!["mixed/Funny".to_string(), "mixed/funny".to_string()],
-                vec!["People".to_string(), "people".to_string()],
-            ]
-        );
-    }
-
-    #[test]
-    fn look_alikes_are_siblings_a_letter_apart() {
-        let tags = tree(&[
-            "mixed/discusting",
-            "mixed/disgusting",
-            "mixed/funny",
-            "mixed/Funny",
-            "people/Kira",
-            "people/Kiri",
-            "people/Ben",
-            "events/2006 Summer",
-            "events/2007 Summer",
-            "places/inNetherland",
-            "places/inNetherlands",
-            "other/disgusting",
-        ]);
-        assert_eq!(
-            tags.look_alikes(),
-            [
-                ("mixed/discusting".to_string(), "mixed/disgusting".to_string()),
-                ("places/inNetherland".to_string(), "places/inNetherlands".to_string()),
-            ],
-            "short names, case twins, years and cousins are not look-alikes"
-        );
-    }
 
     #[test]
     fn counts_file_types_as_they_are_spelled() {
@@ -461,13 +314,6 @@ mod tests {
             file_types(&paths),
             [(String::new(), 2), ("JPG".to_string(), 2), ("jpg".to_string(), 1)]
         );
-    }
-
-    #[test]
-    fn edit_distance() {
-        assert_eq!(distance("kitten", "sitting"), 3);
-        assert_eq!(distance("", "abc"), 3);
-        assert_eq!(distance("same", "same"), 0);
     }
 }
 
