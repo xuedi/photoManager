@@ -93,10 +93,11 @@ impl Gap {
                     ELSE CAST(substr(p.taken_at, 1, 4) AS INTEGER) != p.event_year
                 END"
             }
-            Gap::Tags => "NOT EXISTS (SELECT 1 FROM tag t WHERE t.photo_id = p.id)",
+            // Set-based, not correlated: SQLite builds the set once instead of asking per photo.
+            Gap::Tags => "p.id NOT IN (SELECT photo_id FROM tag)",
             Gap::People => {
-                "NOT EXISTS (SELECT 1 FROM tag t WHERE t.photo_id = p.id
-                    AND (lower(t.path) = 'people' OR lower(substr(t.path, 1, 7)) = 'people/'))"
+                "p.id NOT IN (SELECT photo_id FROM tag
+                    WHERE lower(path) = 'people' OR lower(substr(path, 1, 7)) = 'people/')"
             }
             Gap::Location => "p.location_city IS NULL",
         }
@@ -194,16 +195,12 @@ impl Filter {
                 for path in paths {
                     params.push(path.clone());
                     let n = params.len();
-                    any.push(format!(
-                        "t.path = ?{n} OR substr(t.path, 1, length(?{n}) + 1) = ?{n} || '/'"
-                    ));
+                    // A range over the path index: everything below `a/` sorts before `a0`.
+                    any.push(format!("path = ?{n} OR (path >= ?{n} || '/' AND path < ?{n} || '0')"));
                 }
                 (
                     "photo",
-                    format!(
-                        "EXISTS (SELECT 1 FROM tag t WHERE t.photo_id = p.id AND ({}))",
-                        any.join(" OR ")
-                    ),
+                    format!("p.id IN (SELECT photo_id FROM tag WHERE {})", any.join(" OR ")),
                 )
             }
             Kind::SubFolder => (

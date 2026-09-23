@@ -9,7 +9,7 @@ use crate::layout::Placement;
 use crate::metadata::Metadata;
 use crate::scan::Issue;
 
-const SCHEMA_VERSION: i64 = 2;
+const SCHEMA_VERSION: i64 = 3;
 
 /// SQLite takes a few hundred parameters happily; a library's worth of paths is asked for in
 /// chunks of this size.
@@ -49,6 +49,9 @@ CREATE TABLE photo (
 CREATE INDEX photo_content ON photo (content_id);
 CREATE INDEX photo_event ON photo (country, event_text);
 CREATE INDEX photo_event_dir ON photo (event_dir);
+-- Everything the survey asks of a photo, so it never has to read the rows with their raw JSON.
+CREATE INDEX photo_survey ON photo (country, event_dir, taken_at, event_year, event_month, event_day,
+    gps_lat, gps_lon, location_city, camera_model, size);
 
 CREATE TABLE tag (
     photo_id INTEGER NOT NULL REFERENCES photo (id) ON DELETE CASCADE,

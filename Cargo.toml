@@ -12,3 +12,7 @@ repository = "https://github.com/xuedi/photoManager"
 [workspace.dependencies]
 photomanager-core = { path = "core" }
 tracing = "0.1"
+
+# The debug build is the one that is run day to day; SQLite unoptimised makes every query crawl.
+[profile.dev.package.libsqlite3-sys]
+opt-level = 3

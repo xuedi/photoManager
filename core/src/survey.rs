@@ -176,26 +176,28 @@ fn gaps(cache: &Cache) -> Result<(Coverage, Vec<Place>)> {
         Ok(gaps)
     };
 
-    let connection = cache.connection();
-    let whole = connection.query_row(&format!("SELECT {sums} FROM photo p"), [], |row| measures(row, 0))?;
-    let coverage = Gap::ALL.iter().copied().zip(whole).collect();
-
-    let mut statement = connection.prepare(&format!(
+    let mut statement = cache.connection().prepare(&format!(
         "SELECT country, event_dir, count(*), {sums} FROM photo p
-         WHERE country IS NOT NULL GROUP BY country, event_dir ORDER BY country, event_dir"
+         GROUP BY country, event_dir ORDER BY country, event_dir"
     ))?;
     let rows = statement.query_map([], |row| {
         Ok((
-            row.get::<_, String>(0)?,
+            row.get::<_, Option<String>>(0)?,
             row.get::<_, Option<String>>(1)?,
             row.get::<_, i64>(2)?,
             measures(row, 3)?,
         ))
     })?;
 
+    // The whole library is the sum of its groups, photos outside any country included.
+    let mut whole = Place::new("", "");
     let mut countries: Vec<Place> = Vec::new();
     for row in rows {
         let (country, event_dir, photos, gaps) = row?;
+        whole.add(photos, &gaps);
+        let Some(country) = country else {
+            continue;
+        };
         if countries.last().is_none_or(|last| last.folder != country) {
             countries.push(Place::new(&country, &country));
         }
@@ -211,6 +213,7 @@ fn gaps(cache: &Cache) -> Result<(Coverage, Vec<Place>)> {
             place.events.push(event);
         }
     }
+    let coverage = Gap::ALL.iter().copied().zip(whole.gaps).collect();
     Ok((coverage, countries))
 }
 
