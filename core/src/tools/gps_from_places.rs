@@ -534,6 +534,26 @@ mod tests {
     }
 
     #[test]
+    fn one_answer_reads_back_onto_the_questions_asked_before() {
+        let cache = scanned("gps-again");
+        let mut questions = asked(&cache, None);
+        let beijing = best(&questions, BEIJING);
+        let settings = answered(None, BEIJING, beijing.clone());
+        tools::answer_again(tool(), &mut questions, Some(&settings)).unwrap();
+        assert_eq!(question(&questions, BEIJING).answer, Some(beijing.clone()));
+        assert_eq!(question(&questions, "places/inChina").answer, Some(Answer::Leave));
+        assert!(question(&questions, ATENS).waits());
+
+        assert_eq!(Answer::read(&beijing.written()).unwrap(), beijing);
+        assert_eq!(Answer::read("leave").unwrap(), Answer::Leave);
+        assert!(Answer::read("somewhere").is_err());
+        assert!(
+            Answer::read(r#"{"id": 1, "name": "Nowhere"}"#).is_err(),
+            "a place says where it is"
+        );
+    }
+
+    #[test]
     fn only_the_deepest_places_tags_count() {
         let tags = |all: &[&str]| all.iter().map(|tag| tag.to_string()).collect::<Vec<_>>();
         assert_eq!(
