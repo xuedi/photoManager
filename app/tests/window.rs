@@ -106,6 +106,7 @@ fn scans_into_its_cache() {
 
     surveys_what_is_missing(&window, &opened);
     browses_the_gallery(&window, &opened);
+    looks_at_one_photo(&window, &library);
 
     assert_eq!(
         opened.counts().thumbnails as usize,
@@ -392,6 +393,102 @@ fn selects_and_hands_on_a_scope(window: &Window, opened: &Rc<Library>) {
     settle(window);
     assert_eq!(gallery.selected(), 0);
     window.show_view("dashboard");
+}
+
+/// A photo opens over the grid, arrives at its own size the right way up, steps through the
+/// grid's list in the grid's order, and Back leaves the grid as it was.
+fn looks_at_one_photo(window: &Window, library: &std::path::Path) {
+    let gallery = window.gallery();
+    let page = gallery.photo();
+    let act = |name: &str, target: Option<&str>| {
+        let target = target.map(|target| target.to_variant());
+        WidgetExt::activate_action(window, name, target.as_ref()).unwrap();
+    };
+
+    act("win.show-photos", Some("all@Germany/2019-07-13 Sommerfest"));
+    settle(window);
+    act("win.gallery-sort", Some("name"));
+    settle(window);
+    let listed = gallery.listed();
+    assert_eq!(listed.len(), 3);
+    gallery.select(1, true);
+
+    act("win.show-photo", Some(LOCATED));
+    assert!(gallery.photo_open(), "the page was pushed");
+    assert_eq!(page.path().as_deref(), Some(LOCATED));
+    assert_eq!(page.count(), 3, "the page walks the grid's list");
+    until(|| page.full_size().is_some(), "the full size arrived");
+    assert_eq!(
+        page.full_size(),
+        Some((16, 24)),
+        "stored 24x16 with orientation 6, so it stands taller than wide"
+    );
+    assert!(page.held() <= 3, "the photo and one on each side, no more");
+
+    act("win.photo-first", None);
+    assert_eq!(page.path().as_deref(), Some(listed[0].as_str()));
+    act("win.photo-previous", None);
+    assert_eq!(page.position(), 0, "the first photo stays the first");
+    act("win.photo-next", None);
+    assert_eq!(
+        page.path().as_deref(),
+        Some(listed[1].as_str()),
+        "by name, as the grid shows it"
+    );
+    act("win.photo-last", None);
+    act("win.photo-next", None);
+    assert_eq!(
+        page.path().as_deref(),
+        Some(listed[2].as_str()),
+        "the last photo stays the last"
+    );
+
+    act("win.photo-close", None);
+    assert!(!gallery.photo_open(), "back to the grid");
+    assert!(page.path().is_none(), "the pictures were let go");
+    assert_eq!(page.held(), 0);
+    assert_eq!(
+        window.shown().unwrap().0.to_string(),
+        "all@Germany/2019-07-13 Sommerfest"
+    );
+    assert_eq!(gallery.order().key(), "name");
+    assert_eq!(gallery.selected(), 1, "the selection is as it was");
+
+    let grid = descendants(gallery.upcast_ref())
+        .into_iter()
+        .find_map(|widget| widget.downcast::<gtk::GridView>().ok())
+        .expect("the grid");
+    grid.emit_by_name::<()>("activate", &[&2u32]);
+    assert!(gallery.photo_open(), "Enter or a double-click opens the photo");
+    assert_eq!(page.path().as_deref(), Some(listed[2].as_str()));
+    act("win.photo-close", None);
+
+    // A photo whose file went bad since the scan keeps its thumbnail and says so.
+    let broken = library.join(&listed[0]);
+    let bytes = std::fs::read(&broken).unwrap();
+    std::fs::write(&broken, &bytes[..40]).unwrap();
+    act("win.show-photo", Some(listed[0].as_str()));
+    until(|| page.full_failed().is_some(), "the full size was refused");
+    until(|| page.shows_picture(), "the thumbnail is on screen");
+    assert!(page.full_size().is_none());
+    std::fs::write(&broken, &bytes).unwrap();
+    act("win.photo-close", None);
+
+    act("win.gallery-sort", Some("date"));
+    settle(window);
+    window.show_view("dashboard");
+}
+
+const LOCATED: &str = "Germany/2019-07-13 Sommerfest/img_0657.jpg";
+
+/// Runs the main loop until `done`, or fails after a while.
+fn until(done: impl Fn() -> bool, what: &str) {
+    let context = gtk::glib::MainContext::default();
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(20);
+    while !done() && std::time::Instant::now() < deadline {
+        context.iteration(false);
+    }
+    assert!(done(), "never happened: {what}");
 }
 
 /// Waits until the gallery has the photos it asked for.

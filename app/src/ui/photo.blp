@@ -1,0 +1,194 @@
+using Gtk 4.0;
+using Adw 1;
+
+template $PmPhotoPage: Adw.NavigationPage {
+  title: "Photo";
+  tag: "photo";
+
+  child: Adw.BreakpointBin {
+    width-request: 360;
+    height-request: 200;
+
+    Adw.Breakpoint {
+      condition ("max-width: 640sp")
+
+      setters {
+        split.collapsed: true;
+      }
+    }
+
+    child: Adw.ToastOverlay toasts {
+      child: Box {
+        orientation: vertical;
+
+        Box toolbar {
+          orientation: horizontal;
+          spacing: 6;
+          margin-top: 6;
+          margin-bottom: 6;
+          margin-start: 6;
+          margin-end: 6;
+
+          Button back_button {
+            icon-name: "go-previous-symbolic";
+            tooltip-text: "Back to the Gallery";
+            action-name: "win.photo-close";
+            valign: center;
+
+            accessibility {
+              label: "Back";
+            }
+          }
+
+          Box {
+            orientation: vertical;
+            hexpand: true;
+            valign: center;
+
+            Label name {
+              xalign: 0;
+              ellipsize: middle;
+
+              styles [
+                "heading",
+              ]
+            }
+
+            Label position {
+              xalign: 0;
+              ellipsize: end;
+
+              styles [
+                "caption",
+                "dim-label",
+              ]
+            }
+          }
+
+          Button open_with_button {
+            icon-name: "adw-external-link-symbolic";
+            tooltip-text: "Open in the Image Viewer";
+            action-name: "win.photo-open-with";
+            valign: center;
+
+            accessibility {
+              label: "Open in the Image Viewer";
+            }
+          }
+
+          ToggleButton edit_button {
+            icon-name: "document-edit-symbolic";
+            tooltip-text: "Edit";
+            action-name: "win.photo-edit";
+            valign: center;
+
+            accessibility {
+              label: "Edit";
+            }
+          }
+
+          ToggleButton panel_button {
+            icon-name: "sidebar-show-right-symbolic";
+            tooltip-text: "Show the Details (F9)";
+            active: bind split.show-sidebar bidirectional;
+            valign: center;
+
+            accessibility {
+              label: "Show the Details";
+            }
+          }
+        }
+
+        Separator {}
+
+        Adw.Banner banner {
+          revealed: false;
+        }
+
+        Adw.OverlaySplitView split {
+          vexpand: true;
+          sidebar-position: end;
+          sidebar-width-fraction: 0.34;
+          min-sidebar-width: 280;
+          max-sidebar-width: 420;
+
+          content: Overlay stage {
+            focusable: true;
+
+            child: Picture picture {
+              content-fit: contain;
+              can-shrink: true;
+
+              accessibility {
+                label: "Photo";
+              }
+            };
+
+            [overlay]
+            Button previous_button {
+              icon-name: "go-previous-symbolic";
+              tooltip-text: "Previous Photo";
+              action-name: "win.photo-previous";
+              halign: start;
+              valign: center;
+              margin-start: 12;
+
+              styles [
+                "osd",
+                "circular",
+              ]
+
+              accessibility {
+                label: "Previous Photo";
+              }
+            }
+
+            [overlay]
+            Button next_button {
+              icon-name: "go-next-symbolic";
+              tooltip-text: "Next Photo";
+              action-name: "win.photo-next";
+              halign: end;
+              valign: center;
+              margin-end: 12;
+
+              styles [
+                "osd",
+                "circular",
+              ]
+
+              accessibility {
+                label: "Next Photo";
+              }
+            }
+
+            [overlay]
+            Adw.Spinner loading {
+              halign: end;
+              valign: end;
+              margin-end: 12;
+              margin-bottom: 12;
+              width-request: 24;
+              height-request: 24;
+              visible: false;
+              tooltip-text: "Reading the full size";
+            }
+          };
+
+          sidebar: ScrolledWindow {
+            hscrollbar-policy: never;
+
+            child: Box panel {
+              orientation: vertical;
+              spacing: 18;
+              margin-top: 12;
+              margin-bottom: 12;
+              margin-start: 12;
+              margin-end: 12;
+            };
+          };
+        }
+      };
+    };
+  };
+}

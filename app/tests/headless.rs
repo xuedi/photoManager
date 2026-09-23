@@ -140,6 +140,7 @@ fn the_app_can_be_clicked_through_headless() {
     let gallery = pictured(&ui, lib, 2);
     assert_eq!(gallery["listed"].as_u64(), Some(2), "the grid holds them");
     assert_eq!(gallery["page"], "grid");
+    steps_through_one_photo_at_a_time(&ui, lib);
     ui.run(&["act", "win.show-view", "'dashboard'"], lib);
 
     ui.run(&["click", "Get Place Data", "--role", "button"], lib);
@@ -249,6 +250,63 @@ fn a_scope_is_what_the_demo_works_on(ui: &Ui, library: &Path) {
         std::thread::sleep(std::time::Duration::from_millis(500));
     }
     panic!("the demo never previewed the scope");
+}
+
+/// A photo opens from the gallery and the arrow keys walk the grid's list, in its order.
+fn steps_through_one_photo_at_a_time(ui: &Ui, library: &Path) {
+    ui.run(
+        &["act", "win.show-photos", "'all@Germany/2019-07-13 Sommerfest'"],
+        library,
+    );
+    ui.run(&["act", "win.gallery-sort", "'name'"], library);
+    pictured(ui, library, 3);
+    ui.run(
+        &["act", "win.show-photo", "'Germany/2019-07-13 Sommerfest/IMAG0001.jpg'"],
+        library,
+    );
+    let photo = arrived(ui, library);
+    assert_eq!(photo["position"].as_u64(), Some(0));
+    assert_eq!(photo["count"].as_u64(), Some(3));
+    assert_eq!(photo["picture"], true);
+
+    ui.run(&["key", "Right"], library);
+    let photo = state(ui, library)["photo"].clone();
+    assert_eq!(photo["path"], "Germany/2019-07-13 Sommerfest/img_0657.jpg");
+    assert_eq!(photo["position"].as_u64(), Some(1));
+    let photo = arrived(ui, library);
+    assert_eq!(
+        (photo["full"]["width"].as_u64(), photo["full"]["height"].as_u64()),
+        (Some(16), Some(24)),
+        "turned by its orientation"
+    );
+
+    ui.run(&["key", "End"], library);
+    ui.run(&["key", "Right"], library);
+    assert_eq!(
+        state(ui, library)["photo"]["position"].as_u64(),
+        Some(2),
+        "the end stays the end"
+    );
+    ui.run(&["key", "Home"], library);
+    assert_eq!(state(ui, library)["photo"]["position"].as_u64(), Some(0));
+
+    ui.run(&["key", "Escape"], library);
+    let back = state(ui, library);
+    assert!(back["photo"].is_null(), "Escape went back to the grid");
+    assert_eq!(back["gallery"]["filter"], "all@Germany/2019-07-13 Sommerfest");
+    ui.run(&["act", "win.gallery-sort", "'date'"], library);
+}
+
+/// Waits until the photo on screen has its full size.
+fn arrived(ui: &Ui, library: &Path) -> Value {
+    for _ in 0..60 {
+        let photo = state(ui, library)["photo"].clone();
+        if photo["full"].is_object() {
+            return photo;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(250));
+    }
+    panic!("the full size never arrived");
 }
 
 /// Waits until the gallery has its photos and at least this many cells show a picture.

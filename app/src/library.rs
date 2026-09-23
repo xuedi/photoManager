@@ -9,6 +9,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use photomanager_core::browse::{self, TagTree};
 use photomanager_core::cache::Cache;
 use photomanager_core::changeset::{self, ChangeSet, Wanted};
+use photomanager_core::details::Details;
 use photomanager_core::filter::{Filter, Listed, Order};
 use photomanager_core::geo::Geo;
 use photomanager_core::geo::import::Imported;
@@ -68,6 +69,17 @@ pub struct Library {
     /// Goes up whenever a scan or a fill-in pass is over, so what was read before can tell it
     /// is stale.
     version: Cell<u64>,
+    /// Told whenever the version goes up.
+    watchers: Watchers,
+}
+
+#[derive(Default)]
+struct Watchers(RefCell<Vec<Box<dyn Fn()>>>);
+
+impl std::fmt::Debug for Watchers {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{} watchers", self.0.borrow().len())
+    }
 }
 
 /// What the gallery's sidebars show.
@@ -104,6 +116,7 @@ impl Library {
             surveys: Cell::new(0),
             queries: Cell::new(0),
             version: Cell::new(0),
+            watchers: Watchers::default(),
         }))
     }
 
@@ -217,6 +230,24 @@ impl Library {
 
     pub fn version(&self) -> u64 {
         self.version.get()
+    }
+
+    /// Calls `changed` every time a scan or a fill-in pass is over.
+    pub fn connect_changed(&self, changed: impl Fn() + 'static) {
+        self.watchers.0.borrow_mut().push(Box::new(changed));
+    }
+
+    fn moved_on(&self) {
+        self.version.set(self.version.get() + 1);
+        for watcher in self.watchers.0.borrow().iter() {
+            watcher();
+        }
+    }
+
+    /// Everything the cache knows about one photo, read off the main thread.
+    pub fn details<F: FnOnce(Result<Option<Details>, String>) + 'static>(&self, rel_path: &str, done: F) {
+        let rel_path = rel_path.to_string();
+        self.read_off_thread(move |cache| Details::of(cache, &rel_path), done);
     }
 
     fn read_off_thread<T: Default + Send + 'static>(
@@ -631,7 +662,7 @@ impl Library {
                     Message::Done(done, total) => Event::Done(done, total),
                     Message::Filled(done) => {
                         this.scanning.set(false);
-                        this.version.set(this.version.get() + 1);
+                        this.moved_on();
                         Event::Filled(done)
                     }
                     _ => continue,
@@ -645,7 +676,7 @@ impl Library {
         *self.cache.borrow_mut() = Some(cache);
         *self.last.borrow_mut() = summary;
         self.scanning.set(false);
-        self.version.set(self.version.get() + 1);
+        self.moved_on();
     }
 }
 

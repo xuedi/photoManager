@@ -15,255 +15,264 @@ template $PmGallery: Adw.BreakpointBin {
   }
 
   child: Adw.ToastOverlay toasts {
-    child: Adw.OverlaySplitView split {
-      sidebar-width-fraction: 0.28;
-      min-sidebar-width: 220;
-      max-sidebar-width: 340;
+    child: Adw.NavigationView nav {
+      Adw.NavigationPage {
+        title: "Gallery";
+        tag: "grid";
 
-      sidebar: Box {
-        orientation: vertical;
+        child: Adw.OverlaySplitView split {
+          sidebar-width-fraction: 0.28;
+          min-sidebar-width: 220;
+          max-sidebar-width: 340;
 
-        Adw.ToggleGroup browse_by {
-          margin-top: 6;
-          margin-bottom: 6;
-          margin-start: 6;
-          margin-end: 6;
-          active-name: "places";
+          sidebar: Box {
+            orientation: vertical;
 
-          Adw.Toggle {
-            name: "places";
-            label: "Places";
-            tooltip: "Countries and events";
-          }
+            Adw.ToggleGroup browse_by {
+              margin-top: 6;
+              margin-bottom: 6;
+              margin-start: 6;
+              margin-end: 6;
+              active-name: "places";
 
-          Adw.Toggle {
-            name: "tags";
-            label: "Tags";
-            tooltip: "The tag tree";
-          }
-        }
+              Adw.Toggle {
+                name: "places";
+                label: "Places";
+                tooltip: "Countries and events";
+              }
 
-        Stack sidebars {
-          vexpand: true;
-
-          StackPage {
-            name: "places";
-
-            child: ScrolledWindow {
-              hscrollbar-policy: never;
-
-              child: ListView places_list {
-                single-click-activate: true;
-
-                styles [
-                  "navigation-sidebar",
-                ]
-
-                accessibility {
-                  label: "Places";
-                }
-              };
-            };
-          }
-
-          StackPage {
-            name: "tags";
-
-            child: ScrolledWindow {
-              hscrollbar-policy: never;
-
-              child: ListView tags_list {
-                single-click-activate: true;
-
-                styles [
-                  "navigation-sidebar",
-                ]
-
-                accessibility {
-                  label: "Tags";
-                }
-              };
-            };
-          }
-        }
-      };
-
-      content: Box {
-        orientation: vertical;
-
-        Box toolbar {
-          orientation: horizontal;
-          spacing: 6;
-          margin-top: 6;
-          margin-bottom: 6;
-          margin-start: 6;
-          margin-end: 6;
-
-          Box {
-            orientation: horizontal;
-            spacing: 6;
-            hexpand: true;
-
-            ToggleButton sidebar_button {
-              icon-name: "sidebar-show-symbolic";
-              tooltip-text: "Show the Sidebar";
-              valign: center;
-              active: bind split.show-sidebar bidirectional;
-
-              accessibility {
-                label: "Show the Sidebar";
+              Adw.Toggle {
+                name: "tags";
+                label: "Tags";
+                tooltip: "The tag tree";
               }
             }
 
-            Box {
-              orientation: vertical;
-              hexpand: true;
-              valign: center;
+            Stack sidebars {
+              vexpand: true;
 
-              Label title {
-                xalign: 0;
-                ellipsize: middle;
+              StackPage {
+                name: "places";
 
-                styles [
-                  "heading",
-                ]
+                child: ScrolledWindow {
+                  hscrollbar-policy: never;
+
+                  child: ListView places_list {
+                    single-click-activate: true;
+
+                    styles [
+                      "navigation-sidebar",
+                    ]
+
+                    accessibility {
+                      label: "Places";
+                    }
+                  };
+                };
               }
 
-              Label count {
-                xalign: 0;
+              StackPage {
+                name: "tags";
 
-                styles [
-                  "caption",
-                  "dim-label",
-                ]
+                child: ScrolledWindow {
+                  hscrollbar-policy: never;
+
+                  child: ListView tags_list {
+                    single-click-activate: true;
+
+                    styles [
+                      "navigation-sidebar",
+                    ]
+
+                    accessibility {
+                      label: "Tags";
+                    }
+                  };
+                };
               }
             }
-          }
+          };
 
-          Box {
-            orientation: horizontal;
-            spacing: 6;
-            halign: end;
+          content: Box {
+            orientation: vertical;
 
-            Box chips {
+            Box toolbar {
               orientation: horizontal;
               spacing: 6;
-              valign: center;
-            }
+              margin-top: 6;
+              margin-bottom: 6;
+              margin-start: 6;
+              margin-end: 6;
 
-            DropDown gap {
-              valign: center;
-              tooltip-text: "Only the photos missing a field";
+              Box {
+                orientation: horizontal;
+                spacing: 6;
+                hexpand: true;
 
-              accessibility {
-                label: "Missing Field";
-              }
-            }
+                ToggleButton sidebar_button {
+                  icon-name: "sidebar-show-symbolic";
+                  tooltip-text: "Show the Sidebar";
+                  valign: center;
+                  active: bind split.show-sidebar bidirectional;
 
-            DropDown sort {
-              valign: center;
-              tooltip-text: "Sort by";
-
-              accessibility {
-                label: "Sort By";
-              }
-            }
-          }
-        }
-
-        Separator {}
-
-        Stack pages {
-          vexpand: true;
-
-          StackPage {
-            name: "grid";
-
-            child: ScrolledWindow {
-              hscrollbar-policy: never;
-
-              child: GridView grid {
-                max-columns: 8;
-                min-columns: 2;
-                enable-rubberband: true;
-
-                accessibility {
-                  label: "Photos";
+                  accessibility {
+                    label: "Show the Sidebar";
+                  }
                 }
-              };
-            };
-          }
 
-          StackPage {
-            name: "files";
+                Box {
+                  orientation: vertical;
+                  hexpand: true;
+                  valign: center;
 
-            child: ScrolledWindow {
-              child: ListView files {
+                  Label title {
+                    xalign: 0;
+                    ellipsize: middle;
+
+                    styles [
+                      "heading",
+                    ]
+                  }
+
+                  Label count {
+                    xalign: 0;
+
+                    styles [
+                      "caption",
+                      "dim-label",
+                    ]
+                  }
+                }
+              }
+
+              Box {
+                orientation: horizontal;
+                spacing: 6;
+                halign: end;
+
+                Box chips {
+                  orientation: horizontal;
+                  spacing: 6;
+                  valign: center;
+                }
+
+                DropDown gap {
+                  valign: center;
+                  tooltip-text: "Only the photos missing a field";
+
+                  accessibility {
+                    label: "Missing Field";
+                  }
+                }
+
+                DropDown sort {
+                  valign: center;
+                  tooltip-text: "Sort by";
+
+                  accessibility {
+                    label: "Sort By";
+                  }
+                }
+              }
+            }
+
+            Separator {}
+
+            Stack pages {
+              vexpand: true;
+
+              StackPage {
+                name: "grid";
+
+                child: ScrolledWindow {
+                  hscrollbar-policy: never;
+
+                  child: GridView grid {
+                    max-columns: 8;
+                    min-columns: 2;
+                    enable-rubberband: true;
+
+                    accessibility {
+                      label: "Photos";
+                    }
+                  };
+                };
+              }
+
+              StackPage {
+                name: "files";
+
+                child: ScrolledWindow {
+                  child: ListView files {
+                    styles [
+                      "rich-list",
+                    ]
+
+                    accessibility {
+                      label: "Files";
+                    }
+                  };
+                };
+              }
+
+              StackPage {
+                name: "empty";
+
+                child: Adw.StatusPage empty {
+                  icon-name: "image-x-generic-symbolic";
+                  title: "No Photos";
+                  description: "Nothing here matches. Pick another place, tag or field.";
+                };
+              }
+            }
+
+            ActionBar selection_bar {
+              revealed: false;
+
+              [start]
+              Label selected {
+                ellipsize: end;
+              }
+
+              [end]
+              Button scope_button {
+                label: "Use as Scope";
+                action-name: "win.use-as-scope";
+
                 styles [
-                  "rich-list",
+                  "suggested-action",
                 ]
 
                 accessibility {
-                  label: "Files";
+                  label: "Use as Scope";
                 }
-              };
-            };
-          }
+              }
 
-          StackPage {
-            name: "empty";
+              [end]
+              Button select_none_button {
+                label: "Select None";
+                action-name: "win.gallery-select-none";
 
-            child: Adw.StatusPage empty {
-              icon-name: "image-x-generic-symbolic";
-              title: "No Photos";
-              description: "Nothing here matches. Pick another place, tag or field.";
-            };
-          }
-        }
+                accessibility {
+                  label: "Select None";
+                }
+              }
 
-        ActionBar selection_bar {
-          revealed: false;
+              [end]
+              Button select_all_button {
+                label: "Select All";
+                action-name: "win.gallery-select-all";
 
-          [start]
-          Label selected {
-            ellipsize: end;
-          }
-
-          [end]
-          Button scope_button {
-            label: "Use as Scope";
-            action-name: "win.use-as-scope";
-
-            styles [
-              "suggested-action",
-            ]
-
-            accessibility {
-              label: "Use as Scope";
+                accessibility {
+                  label: "Select All";
+                }
+              }
             }
-          }
+          };
+        };
+      }
 
-          [end]
-          Button select_none_button {
-            label: "Select None";
-            action-name: "win.gallery-select-none";
-
-            accessibility {
-              label: "Select None";
-            }
-          }
-
-          [end]
-          Button select_all_button {
-            label: "Select All";
-            action-name: "win.gallery-select-all";
-
-            accessibility {
-              label: "Select All";
-            }
-          }
-        }
-      };
+      $PmPhotoPage photo {}
     };
   };
 }

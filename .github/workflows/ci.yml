@@ -20,6 +20,7 @@ jobs:
           pacman -Syu --noconfirm --needed \
             base-devel git rustup \
             gtk4 libadwaita libgexiv2 libjpeg-turbo libwebp \
+            glycin bubblewrap libseccomp libshumate \
             blueprint-compiler just perl-image-exiftool
           rustup default stable
           rustup component add rustfmt clippy

@@ -5,6 +5,9 @@
 //!
 //! The grid is a `GtkGridView` over a list store of small cell objects, bound by hand in the
 //! factory. A cell asks for its picture when it is bound and lets go of it when it is unbound.
+//!
+//! Enter or a double-click opens a photo on a page pushed over the grid; Back returns to the grid
+//! at that photo, with the filter, the order and the selection as they were.
 
 use std::cell::{Cell, OnceCell, RefCell};
 use std::rc::Rc;
@@ -19,6 +22,7 @@ use photomanager_core::filter::{Filter, Gap, Kind, Listed, Order};
 use photomanager_core::scope::Scope;
 
 use crate::library::{Library, Sidebars};
+use crate::photo::PhotoPage;
 use crate::thumbnails::{self, Loader, Request, Slot};
 
 const ORDERS: [Order; 2] = [Order::Date, Order::Name];
@@ -236,7 +240,7 @@ mod thumb {
 }
 
 use node::Node;
-use photo::Photo;
+pub(crate) use photo::Photo;
 use thumb::Thumb;
 
 mod imp {
@@ -247,6 +251,10 @@ mod imp {
     pub struct Gallery {
         #[template_child]
         pub toasts: TemplateChild<adw::ToastOverlay>,
+        #[template_child]
+        pub nav: TemplateChild<adw::NavigationView>,
+        #[template_child]
+        pub photo: TemplateChild<PhotoPage>,
         #[template_child]
         pub split: TemplateChild<adw::OverlaySplitView>,
         #[template_child]
@@ -310,6 +318,7 @@ mod imp {
         type ParentType = adw::BreakpointBin;
 
         fn class_init(klass: &mut Self::Class) {
+            PhotoPage::ensure_type();
             klass.bind_template();
         }
 
@@ -324,6 +333,7 @@ mod imp {
             let gallery = self.obj();
             gallery.build_controls();
             gallery.build_grid();
+            gallery.build_photo();
             gallery.build_files();
             let places = gallery.build_tree(&self.places_list, gallery.places_store(), true);
             let _ = self.place_tree.set(places);
@@ -366,6 +376,7 @@ impl Gallery {
         *imp.loader.borrow_mut() = library
             .as_ref()
             .map(|library| thumbnails::textures(library.thumbs().clone()));
+        imp.photo.set_library(library.clone(), imp.loader.borrow().clone());
         *imp.library.borrow_mut() = library;
         imp.seen.set(None);
         if imp.filter.borrow().is_some() {
@@ -524,6 +535,49 @@ impl Gallery {
             ),
             paths,
         })
+    }
+
+    pub fn photo(&self) -> PhotoPage {
+        self.imp().photo.clone()
+    }
+
+    /// Whether a photo is open on its own page.
+    pub fn photo_open(&self) -> bool {
+        self.imp()
+            .nav
+            .visible_page()
+            .is_some_and(|page| page.tag().as_deref() == Some("photo"))
+    }
+
+    /// Opens the photo at this position of the grid.
+    pub fn open(&self, at: u32) {
+        let imp = self.imp();
+        if at >= self.photos_store().n_items() {
+            return;
+        }
+        if !self.photo_open() {
+            imp.nav.push_by_tag("photo");
+        }
+        imp.photo.open(at);
+        tracing::info!(photo = imp.photo.path(), "photo opened");
+    }
+
+    /// Opens a photo by its path, when the grid holds it.
+    pub fn show_photo(&self, rel_path: &str) -> bool {
+        match self.listed().iter().position(|path| path == rel_path) {
+            Some(at) => {
+                self.open(at as u32);
+                true
+            }
+            None => false,
+        }
+    }
+
+    /// Back to the grid.
+    pub fn close_photo(&self) {
+        if self.photo_open() {
+            self.imp().nav.pop();
+        }
     }
 
     pub fn say(&self, text: &str) {
@@ -817,6 +871,31 @@ impl Gallery {
             }
         ));
         imp.grid.set_factory(Some(&factory));
+    }
+
+    fn build_photo(&self) {
+        let imp = self.imp();
+        imp.photo.set_list(self.photos_store());
+        imp.grid.connect_activate(glib::clone!(
+            #[weak(rename_to = gallery)]
+            self,
+            move |_, at| gallery.open(at)
+        ));
+        imp.nav.connect_popped(glib::clone!(
+            #[weak(rename_to = gallery)]
+            self,
+            move |_, page| {
+                if page.tag().as_deref() != Some("photo") {
+                    return;
+                }
+                let photo = &gallery.imp().photo;
+                let at = photo.position();
+                photo.close_down();
+                if at < gallery.photos_store().n_items() {
+                    gallery.imp().grid.scroll_to(at, gtk::ListScrollFlags::FOCUS, None);
+                }
+            }
+        ));
     }
 
     /// Where a cell's picture comes from. A file that is not a photo has none to ask for.

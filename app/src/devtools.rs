@@ -147,6 +147,20 @@ fn state(window: &Window, paths: &Paths, library: Option<&Library>) -> String {
             "toast": shown.toast(),
         })
     });
+    let page = shown.photo();
+    let photo = shown.photo_open().then(|| {
+        serde_json::json!({
+            "path": page.path(),
+            "position": page.position(),
+            "count": page.count(),
+            "full": page.full_size().map(|(width, height)| serde_json::json!({ "width": width, "height": height })),
+            "failed": page.full_failed(),
+            "held": page.held(),
+            "picture": page.shows_picture(),
+            "panel": page.shows_panel(),
+            "toast": page.toast(),
+        })
+    });
     let scope = window.scope().map(|scope| match scope {
         Scope::Filter(filter) => serde_json::json!({ "filter": filter.to_string(), "title": filter.title() }),
         Scope::Photos { title, paths } => serde_json::json!({ "title": title, "paths": paths }),
@@ -156,6 +170,7 @@ fn state(window: &Window, paths: &Paths, library: Option<&Library>) -> String {
         "field": dashboard.field().key(),
         "listed": dashboard.listed_places(),
         "gallery": gallery,
+        "photo": photo,
         "scope": scope,
         "page": window.tools().showing(),
         "preview": previewed,

@@ -143,6 +143,15 @@ pub struct Loader<T: Clone + 'static> {
     inner: Rc<Inner<T>>,
 }
 
+/// Another handle on the same loader: the same workers, the same pictures kept.
+impl<T: Clone + 'static> Clone for Loader<T> {
+    fn clone(&self) -> Self {
+        Loader {
+            inner: self.inner.clone(),
+        }
+    }
+}
+
 impl<T: Clone + 'static> std::fmt::Debug for Loader<T> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("Loader").field("kept", &self.kept()).finish()

@@ -274,6 +274,31 @@ impl Window {
         let undo = gtk::gio::ActionEntry::builder("undo-last")
             .activate(|window: &Window, _, _| window.preview().undo())
             .build();
+        let show_photo = gtk::gio::ActionEntry::builder("show-photo")
+            .parameter_type(Some(glib::VariantTy::STRING))
+            .activate(|window: &Window, _, parameter| {
+                let Some(path) = parameter.and_then(|value| value.str()) else {
+                    return;
+                };
+                window.show_view("gallery");
+                if !window.imp().gallery.show_photo(path) {
+                    tracing::warn!(photo = path, "the gallery does not show that photo");
+                }
+            })
+            .build();
+        let photo = |name: &str, act: fn(&crate::photo::PhotoPage)| {
+            gtk::gio::ActionEntry::builder(name)
+                .activate(move |window: &Window, _, _| {
+                    let gallery = &window.imp().gallery;
+                    if gallery.photo_open() {
+                        act(&gallery.photo());
+                    }
+                })
+                .build()
+        };
+        let photo_close = gtk::gio::ActionEntry::builder("photo-close")
+            .activate(|window: &Window, _, _| window.imp().gallery.close_photo())
+            .build();
         self.add_action_entries([
             show_view,
             show_photos,
@@ -294,6 +319,14 @@ impl Window {
             apply,
             stop,
             undo,
+            show_photo,
+            photo("photo-next", |page| page.step(1)),
+            photo("photo-previous", |page| page.step(-1)),
+            photo("photo-first", |page| page.first()),
+            photo("photo-last", |page| page.last()),
+            photo("photo-panel", |page| page.toggle_panel()),
+            photo("photo-open-with", |page| page.open_with()),
+            photo_close,
         ]);
     }
 }
