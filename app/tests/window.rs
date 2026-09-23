@@ -2,8 +2,9 @@ use adw::prelude::*;
 use photomanager::library::Library;
 use photomanager::window::{VIEWS, Window};
 use photomanager_core::changeset::Wanted;
-use photomanager_core::filter::Gap;
+use photomanager_core::filter::{Filter, Gap};
 use photomanager_core::paths::Paths;
+use photomanager_core::scope::Scope;
 use photomanager_core::write::{Change, Field};
 use std::rc::Rc;
 
@@ -104,6 +105,7 @@ fn scans_into_its_cache() {
     assert!(cache_db.starts_with(&base), "the cache stayed in the test home");
 
     surveys_what_is_missing(&window, &opened);
+    browses_the_gallery(&window, &opened);
 
     assert_eq!(
         opened.counts().thumbnails as usize,
@@ -251,6 +253,155 @@ fn surveys_what_is_missing(window: &Window, opened: &Rc<Library>) {
         "a name that means nothing changes nothing"
     );
     window.show_view("dashboard");
+}
+
+/// The gallery shows exactly the photos of its filter, and each control changes only its part.
+fn browses_the_gallery(window: &Window, opened: &Rc<Library>) {
+    let gallery = window.gallery();
+    let act = |name: &str, target: &str| {
+        WidgetExt::activate_action(window, name, Some(&target.to_variant())).unwrap();
+        settle(window);
+    };
+    let filter = || window.shown().unwrap().0.to_string();
+    let listed = || window.gallery().listed();
+    let all = photomanager_core::fixtures::photo_count();
+
+    act("win.show-photos", "no-gps@Germany");
+    assert_eq!(gallery.page(), "grid");
+    assert_eq!(listed().len(), 2, "the grid holds exactly the photos counted");
+    assert_eq!(window.shown().unwrap().1, Some(2));
+
+    act("win.show-photos", "all");
+    act("win.gallery-place", "Germany/2019-07-13 Sommerfest");
+    assert_eq!(filter(), "all@Germany/2019-07-13 Sommerfest");
+    assert_eq!(listed().len(), 3);
+    act("win.gallery-tag", "people");
+    assert_eq!(filter(), "tag:people@Germany/2019-07-13 Sommerfest");
+    assert_eq!(
+        listed(),
+        ["Germany/2019-07-13 Sommerfest/IMAG0001.jpg"],
+        "the event and the tag"
+    );
+    act("win.gallery-tag", "people");
+    assert_eq!(
+        filter(),
+        "all@Germany/2019-07-13 Sommerfest",
+        "the chosen tag again widens back"
+    );
+    assert_eq!(listed().len(), 3);
+    act("win.gallery-place", "Germany/2019-07-13 Sommerfest");
+    assert_eq!(filter(), "all");
+
+    let gap = descendants(gallery.upcast_ref())
+        .into_iter()
+        .filter_map(|widget| widget.downcast::<gtk::DropDown>().ok())
+        .find(|dropdown| {
+            dropdown
+                .model()
+                .is_some_and(|model| model.n_items() as usize == Gap::ALL.len() + 1)
+        })
+        .expect("the gap dropdown");
+    gap.set_selected(1);
+    settle(window);
+    let picked = window.shown().unwrap().0;
+    WidgetExt::activate_action(window, "win.show-photos", Some(&"no-gps".to_variant())).unwrap();
+    settle(window);
+    assert_eq!(
+        picked,
+        window.shown().unwrap().0,
+        "the dropdown and the dashboard set the same part"
+    );
+    assert_eq!(listed().len(), all - 1);
+    act("win.gallery-gap", "none");
+    assert_eq!(filter(), "all");
+    assert_eq!(gap.selected(), 0, "the dropdown follows the filter");
+
+    act("win.gallery-sort", "name");
+    let mut paths: Vec<String> = photomanager_core::fixtures::photo_paths()
+        .into_iter()
+        .map(String::from)
+        .collect();
+    paths.sort();
+    assert_eq!(listed(), paths, "by name is path order");
+    act("win.gallery-sort", "date");
+    assert_ne!(listed(), paths);
+    assert_eq!(listed().len(), all);
+
+    act("win.show-photos", "no-gps+loose");
+    assert_eq!(gallery.chips(), ["Loose files"]);
+    assert_eq!(listed(), ["China/IMG_3140.JPG"]);
+    let chip = descendants(gallery.upcast_ref())
+        .into_iter()
+        .filter_map(|widget| widget.downcast::<gtk::Button>().ok())
+        .find(|button| button.tooltip_text().as_deref() == Some("Show without this"))
+        .expect("a chip for the loose part");
+    chip.emit_clicked();
+    settle(window);
+    assert_eq!(filter(), "no-gps", "the chip took its part out and nothing else");
+    assert!(gallery.chips().is_empty());
+
+    act("win.show-photos", "issue:not a photo");
+    assert_eq!(gallery.page(), "empty", "the fixture has no file that is not a photo");
+
+    selects_and_hands_on_a_scope(window, opened);
+}
+
+/// Selecting counts; everything or nothing is the filter itself, a few are their paths.
+fn selects_and_hands_on_a_scope(window: &Window, opened: &Rc<Library>) {
+    let gallery = window.gallery();
+    WidgetExt::activate_action(window, "win.show-photos", Some(&"no-gps".to_variant())).unwrap();
+    settle(window);
+    let listed = gallery.listed();
+    assert_eq!(gallery.selected(), 0);
+    assert_eq!(
+        gallery.scope(),
+        Some(Scope::Filter("no-gps".parse().unwrap())),
+        "nothing selected is all of it"
+    );
+
+    gallery.select(0, true);
+    gallery.select(2, true);
+    assert_eq!(gallery.selected(), 2);
+    let Some(Scope::Photos { paths, .. }) = gallery.scope() else {
+        panic!("a few selected photos are a list of them");
+    };
+    assert_eq!(paths, [listed[0].clone(), listed[2].clone()], "in grid order");
+
+    WidgetExt::activate_action(window, "win.gallery-select-all", None).unwrap();
+    assert_eq!(gallery.selected() as usize, listed.len());
+    WidgetExt::activate_action(window, "win.use-as-scope", None).unwrap();
+    assert_eq!(
+        window.scope(),
+        Some(Scope::Filter(Filter::missing(Gap::Gps))),
+        "all selected is the filter, not its paths"
+    );
+    assert!(gallery.toast().contains("without GPS"), "{}", gallery.toast());
+    assert_eq!(opened.scope_paths(&window.scope().unwrap()), {
+        let mut sorted = listed.clone();
+        sorted.sort();
+        sorted
+    });
+
+    WidgetExt::activate_action(window, "win.gallery-select-none", None).unwrap();
+    gallery.select(1, true);
+    WidgetExt::activate_action(window, "win.use-as-scope", None).unwrap();
+    assert_eq!(opened.scope_paths(&window.scope().unwrap()), [listed[1].clone()]);
+
+    WidgetExt::activate_action(window, "win.gallery-place", Some(&"Germany".to_variant())).unwrap();
+    assert_eq!(gallery.selected(), 0, "another filter, no selection");
+    settle(window);
+    assert_eq!(gallery.selected(), 0);
+    window.show_view("dashboard");
+}
+
+/// Waits until the gallery has the photos it asked for.
+fn settle(window: &Window) {
+    let context = gtk::glib::MainContext::default();
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+    while window.gallery().is_loading() && std::time::Instant::now() < deadline {
+        context.iteration(false);
+    }
+    assert!(!window.gallery().is_loading(), "the photos never arrived");
 }
 
 fn labels(widget: &gtk::Widget) -> Vec<String> {

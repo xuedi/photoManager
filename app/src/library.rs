@@ -6,9 +6,10 @@ use std::rc::Rc;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 
+use photomanager_core::browse::{self, TagTree};
 use photomanager_core::cache::Cache;
 use photomanager_core::changeset::{self, ChangeSet, Wanted};
-use photomanager_core::filter::Filter;
+use photomanager_core::filter::{Filter, Listed, Order};
 use photomanager_core::geo::Geo;
 use photomanager_core::geo::import::Imported;
 use photomanager_core::journal::{Journal, Kind, Pass};
@@ -62,6 +63,18 @@ pub struct Library {
     survey: RefCell<Option<Rc<Survey>>>,
     /// Which survey is the newest asked for, so an older one that arrives late is dropped.
     surveys: Cell<u64>,
+    /// The same for the gallery's queries.
+    queries: Cell<u64>,
+    /// Goes up whenever a scan or a fill-in pass is over, so what was read before can tell it
+    /// is stale.
+    version: Cell<u64>,
+}
+
+/// What the gallery's sidebars show.
+#[derive(Debug, Clone, Default)]
+pub struct Sidebars {
+    pub places: Vec<browse::Place>,
+    pub tags: TagTree,
 }
 
 impl Library {
@@ -89,6 +102,8 @@ impl Library {
             last: RefCell::new(None),
             survey: RefCell::new(None),
             surveys: Cell::new(0),
+            queries: Cell::new(0),
+            version: Cell::new(0),
         }))
     }
 
@@ -162,6 +177,67 @@ impl Library {
                 *this.survey.borrow_mut() = Some(survey.clone());
                 survey
             }));
+        });
+    }
+
+    /// The photos of a filter in the order asked for, read off the main thread through a
+    /// read-only look at the cache. Only the newest query asked for is answered.
+    pub fn query<F: FnOnce(Result<Vec<Listed>, String>) + 'static>(
+        self: &Rc<Self>,
+        filter: &Filter,
+        order: Order,
+        done: F,
+    ) {
+        let asked = self.queries.get() + 1;
+        self.queries.set(asked);
+        let this = self.clone();
+        let filter = filter.clone();
+        self.read_off_thread(
+            move |cache| filter.photos(cache, order),
+            move |found| {
+                if this.queries.get() == asked {
+                    done(found);
+                }
+            },
+        );
+    }
+
+    /// The countries, the events and the tags, with their counts.
+    pub fn sidebars<F: FnOnce(Result<Sidebars, String>) + 'static>(&self, done: F) {
+        self.read_off_thread(
+            |cache| {
+                Ok(Sidebars {
+                    places: browse::places(cache)?,
+                    tags: TagTree::take(cache)?,
+                })
+            },
+            done,
+        );
+    }
+
+    pub fn version(&self) -> u64 {
+        self.version.get()
+    }
+
+    fn read_off_thread<T: Default + Send + 'static>(
+        &self,
+        read: impl FnOnce(&Cache) -> photomanager_core::cache::Result<T> + Send + 'static,
+        done: impl FnOnce(Result<T, String>) + 'static,
+    ) {
+        let (sender, receiver) = async_channel::bounded(1);
+        let file = self.paths.cache_db();
+        std::thread::spawn(move || {
+            let read = match Cache::read_only(&file) {
+                Ok(Some(cache)) => read(&cache),
+                Ok(None) => Ok(T::default()),
+                Err(error) => Err(error),
+            };
+            let _ = sender.send_blocking(read.map_err(|error| error.to_string()));
+        });
+        gtk::glib::spawn_future_local(async move {
+            if let Ok(read) = receiver.recv().await {
+                done(read);
+            }
         });
     }
 
@@ -271,6 +347,15 @@ impl Library {
         paths.sort();
         paths.truncate(limit);
         paths
+    }
+
+    /// The photos a scope names, or none while the cache is out.
+    pub fn scope_paths(&self, scope: &photomanager_core::scope::Scope) -> Vec<String> {
+        let cache = self.cache.borrow();
+        cache
+            .as_ref()
+            .and_then(|cache| scope.paths(cache).ok())
+            .unwrap_or_default()
     }
 
     /// Whether the user still has to be asked before anything is ever written to a photo.
@@ -546,6 +631,7 @@ impl Library {
                     Message::Done(done, total) => Event::Done(done, total),
                     Message::Filled(done) => {
                         this.scanning.set(false);
+                        this.version.set(this.version.get() + 1);
                         Event::Filled(done)
                     }
                     _ => continue,
@@ -559,6 +645,7 @@ impl Library {
         *self.cache.borrow_mut() = Some(cache);
         *self.last.borrow_mut() = summary;
         self.scanning.set(false);
+        self.version.set(self.version.get() + 1);
     }
 }
 

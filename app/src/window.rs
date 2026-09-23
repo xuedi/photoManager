@@ -4,10 +4,12 @@ use adw::prelude::*;
 use adw::subclass::prelude::*;
 use gtk::glib;
 use gtk::glib::subclass::InitializingObject;
-use photomanager_core::filter::Filter;
+use photomanager_core::filter::{Filter, Gap, Order};
 use photomanager_core::scan::Mode;
+use photomanager_core::scope::Scope;
 
 use crate::dashboard::Dashboard;
+use crate::gallery::Gallery;
 use crate::library::Library;
 use crate::preview::Preview;
 use crate::tools::Tools;
@@ -29,10 +31,10 @@ mod imp {
         #[template_child]
         pub tools: TemplateChild<Tools>,
         #[template_child]
-        pub gallery: TemplateChild<adw::StatusPage>,
+        pub gallery: TemplateChild<Gallery>,
         pub library: std::cell::RefCell<Option<Rc<Library>>>,
-        /// The photos last handed to the gallery, and how many there were.
-        pub shown: std::cell::RefCell<Option<(Filter, Option<i64>)>>,
+        /// What the next tool works on, as the gallery handed it over.
+        pub scope: std::cell::RefCell<Option<Scope>>,
     }
 
     #[glib::object_subclass]
@@ -43,6 +45,7 @@ mod imp {
 
         fn class_init(klass: &mut Self::Class) {
             Dashboard::ensure_type();
+            Gallery::ensure_type();
             Tools::ensure_type();
             klass.bind_template();
         }
@@ -80,6 +83,7 @@ impl Window {
     pub fn set_library(&self, library: Option<Rc<Library>>) {
         self.imp().dashboard.set_library(library.clone());
         self.imp().tools.set_library(library.clone());
+        self.imp().gallery.set_library(library.clone());
         *self.imp().library.borrow_mut() = library;
     }
 
@@ -89,6 +93,10 @@ impl Window {
 
     pub fn dashboard(&self) -> Dashboard {
         self.imp().dashboard.clone()
+    }
+
+    pub fn gallery(&self) -> Gallery {
+        self.imp().gallery.clone()
     }
 
     pub fn tools(&self) -> Tools {
@@ -109,25 +117,37 @@ impl Window {
 
     /// Hands a set of photos to the gallery and shows it.
     pub fn show_photos(&self, filter: Filter) {
-        let count = self.library().and_then(|library| library.count(&filter));
-        let gallery = &self.imp().gallery;
-        gallery.set_title(&filter.title());
-        let noun = match filter.is_of_files() {
-            true => ("file", "files"),
-            false => ("photo", "photos"),
-        };
-        gallery.set_description(Some(&match count {
-            Some(1) => format!("1 {}", noun.0),
-            Some(count) => format!("{count} {}", noun.1),
-            None => "The library is busy, try again in a moment.".to_string(),
-        }));
-        tracing::info!(filter = %filter, count, "photos shown");
-        *self.imp().shown.borrow_mut() = Some((filter, count));
+        self.imp().gallery.show(filter);
         self.show_view("gallery");
     }
 
     pub fn shown(&self) -> Option<(Filter, Option<i64>)> {
-        self.imp().shown.borrow().clone()
+        self.imp().gallery.shown()
+    }
+
+    /// Makes what the gallery shows, or what is selected in it, what the next tool works on.
+    pub fn use_as_scope(&self) {
+        let gallery = &self.imp().gallery;
+        let Some(scope) = gallery.scope() else {
+            return;
+        };
+        let told = match &scope {
+            Scope::Filter(filter) => {
+                let count = self.library().and_then(|library| library.count(filter));
+                match count {
+                    Some(count) => format!("The scope is now {} ({count})", lowercase_first(&filter.title())),
+                    None => format!("The scope is now {}", lowercase_first(&filter.title())),
+                }
+            }
+            Scope::Photos { paths, .. } => format!("The scope is now the {} selected photos", paths.len()),
+        };
+        tracing::info!(scope = scope.title(), "scope set");
+        gallery.say(&told);
+        *self.imp().scope.borrow_mut() = Some(scope);
+    }
+
+    pub fn scope(&self) -> Option<Scope> {
+        self.imp().scope.borrow().clone()
     }
 
     pub fn visible_view(&self) -> String {
@@ -171,6 +191,53 @@ impl Window {
                 }
             })
             .build();
+        let sort = gtk::gio::ActionEntry::builder("gallery-sort")
+            .parameter_type(Some(glib::VariantTy::STRING))
+            .activate(|window: &Window, _, parameter| {
+                match parameter.and_then(|value| value.str()).and_then(Order::named) {
+                    Some(order) => window.imp().gallery.set_order(order),
+                    None => tracing::warn!("no such order"),
+                }
+            })
+            .build();
+        let gap = gtk::gio::ActionEntry::builder("gallery-gap")
+            .parameter_type(Some(glib::VariantTy::STRING))
+            .activate(|window: &Window, _, parameter| {
+                let Some(key) = parameter.and_then(|value| value.str()) else {
+                    return;
+                };
+                match (key, Gap::ALL.into_iter().find(|gap| gap.key() == key)) {
+                    ("none", _) => window.imp().gallery.set_gap(None),
+                    (_, Some(gap)) => window.imp().gallery.set_gap(Some(gap)),
+                    _ => tracing::warn!(key, "no such field"),
+                }
+            })
+            .build();
+        let place = gtk::gio::ActionEntry::builder("gallery-place")
+            .parameter_type(Some(glib::VariantTy::STRING))
+            .activate(|window: &Window, _, parameter| {
+                if let Some(folder) = parameter.and_then(|value| value.str()) {
+                    window.imp().gallery.choose_place(folder);
+                }
+            })
+            .build();
+        let tag = gtk::gio::ActionEntry::builder("gallery-tag")
+            .parameter_type(Some(glib::VariantTy::STRING))
+            .activate(|window: &Window, _, parameter| {
+                if let Some(path) = parameter.and_then(|value| value.str()) {
+                    window.imp().gallery.choose_tag(path);
+                }
+            })
+            .build();
+        let gallery_all = gtk::gio::ActionEntry::builder("gallery-select-all")
+            .activate(|window: &Window, _, _| window.imp().gallery.select_all())
+            .build();
+        let gallery_none = gtk::gio::ActionEntry::builder("gallery-select-none")
+            .activate(|window: &Window, _, _| window.imp().gallery.select_none())
+            .build();
+        let use_as_scope = gtk::gio::ActionEntry::builder("use-as-scope")
+            .activate(|window: &Window, _, _| window.use_as_scope())
+            .build();
         let scan = gtk::gio::ActionEntry::builder("scan")
             .activate(|window: &Window, _, _| window.imp().dashboard.scan(Mode::Reconcile))
             .build();
@@ -210,6 +277,13 @@ impl Window {
         self.add_action_entries([
             show_view,
             show_photos,
+            sort,
+            gap,
+            place,
+            tag,
+            gallery_all,
+            gallery_none,
+            use_as_scope,
             scan,
             fill,
             places,
@@ -221,5 +295,13 @@ impl Window {
             stop,
             undo,
         ]);
+    }
+}
+
+fn lowercase_first(text: &str) -> String {
+    let mut chars = text.chars();
+    match chars.next() {
+        Some(first) => first.to_lowercase().chain(chars).collect(),
+        None => String::new(),
     }
 }

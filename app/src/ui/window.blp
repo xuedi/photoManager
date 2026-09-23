@@ -62,11 +62,7 @@ template $PmWindow: Adw.ApplicationWindow {
         title: "Gallery";
         icon-name: "image-x-generic-symbolic";
 
-        child: Adw.StatusPage gallery {
-          icon-name: "image-x-generic-symbolic";
-          title: "Gallery";
-          description: "Browse by country, event and tag, and pick the photos to work on.";
-        };
+        child: $PmGallery gallery {};
       }
 
       Adw.ViewStackPage {

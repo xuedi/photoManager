@@ -137,6 +137,9 @@ fn the_app_can_be_clicked_through_headless() {
         Some(2),
         "with exactly the photos it counted"
     );
+    let gallery = pictured(&ui, lib, 2);
+    assert_eq!(gallery["listed"].as_u64(), Some(2), "the grid holds them");
+    assert_eq!(gallery["page"], "grid");
     ui.run(&["act", "win.show-view", "'dashboard'"], lib);
 
     ui.run(&["click", "Get Place Data", "--role", "button"], lib);
@@ -144,6 +147,7 @@ fn the_app_can_be_clicked_through_headless() {
     assert_eq!(places["places"].as_u64(), Some(149), "the excerpt was imported");
 
     previews_applies_and_takes_it_back(&ui, lib);
+    a_scope_is_what_the_demo_works_on(&ui, lib);
 
     ui.run(&["act", "win.show-view", "'suggestions'"], lib);
     let state = state(&ui, lib);
@@ -214,6 +218,50 @@ fn previews_applies_and_takes_it_back(ui: &Ui, library: &Path) {
     let again = written(ui, library, "write", applied["batch"].as_i64().unwrap());
     assert_eq!(again["written"].as_u64(), Some(5));
     assert_eq!(rating_of(&first), Some(3));
+}
+
+/// What the gallery shows becomes the scope, and the next change set is about exactly those
+/// photos. Previewed only: nothing is applied.
+fn a_scope_is_what_the_demo_works_on(ui: &Ui, library: &Path) {
+    ui.run(&["act", "win.show-photos", "'no-gps@Germany'"], library);
+    pictured(ui, library, 2);
+    ui.run(&["act", "win.gallery-select-all"], library);
+    assert_eq!(state(ui, library)["gallery"]["selected"].as_u64(), Some(2));
+    ui.run(&["click", "Use as Scope", "--role", "button"], library);
+    let state_now = state(ui, library);
+    assert_eq!(
+        state_now["scope"]["filter"], "no-gps@Germany",
+        "the whole filter, not its paths"
+    );
+    assert!(
+        state_now["gallery"]["toast"].as_str().unwrap().contains("(2)"),
+        "the toast says what the scope is: {}",
+        state_now["gallery"]["toast"]
+    );
+
+    ui.run(&["act", "win.preview-demo"], library);
+    for _ in 0..60 {
+        let state = state(ui, library);
+        if state["preview"]["photos"].as_u64() == Some(2) {
+            assert_eq!(state["preview"]["change"].as_u64(), Some(2));
+            return;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(500));
+    }
+    panic!("the demo never previewed the scope");
+}
+
+/// Waits until the gallery has its photos and at least this many cells show a picture.
+fn pictured(ui: &Ui, library: &Path, at_least: u64) -> Value {
+    for _ in 0..60 {
+        let state = state(ui, library);
+        let gallery = &state["gallery"];
+        if gallery["loading"] == false && gallery["pictures"].as_u64().unwrap_or(0) >= at_least {
+            return gallery.clone();
+        }
+        std::thread::sleep(std::time::Duration::from_millis(250));
+    }
+    panic!("the gallery never showed its pictures");
 }
 
 fn rating_of(photo: &Path) -> Option<i64> {

@@ -5,6 +5,7 @@ use adw::prelude::*;
 use gtk::{gio, glib};
 use photomanager_core::changeset::Wanted;
 use photomanager_core::paths::Paths;
+use photomanager_core::scope::Scope;
 use photomanager_core::write::{Change, Field};
 use std::path::Path;
 use std::rc::Rc;
@@ -57,14 +58,17 @@ pub fn install(app: &adw::Application, window: &Window, paths: &Paths, library: 
 }
 
 /// A change set without a tool behind it, so the preview and the apply can be driven while the
-/// tools are still to come.
+/// tools are still to come. It works on the scope when there is one, else on the first photos.
 fn demo_change_set(window: &Window) {
     let tools = window.tools();
     let Some(library) = window.library() else {
         return;
     };
-    let wanted: Vec<Wanted> = library
-        .photo_paths(DEMO_PHOTOS)
+    let paths = match window.scope() {
+        Some(scope) => library.scope_paths(&scope),
+        None => library.photo_paths(DEMO_PHOTOS),
+    };
+    let wanted: Vec<Wanted> = paths
         .into_iter()
         .map(|rel_path| Wanted::new(rel_path, Change::of([Field::Rating(Some(DEMO_RATING))])))
         .collect();
@@ -126,14 +130,33 @@ fn state(window: &Window, paths: &Paths, library: Option<&Library>) -> String {
         })
     });
     let dashboard = window.dashboard();
-    let gallery = window.shown().map(
-        |(filter, count)| serde_json::json!({ "filter": filter.to_string(), "title": filter.title(), "count": count }),
-    );
+    let shown = window.gallery();
+    let gallery = window.shown().map(|(filter, count)| {
+        serde_json::json!({
+            "filter": filter.to_string(),
+            "title": filter.title(),
+            "count": count,
+            "sort": shown.order().key(),
+            "page": shown.page(),
+            "loading": shown.is_loading(),
+            "listed": shown.listed().len(),
+            "pictures": shown.pictures(),
+            "kept": shown.kept(),
+            "selected": shown.selected(),
+            "chips": shown.chips(),
+            "toast": shown.toast(),
+        })
+    });
+    let scope = window.scope().map(|scope| match scope {
+        Scope::Filter(filter) => serde_json::json!({ "filter": filter.to_string(), "title": filter.title() }),
+        Scope::Photos { title, paths } => serde_json::json!({ "title": title, "paths": paths }),
+    });
     serde_json::json!({
         "survey": survey,
         "field": dashboard.field().key(),
         "listed": dashboard.listed_places(),
         "gallery": gallery,
+        "scope": scope,
         "page": window.tools().showing(),
         "preview": previewed,
         "applied": applied,
