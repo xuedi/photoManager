@@ -169,19 +169,26 @@ fn the_app_can_be_clicked_through_headless() {
     );
 }
 
-/// The whole point of 1.6, clicked through: a change set is previewed, what it promised is what
-/// is written, and the last one can be taken back.
+/// The whole point of 1.6, clicked through: a scope is chosen, a tool is opened from the list,
+/// the change set is previewed, what it promised is what is written, and the last one can be
+/// taken back.
 fn previews_applies_and_takes_it_back(ui: &Ui, library: &Path) {
-    let mut paths = photomanager_core::fixtures::photo_paths();
-    paths.sort();
-    let first = library.join(paths[0]);
+    const EVENT: &str = "Ireland/2008-10-03 Galway";
+    let first = library.join(EVENT).join("IMG_0003.JPG");
 
     ui.run(&["click", "Tools", "--role", "tab"], library);
-    ui.run(&["click", "Demo Change Set", "--role", "button"], library);
+    ui.run(&["act", "win.tools-scope", &format!("'{EVENT}'")], library);
+    let tools = counted(ui, library, 2);
+    assert_eq!(
+        tools["counts"]["demo-rating"].as_u64(),
+        Some(2),
+        "the list says what it would change"
+    );
+    ui.run(&["act", "win.run-tool", "'demo-rating'"], library);
     let previewed = settled_preview(ui, library);
-    assert_eq!(previewed["photos"].as_u64(), Some(5), "the demo is five photos");
-    assert_eq!(previewed["change"].as_u64(), Some(5));
-    assert_eq!(previewed["selected"].as_u64(), Some(5));
+    assert_eq!(previewed["photos"].as_u64(), Some(2), "the demo is the event's photos");
+    assert_eq!(previewed["change"].as_u64(), Some(2), "and the number the list showed");
+    assert_eq!(previewed["selected"].as_u64(), Some(2));
     assert!(previewed["traffic"].as_u64().unwrap() > 0, "whole files go up again");
     assert_eq!(state(ui, library)["page"], "preview");
     assert_eq!(rating_of(&first), None, "nothing has been written yet");
@@ -196,14 +203,14 @@ fn previews_applies_and_takes_it_back(ui: &Ui, library: &Path) {
     ui.run(&["click", "Apply", "--role", "button"], library);
     ui.run(&["click", "My Photos Are Backed Up", "--role", "button"], library);
     let applied = written(ui, library, "write", 0);
-    assert_eq!(applied["written"].as_u64(), Some(5));
+    assert_eq!(applied["written"].as_u64(), Some(2));
     assert_eq!(applied["failed"].as_u64(), Some(0));
     assert_eq!(applied["cancelled"], false);
     assert!(
         state(ui, library)["toast"]
             .as_str()
             .unwrap()
-            .contains("5 photos changed"),
+            .contains("2 photos changed"),
         "the toast says what happened"
     );
     assert_eq!(rating_of(&first), Some(3), "the photo says what the preview promised");
@@ -211,14 +218,14 @@ fn previews_applies_and_takes_it_back(ui: &Ui, library: &Path) {
     ui.run(&["act", "win.undo-last"], library);
     ui.run(&["click", "Take It Back", "--role", "button"], library);
     let undone = written(ui, library, "undo", 0);
-    assert_eq!(undone["written"].as_u64(), Some(5));
+    assert_eq!(undone["written"].as_u64(), Some(2));
     assert_eq!(rating_of(&first), None, "the photos say again what they said before");
 
     // Asked once and never again: this time the apply goes straight through.
     ui.run(&["click", "Select All", "--role", "button"], library);
     ui.run(&["click", "Apply", "--role", "button"], library);
     let again = written(ui, library, "write", applied["batch"].as_i64().unwrap());
-    assert_eq!(again["written"].as_u64(), Some(5));
+    assert_eq!(again["written"].as_u64(), Some(2));
     assert_eq!(rating_of(&first), Some(3));
 }
 
@@ -340,8 +347,8 @@ fn read_back(photo: &Path) -> (String, String, String) {
     (lines[0].clone(), lines[1].clone(), lines[2].clone())
 }
 
-/// What the gallery shows becomes the scope, and the next change set is about exactly those
-/// photos. Previewed only: nothing is applied.
+/// What the gallery shows becomes the scope, the tools count it, and the next change set is about
+/// exactly those photos. Previewed only: nothing is applied.
 fn a_scope_is_what_the_demo_works_on(ui: &Ui, library: &Path) {
     ui.run(&["act", "win.show-photos", "'no-gps@Germany'"], library);
     pictured(ui, library, 2);
@@ -359,11 +366,13 @@ fn a_scope_is_what_the_demo_works_on(ui: &Ui, library: &Path) {
         state_now["gallery"]["toast"]
     );
 
-    ui.run(&["act", "win.preview-demo"], library);
+    let tools = counted(ui, library, 2);
+    assert_eq!(tools["counts"]["demo-rating"].as_u64(), Some(2));
+    ui.run(&["act", "win.run-tool", "'demo-rating'"], library);
     for _ in 0..60 {
         let state = state(ui, library);
-        if state["preview"]["photos"].as_u64() == Some(2) {
-            assert_eq!(state["preview"]["change"].as_u64(), Some(2));
+        // The event before was two photos as well, all written by now.
+        if state["preview"]["photos"].as_u64() == Some(2) && state["preview"]["change"].as_u64() == Some(2) {
             return;
         }
         std::thread::sleep(std::time::Duration::from_millis(500));
@@ -460,6 +469,18 @@ fn settled_preview(ui: &Ui, library: &Path) -> Value {
         std::thread::sleep(std::time::Duration::from_millis(500));
     }
     panic!("the preview never arrived");
+}
+
+/// Waits until the tools are counted for a scope of this many photos.
+fn counted(ui: &Ui, library: &Path, photos: u64) -> Value {
+    for _ in 0..60 {
+        let state = state(ui, library);
+        if state["tools"]["photos"].as_u64() == Some(photos) {
+            return state["tools"].clone();
+        }
+        std::thread::sleep(std::time::Duration::from_millis(500));
+    }
+    panic!("the tools were never counted for {photos} photos");
 }
 
 /// Waits for a pass of the given kind, newer than `after`, to be over and read back afterwards.

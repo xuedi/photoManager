@@ -76,6 +76,7 @@ template $PmPreview: Adw.Bin {
           Label traffic {
             hexpand: true;
             xalign: 1;
+            ellipsize: end;
 
             styles [
               "dim-label",
@@ -92,7 +93,9 @@ template $PmPreview: Adw.Bin {
           vexpand: true;
           hscrollbar-policy: automatic;
 
+          // Wide enough to read a row; a narrower window scrolls it sideways instead.
           child: ColumnView table {
+            width-request: 640;
             show-column-separators: true;
             show-row-separators: true;
           };

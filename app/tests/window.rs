@@ -86,6 +86,11 @@ fn scans_into_its_cache() {
 
     let window: Window = gtk::glib::Object::builder().build();
     window.set_library(Some(opened.clone()));
+    assert_eq!(
+        window.scope(),
+        Scope::Filter(Filter::all()),
+        "the tools work on the whole library until told otherwise"
+    );
     WidgetExt::activate_action(&window, "win.scan", None).unwrap();
 
     let context = gtk::glib::MainContext::default();
@@ -151,6 +156,7 @@ fn scans_into_its_cache() {
     edits_one_photo(&window);
 
     previews_what_a_tool_would_change(&window, &opened);
+    lists_the_tools_for_a_scope(&window, &opened, &library);
 }
 
 /// The preview knows only a change set: it counts it, it lets rows be dropped from it, and it
@@ -201,6 +207,82 @@ fn previews_what_a_tool_would_change(window: &Window, opened: &Rc<Library>) {
     assert_eq!(preview.asked(), 2);
 
     assert!(preview.applied().is_none(), "a preview writes nothing");
+}
+
+/// Each tool says what it would change for the scope, and that is the number the preview shows
+/// when it is opened. The count follows the scope, and the library after a scan.
+fn lists_the_tools_for_a_scope(window: &Window, opened: &Rc<Library>, library: &std::path::Path) {
+    const EVENT: &str = "Germany/2019-07-13 Sommerfest";
+    const DEMO: &str = "demo-rating";
+    let tools = window.tools();
+    let act = |name: &str, target: &str| WidgetExt::activate_action(window, name, Some(&target.to_variant())).unwrap();
+    let demo = || {
+        until(|| tools.counted().is_some(), "the tools were counted");
+        let counted = tools.counted().unwrap();
+        let (_, count) = counted
+            .tools
+            .iter()
+            .find(|(key, _)| key == DEMO)
+            .expect("the demo is listed");
+        (counted.photos, *count.as_ref().unwrap())
+    };
+    window.show_view("tools");
+
+    act("win.tools-scope", "all");
+    assert_eq!(
+        demo(),
+        (
+            photomanager_core::fixtures::photo_count(),
+            photomanager_core::fixtures::photo_count()
+        )
+    );
+    act("win.tools-scope", EVENT);
+    assert_eq!(window.scope(), Scope::Filter(Filter::all().within(EVENT)));
+    assert_eq!(demo(), (3, 3), "the event narrows the count to its photos");
+
+    act("win.tools-scope", "picked");
+    assert_eq!(
+        window.scope(),
+        tools.picked().unwrap(),
+        "what the gallery handed over is a scope again"
+    );
+    act("win.tools-scope", EVENT);
+
+    act("win.run-tool", DEMO);
+    until(|| !opened.is_busy(), "the demo was built");
+    let preview = window.preview();
+    let counts = preview.counts().expect("the demo was previewed");
+    assert_eq!(
+        (counts.photos, counts.change),
+        (3, demo().1),
+        "the row said what the preview shows"
+    );
+    assert_eq!(tools.showing(), "preview");
+
+    // The header narrows at a breakpoint once the window is that narrow; the tabs cannot.
+    let stack = descendants(window.upcast_ref())
+        .into_iter()
+        .find(|widget| widget.is::<adw::ViewStack>())
+        .expect("the tabs");
+    let (width, _, _, _) = stack.measure(gtk::Orientation::Horizontal, -1);
+    assert!(width < 400, "the tabs need {width} px, more than a phone has");
+
+    // Another program rates one photo of the event; after a scan the count knows it.
+    let photo = library.join(EVENT).join("IMAG0001.jpg");
+    let status = std::process::Command::new("exiftool")
+        .args(["-q", "-overwrite_original", "-XMP-xmp:Rating=3"])
+        .arg(&photo)
+        .status()
+        .unwrap();
+    assert!(status.success());
+    let before = opened.version();
+    WidgetExt::activate_action(window, "win.scan", None).unwrap();
+    until(
+        || opened.version() > before && !opened.is_scanning(),
+        "the scan finished",
+    );
+    assert_eq!(demo(), (3, 2), "the count after a scan is fresh");
+    window.show_view("dashboard");
 }
 
 /// The dashboard shows the survey, and a number shows its photos when it is clicked.
@@ -376,11 +458,16 @@ fn selects_and_hands_on_a_scope(window: &Window, opened: &Rc<Library>) {
     WidgetExt::activate_action(window, "win.use-as-scope", None).unwrap();
     assert_eq!(
         window.scope(),
-        Some(Scope::Filter(Filter::missing(Gap::Gps))),
+        Scope::Filter(Filter::missing(Gap::Gps)),
         "all selected is the filter, not its paths"
     );
+    assert_eq!(
+        window.tools().picked(),
+        Some(window.scope()),
+        "and it is on offer as the gallery's"
+    );
     assert!(gallery.toast().contains("without GPS"), "{}", gallery.toast());
-    assert_eq!(opened.scope_paths(&window.scope().unwrap()), {
+    assert_eq!(opened.scope_paths(&window.scope()), {
         let mut sorted = listed.clone();
         sorted.sort();
         sorted
@@ -389,7 +476,7 @@ fn selects_and_hands_on_a_scope(window: &Window, opened: &Rc<Library>) {
     WidgetExt::activate_action(window, "win.gallery-select-none", None).unwrap();
     gallery.select(1, true);
     WidgetExt::activate_action(window, "win.use-as-scope", None).unwrap();
-    assert_eq!(opened.scope_paths(&window.scope().unwrap()), [listed[1].clone()]);
+    assert_eq!(opened.scope_paths(&window.scope()), [listed[1].clone()]);
 
     WidgetExt::activate_action(window, "win.gallery-place", Some(&"Germany".to_variant())).unwrap();
     assert_eq!(gallery.selected(), 0, "another filter, no selection");

@@ -3,20 +3,13 @@
 
 use adw::prelude::*;
 use gtk::{gio, glib};
-use photomanager_core::changeset::Wanted;
 use photomanager_core::paths::Paths;
 use photomanager_core::scope::Scope;
-use photomanager_core::write::{Change, Field};
 use std::path::Path;
 use std::rc::Rc;
 
 use crate::library::Library;
 use crate::window::Window;
-
-/// How many photos the demo change set is about.
-const DEMO_PHOTOS: usize = 5;
-/// What it would set on them. A rating is the smallest real change there is.
-const DEMO_RATING: i64 = 3;
 
 pub fn install(app: &adw::Application, window: &Window, paths: &Paths, library: Option<Rc<Library>>) {
     let dump_state = gio::ActionEntry::builder("dump-state")
@@ -51,9 +44,6 @@ pub fn install(app: &adw::Application, window: &Window, paths: &Paths, library: 
 
     app.add_action_entries([dump_state, snapshot]);
 
-    let demo = gio::ActionEntry::builder("preview-demo")
-        .activate(|window: &Window, _, _| demo_change_set(window))
-        .build();
     // A combo row has nothing a test from outside can click; this picks a rating in the form.
     let rating = gio::ActionEntry::builder("photo-form-rating")
         .parameter_type(Some(glib::VariantTy::INT32))
@@ -65,25 +55,7 @@ pub fn install(app: &adw::Application, window: &Window, paths: &Paths, library: 
                 .form_rating((stars >= 0).then_some(i64::from(stars)));
         })
         .build();
-    window.add_action_entries([demo, rating]);
-}
-
-/// A change set without a tool behind it, so the preview and the apply can be driven while the
-/// tools are still to come. It works on the scope when there is one, else on the first photos.
-fn demo_change_set(window: &Window) {
-    let tools = window.tools();
-    let Some(library) = window.library() else {
-        return;
-    };
-    let paths = match window.scope() {
-        Some(scope) => library.scope_paths(&scope),
-        None => library.photo_paths(DEMO_PHOTOS),
-    };
-    let wanted: Vec<Wanted> = paths
-        .into_iter()
-        .map(|rel_path| Wanted::new(rel_path, Change::of([Field::Rating(Some(DEMO_RATING))])))
-        .collect();
-    tools.preview_change_set(&format!("Set a rating of {DEMO_RATING}"), wanted);
+    window.add_action_entries([rating]);
 }
 
 fn state(window: &Window, paths: &Paths, library: Option<&Library>) -> String {
@@ -194,9 +166,23 @@ fn state(window: &Window, paths: &Paths, library: Option<&Library>) -> String {
             })),
         })
     });
-    let scope = window.scope().map(|scope| match scope {
+    let scope = match window.scope() {
         Scope::Filter(filter) => serde_json::json!({ "filter": filter.to_string(), "title": filter.title() }),
         Scope::Photos { title, paths } => serde_json::json!({ "title": title, "paths": paths }),
+    };
+    let tools = window.tools().counted().map(|counted| {
+        let tools: serde_json::Map<String, serde_json::Value> = counted
+            .tools
+            .iter()
+            .map(|(key, count)| {
+                let count = match count {
+                    Ok(count) => serde_json::json!(count),
+                    Err(why) => serde_json::json!({ "failed": why }),
+                };
+                (key.clone(), count)
+            })
+            .collect();
+        serde_json::json!({ "photos": counted.photos, "counts": tools })
     });
     serde_json::json!({
         "survey": survey,
@@ -205,6 +191,7 @@ fn state(window: &Window, paths: &Paths, library: Option<&Library>) -> String {
         "gallery": gallery,
         "photo": photo,
         "scope": scope,
+        "tools": tools,
         "page": window.tools().showing(),
         "preview": previewed,
         "applied": applied,

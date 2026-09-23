@@ -33,8 +33,6 @@ mod imp {
         #[template_child]
         pub gallery: TemplateChild<Gallery>,
         pub library: std::cell::RefCell<Option<Rc<Library>>>,
-        /// What the next tool works on, as the gallery handed it over.
-        pub scope: std::cell::RefCell<Option<Scope>>,
     }
 
     #[glib::object_subclass]
@@ -125,7 +123,8 @@ impl Window {
         self.imp().gallery.shown()
     }
 
-    /// Makes what the gallery shows, or what is selected in it, what the next tool works on.
+    /// Makes what the gallery shows, or what is selected in it, what the tools work on. The
+    /// Tools page shows it the next time it is looked at; this does not switch to it.
     pub fn use_as_scope(&self) {
         let gallery = &self.imp().gallery;
         let Some(scope) = gallery.scope() else {
@@ -141,13 +140,13 @@ impl Window {
             }
             Scope::Photos { paths, .. } => format!("The scope is now the {} selected photos", paths.len()),
         };
-        tracing::info!(scope = scope.title(), "scope set");
         gallery.say(&told);
-        *self.imp().scope.borrow_mut() = Some(scope);
+        self.imp().tools.pick(scope);
     }
 
-    pub fn scope(&self) -> Option<Scope> {
-        self.imp().scope.borrow().clone()
+    /// What the tools work on.
+    pub fn scope(&self) -> Scope {
+        self.imp().tools.scope()
     }
 
     pub fn visible_view(&self) -> String {
@@ -238,6 +237,25 @@ impl Window {
         let use_as_scope = gtk::gio::ActionEntry::builder("use-as-scope")
             .activate(|window: &Window, _, _| window.use_as_scope())
             .build();
+        let tools_scope = gtk::gio::ActionEntry::builder("tools-scope")
+            .parameter_type(Some(glib::VariantTy::STRING))
+            .activate(|window: &Window, _, parameter| {
+                let Some(written) = parameter.and_then(|value| value.str()) else {
+                    return;
+                };
+                if !window.imp().tools.choose(written) {
+                    tracing::warn!(scope = written, "no such scope");
+                }
+            })
+            .build();
+        let run_tool = gtk::gio::ActionEntry::builder("run-tool")
+            .parameter_type(Some(glib::VariantTy::STRING))
+            .activate(|window: &Window, _, parameter| {
+                if let Some(asked) = parameter.and_then(|value| value.str()) {
+                    window.imp().tools.run(asked);
+                }
+            })
+            .build();
         let scan = gtk::gio::ActionEntry::builder("scan")
             .activate(|window: &Window, _, _| window.imp().dashboard.scan(Mode::Reconcile))
             .build();
@@ -325,6 +343,8 @@ impl Window {
             gallery_all,
             gallery_none,
             use_as_scope,
+            tools_scope,
+            run_tool,
             scan,
             fill,
             places,

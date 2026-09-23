@@ -7,15 +7,66 @@ template $PmTools: Adw.Bin {
       title: "Tools";
       tag: "tools";
 
-      child: Adw.StatusPage {
-        icon-name: "applications-engineering-symbolic";
-        title: "Tools";
-        description: "Fix location, dates, tags, people, folders and file names in bulk.";
+      child: ScrolledWindow {
+        hscrollbar-policy: never;
 
-        child: Box tools_box {
-          orientation: vertical;
-          spacing: 12;
-          halign: center;
+        child: Adw.Clamp {
+          maximum-size: 720;
+
+          child: Box {
+            orientation: vertical;
+            spacing: 24;
+            margin-top: 24;
+            margin-bottom: 24;
+            margin-start: 12;
+            margin-end: 12;
+
+            Adw.PreferencesGroup scope_group {
+              title: "Scope";
+              description: "What the tools work on";
+
+              Adw.ActionRow scope_row {
+                title: "Whole Library";
+                activatable: true;
+
+                [suffix]
+                Image {
+                  icon-name: "go-next-symbolic";
+                  accessible-role: presentation;
+                }
+              }
+            }
+
+            Adw.PreferencesGroup tools_group {
+              title: "Tools";
+            }
+
+            Adw.StatusPage empty {
+              visible: false;
+              icon-name: "applications-engineering-symbolic";
+              title: "No Tools Yet";
+              description: "Tools that fix locations, dates, tags, people, folders and file names in bulk will be listed here.";
+
+              styles [
+                "compact",
+              ]
+            }
+
+            Adw.PreferencesGroup {
+              Adw.ActionRow history_row {
+                title: "History";
+                subtitle: "Every change written to the photos, and taking one back";
+                activatable: true;
+                action-name: "win.show-history";
+
+                [suffix]
+                Image {
+                  icon-name: "go-next-symbolic";
+                  accessible-role: presentation;
+                }
+              }
+            }
+          };
         };
       };
     }

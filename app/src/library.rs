@@ -19,9 +19,11 @@ use photomanager_core::journal::{Journal, Kind, Pass};
 use photomanager_core::metadata::Exiv2;
 use photomanager_core::paths::Paths;
 use photomanager_core::scan::{self, Mode, Progress, Summary, Thumbnails};
+use photomanager_core::scope::Scope;
 use photomanager_core::settings::{self, Settings};
 use photomanager_core::survey::Survey;
 use photomanager_core::thumbs::{Size, Thumbs};
+use photomanager_core::tools;
 use photomanager_core::write::{Engine, Summary as Applied};
 
 #[derive(Debug)]
@@ -82,6 +84,14 @@ impl std::fmt::Debug for Watchers {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(f, "{} watchers", self.0.borrow().len())
     }
+}
+
+/// What the Tools page shows for a scope: how many photos it names, and how many each tool
+/// would change, by key.
+#[derive(Debug, Clone, Default)]
+pub struct Counted {
+    pub photos: usize,
+    pub tools: Vec<(String, Result<usize, String>)>,
 }
 
 /// What the gallery's sidebars show.
@@ -214,6 +224,24 @@ impl Library {
                     done(found);
                 }
             },
+        );
+    }
+
+    /// Every tool's change set for the scope, counted off the main thread through a read-only look
+    /// at the cache. The numbers are the ones the preview will show.
+    pub fn count_tools<F: FnOnce(Result<Counted, String>) + 'static>(&self, scope: &Scope, done: F) {
+        let scope = scope.clone();
+        self.read_off_thread(
+            move |cache| {
+                Ok(Counted {
+                    photos: scope.paths(cache)?.len(),
+                    tools: tools::ALL
+                        .iter()
+                        .map(|tool| (tool.key().to_string(), tools::count(*tool, cache, &scope)))
+                        .collect(),
+                })
+            },
+            done,
         );
     }
 
@@ -405,8 +433,7 @@ impl Library {
         self.scanning.set(false);
     }
 
-    /// The first photos the cache knows, in path order. What a tool is pointed at is 3.0's; this
-    /// is how a change set gets photos before there is a scope selector.
+    /// The first photos the cache knows, in path order.
     pub fn photo_paths(&self, limit: usize) -> Vec<String> {
         let cache = self.cache.borrow();
         let Some(cache) = cache.as_ref() else {
@@ -463,7 +490,36 @@ impl Library {
     /// Builds a change set off the main thread. The cache alone: no photo is opened, nothing is
     /// written.
     pub fn preview<F: Fn(Event) + 'static>(self: &Rc<Self>, title: &str, wanted: Vec<Wanted>, report: F) {
+        let title = title.to_string();
+        self.build(
+            move |cache| ChangeSet::build(cache, &title, &wanted).map_err(|error| error.to_string()),
+            report,
+        );
+    }
+
+    /// A tool's change set for the scope, with its settings as text or its own defaults.
+    pub fn run_tool<F: Fn(Event) + 'static>(
+        self: &Rc<Self>,
+        key: &str,
+        settings: Option<String>,
+        scope: &Scope,
+        report: F,
+    ) {
+        let Some(tool) = tools::find(key) else {
+            report(Event::Failed(format!("there is no tool {key}")));
+            return;
+        };
+        let scope = scope.clone();
+        self.build(move |cache| tool.change_set(cache, &scope, settings.as_deref()), report);
+    }
+
+    fn build<F: Fn(Event) + 'static>(
+        self: &Rc<Self>,
+        make: impl FnOnce(&Cache) -> Result<ChangeSet, String> + Send + 'static,
+        report: F,
+    ) {
         if self.is_busy() {
+            report(Event::Failed("something else is running".to_string()));
             return;
         }
         let Some(cache) = self.cache.borrow_mut().take() else {
@@ -473,9 +529,8 @@ impl Library {
         self.working.set(true);
 
         let (sender, receiver) = async_channel::unbounded();
-        let title = title.to_string();
         std::thread::spawn(move || {
-            let built = ChangeSet::build(&cache, &title, &wanted).map_err(|error| error.to_string());
+            let built = make(&cache);
             let _ = sender.send_blocking(Message::Previewed(built, cache));
         });
 
