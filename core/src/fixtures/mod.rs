@@ -1,6 +1,7 @@
 //! A small stand-in library with the shapes the real one has: events without a full date, a
 //! loose file in a country folder, sub-folders, photos without GPS but with a place tag, a
-//! photo without any date, XMP dates that disagree with EXIF, and one without tags at all.
+//! photo without any date, XMP dates that disagree with EXIF, and one without tags at all. The
+//! tags are as untidy as real ones: a second spelling of a root, case twins, a typo.
 //!
 //! Only for tests and for looking at the application without touching real photos.
 
@@ -58,7 +59,11 @@ const PHOTOS: &[Photo] = &[
     },
     Photo {
         path: "China/2008-01-00 Holiday SOUTHTOUR/IMG_0001.JPG",
-        metadata: &["-TagsList=places/inChina", "-TagsList=mixed/food"],
+        metadata: &[
+            "-TagsList=places/inChina",
+            "-TagsList=mixed/food",
+            "-TagsList=mixed/funny",
+        ],
     },
     Photo {
         path: "Denmark/2018-10-00 Wedding Trip to Copenhagen/DSCF0001.JPG",
@@ -109,6 +114,8 @@ const PHOTOS: &[Photo] = &[
         metadata: &[
             "-DateTimeOriginal=2008:10:03 11:15:00",
             "-TagsList=places/inIreland/Galway",
+            "-TagsList=People/Kira",
+            "-TagsList=mixed/disgusting",
         ],
     },
     Photo {
@@ -117,6 +124,8 @@ const PHOTOS: &[Photo] = &[
             "-DateTimeOriginal=2008:10:03 12:47:00",
             "-TagsList=places/inNetherland/Amsterdam",
             "-TagsList=mixed/Funny",
+            "-XMP-photoshop:City=Galway",
+            "-IPTC:City=Galway",
         ],
     },
     Photo {

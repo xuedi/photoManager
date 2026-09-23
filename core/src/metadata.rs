@@ -19,6 +19,8 @@ pub struct Metadata {
     pub width: Option<i64>,
     pub height: Option<i64>,
     pub tags: Vec<String>,
+    /// The city the location text names, from the XMP or the IPTC field.
+    pub location_city: Option<String>,
     pub raw: String,
 }
 
@@ -99,6 +101,7 @@ impl Reader for Exiv2 {
             width: (source.get_pixel_width() > 0).then(|| i64::from(source.get_pixel_width())),
             height: (source.get_pixel_height() > 0).then(|| i64::from(source.get_pixel_height())),
             tags,
+            location_city: string("Xmp.photoshop.City").or_else(|| string("Iptc.Application2.City")),
             raw: raw_json(&source),
         })
     }
@@ -179,6 +182,7 @@ impl Reader for ExifTool {
             .iter()
             .find_map(|key| list(key))
             .unwrap_or_default(),
+            location_city: string("City").filter(|city| !city.is_empty()),
             raw: serde_json::Value::Object(fields.clone()).to_string(),
         })
     }
@@ -268,6 +272,7 @@ mod tests {
             assert_eq!(fast.camera_model, reference.camera_model, "{path}: model");
             assert_eq!(fast.orientation, reference.orientation, "{path}: orientation");
             assert_eq!(fast.tags, reference.tags, "{path}: tags");
+            assert_eq!(fast.location_city, reference.location_city, "{path}: city");
             match (fast.gps_lat, reference.gps_lat) {
                 (Some(one), Some(other)) => assert!((one - other).abs() < 0.0001, "{path}: latitude"),
                 (one, other) => assert_eq!(one.is_some(), other.is_some(), "{path}: latitude"),

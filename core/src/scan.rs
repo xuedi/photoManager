@@ -40,6 +40,19 @@ pub enum IssueKind {
 }
 
 impl IssueKind {
+    pub const ALL: [IssueKind; 6] = [
+        IssueKind::Unreadable,
+        IssueKind::NotAPhoto,
+        IssueKind::Sidecar,
+        IssueKind::NoDate,
+        IssueKind::OffConvention,
+        IssueKind::DuplicateContent,
+    ];
+
+    pub fn named(name: &str) -> Option<IssueKind> {
+        IssueKind::ALL.into_iter().find(|kind| kind.as_str() == name)
+    }
+
     pub fn as_str(self) -> &'static str {
         match self {
             IssueKind::Unreadable => "unreadable",

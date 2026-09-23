@@ -9,7 +9,7 @@ use crate::layout::Placement;
 use crate::metadata::Metadata;
 use crate::scan::Issue;
 
-const SCHEMA_VERSION: i64 = 1;
+const SCHEMA_VERSION: i64 = 2;
 
 /// SQLite takes a few hundred parameters happily; a library's worth of paths is asked for in
 /// chunks of this size.
@@ -31,6 +31,7 @@ CREATE TABLE photo (
     event_day   INTEGER,
     event_name  TEXT,
     sub_path    TEXT,
+    event_dir   TEXT,
     taken_at    TEXT,
     taken_offset TEXT,
     xmp_taken_at TEXT,
@@ -42,10 +43,12 @@ CREATE TABLE photo (
     rating      INTEGER,
     width       INTEGER,
     height      INTEGER,
+    location_city TEXT,
     raw         TEXT NOT NULL
 );
 CREATE INDEX photo_content ON photo (content_id);
 CREATE INDEX photo_event ON photo (country, event_text);
+CREATE INDEX photo_event_dir ON photo (event_dir);
 
 CREATE TABLE tag (
     photo_id INTEGER NOT NULL REFERENCES photo (id) ON DELETE CASCADE,
@@ -150,6 +153,29 @@ impl Cache {
         }))
     }
 
+    /// A second, read-only look at a cache someone else has open, for questions asked off the
+    /// main thread while the cache itself stays where it is. `None` when there is no cache of
+    /// this version to look at.
+    pub fn read_only(file: &Path) -> Result<Option<Cache>> {
+        if !file.exists() {
+            return Ok(None);
+        }
+        let connection = Connection::open_with_flags(file, rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY)?;
+        connection.busy_timeout(std::time::Duration::from_secs(5))?;
+        let version: i64 = connection.query_row("PRAGMA user_version", [], |row| row.get(0))?;
+        if version != SCHEMA_VERSION {
+            return Ok(None);
+        }
+        Ok(Some(Cache {
+            connection,
+            file: file.to_path_buf(),
+        }))
+    }
+
+    pub(crate) fn connection(&self) -> &Connection {
+        &self.connection
+    }
+
     fn create(file: &Path) -> Result<Cache> {
         let connection = Connection::open(file)?;
         prepare(&connection)?;
@@ -181,11 +207,8 @@ impl Cache {
     }
 
     pub fn event_count(&self) -> Result<i64> {
-        self.connection.query_row(
-            "SELECT count(*) FROM (SELECT DISTINCT country, city, event_text, event_name FROM photo WHERE event_text IS NOT NULL)",
-            [],
-            |row| row.get(0),
-        )
+        self.connection
+            .query_row("SELECT count(DISTINCT event_dir) FROM photo", [], |row| row.get(0))
     }
 
     pub fn issue_count(&self) -> Result<i64> {
@@ -406,9 +429,9 @@ impl Writer<'_> {
             "INSERT INTO photo (rel_path, size, mtime_ns, inode, content_id, country, city, event_text,
                 event_year, event_month, event_day, event_name, sub_path, taken_at, taken_offset,
                 xmp_taken_at, gps_lat, gps_lon, camera_make, camera_model, orientation, rating,
-                width, height, raw)
+                width, height, raw, event_dir, location_city)
              VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17,
-                ?18, ?19, ?20, ?21, ?22, ?23, ?24, ?25)",
+                ?18, ?19, ?20, ?21, ?22, ?23, ?24, ?25, ?26, ?27)",
             params![
                 rel_path,
                 fingerprint.size as i64,
@@ -435,6 +458,8 @@ impl Writer<'_> {
                 metadata.width,
                 metadata.height,
                 metadata.raw,
+                placement.event_dir,
+                metadata.location_city,
             ],
         )?;
         let id = self.transaction.last_insert_rowid();
@@ -546,6 +571,23 @@ mod tests {
 
         let cache = Cache::open(&file).unwrap();
         assert_eq!(cache.photo_count().unwrap(), 0);
+    }
+
+    #[test]
+    fn a_read_only_look_sees_the_rows_and_cannot_change_them() {
+        let file = temp("read-only");
+        assert!(
+            Cache::read_only(&file).unwrap().is_none(),
+            "no cache, nothing to look at"
+        );
+        let mut cache = Cache::open(&file).unwrap();
+        put_one(&mut cache, "China/2006-09-00 Besuch/P1.JPG");
+
+        let look = Cache::read_only(&file).unwrap().expect("a cache of this version");
+        assert_eq!(look.photo_count().unwrap(), 1);
+        assert_eq!(look.event_count().unwrap(), 1);
+        assert!(look.connection.execute("DELETE FROM photo", []).is_err());
+        assert_eq!(cache.photo_count().unwrap(), 1);
     }
 
     #[test]

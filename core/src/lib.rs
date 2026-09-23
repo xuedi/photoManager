@@ -1,6 +1,7 @@
 pub mod cache;
 pub mod changeset;
 pub mod clock;
+pub mod filter;
 pub mod geo;
 pub mod identity;
 pub mod journal;
@@ -9,6 +10,7 @@ pub mod metadata;
 pub mod paths;
 pub mod scan;
 pub mod settings;
+pub mod survey;
 pub mod thumbs;
 pub mod write;
 

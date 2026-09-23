@@ -36,6 +36,8 @@ pub struct Placement {
     pub event_day: Option<i64>,
     pub event_name: Option<String>,
     pub sub_path: Option<String>,
+    /// The event's folder inside the library, `Country/[City/]YYYY-MM-DD Event`.
+    pub event_dir: Option<String>,
     pub fit: Fit,
 }
 
@@ -74,6 +76,7 @@ impl Placement {
                 None => (None, None, &rest[1..]),
             },
         };
+        let event_dir = event.is_some().then(|| folders[..folders.len() - sub.len()].join("/"));
 
         let sub_path = (!sub.is_empty()).then(|| sub.join("/"));
         match event {
@@ -86,6 +89,7 @@ impl Placement {
                 event_day: event.day,
                 event_name: event.name,
                 sub_path,
+                event_dir,
                 fit: Fit::Convention,
             },
             None => Placement {
@@ -174,6 +178,7 @@ mod tests {
         let day = parse("China/2006-09-00 Besuch Ben/2006-08-21/P1000002.JPG");
         assert_eq!(day.event_name.as_deref(), Some("Besuch Ben"));
         assert_eq!(day.sub_path.as_deref(), Some("2006-08-21"));
+        assert_eq!(day.event_dir.as_deref(), Some("China/2006-09-00 Besuch Ben"));
 
         let photographer = parse("Ireland/2008-10-03 Galway/Kira/IMG_0002.JPG");
         assert_eq!(photographer.sub_path.as_deref(), Some("Kira"));
@@ -187,6 +192,10 @@ mod tests {
         let placement = parse("Denmark/Copenhagen/2018-10-06 Wedding/DSCF0001.JPG");
         assert_eq!(placement.city.as_deref(), Some("Copenhagen"));
         assert_eq!(placement.event_name.as_deref(), Some("Wedding"));
+        assert_eq!(
+            placement.event_dir.as_deref(),
+            Some("Denmark/Copenhagen/2018-10-06 Wedding")
+        );
         assert!(placement.fits());
     }
 
@@ -195,6 +204,7 @@ mod tests {
         let loose = parse("China/IMG_3140.JPG");
         assert_eq!(loose.fit, Fit::LooseInCountry);
         assert_eq!(loose.country.as_deref(), Some("China"));
+        assert_eq!(loose.event_dir, None);
         assert!(!loose.fits());
 
         let root = parse("IMG_3140.JPG");
