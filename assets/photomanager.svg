@@ -1,0 +1,37 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 256 256" width="256" height="256">
+  <title>photoManager</title>
+  <defs>
+    <clipPath id="frame">
+      <rect x="48" y="70" width="132" height="94" rx="4"/>
+    </clipPath>
+  </defs>
+
+  <!-- the photo behind, to say there are many -->
+  <g transform="rotate(-8 114 124)">
+    <rect x="36" y="58" width="156" height="132" rx="10" fill="#f6f5f4" stroke="#241f31" stroke-width="6"/>
+  </g>
+
+  <!-- the photo in front -->
+  <rect x="36" y="58" width="156" height="132" rx="10" fill="#ffffff" stroke="#241f31" stroke-width="6"/>
+
+  <!-- what is in the picture -->
+  <g clip-path="url(#frame)">
+    <rect x="48" y="70" width="132" height="94" fill="#99c1f1"/>
+    <circle cx="154" cy="92" r="14" fill="#f6d32d"/>
+    <path d="M48 164l44-52 32 38 20-22 36 36z" fill="#2ec27e"/>
+    <path d="M48 164l44-30 46 30z" fill="#26a269"/>
+  </g>
+  <rect x="48" y="70" width="132" height="94" rx="4" fill="none" stroke="#241f31" stroke-width="5"/>
+
+  <!-- the data written underneath -->
+  <rect x="48" y="174" width="52" height="8" rx="4" fill="#c0bfbc"/>
+
+  <!-- the tag it is being given -->
+  <g transform="rotate(22 150 176)">
+    <path d="M150 152l22-16h56a10 10 0 0 1 10 10v28a10 10 0 0 1-10 10h-56z"
+          fill="#3584e4" stroke="#241f31" stroke-width="6" stroke-linejoin="round"/>
+    <circle cx="176" cy="166" r="7" fill="#ffffff" stroke="#241f31" stroke-width="4"/>
+    <rect x="194" y="158" width="34" height="7" rx="3.5" fill="#ffffff" opacity="0.95"/>
+    <rect x="194" y="170" width="22" height="7" rx="3.5" fill="#ffffff" opacity="0.6"/>
+  </g>
+</svg>
