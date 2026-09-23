@@ -3,5 +3,7 @@
   <gresource prefix="/org/beijingcode/PhotoManager">
     <file preprocess="xml-stripblanks">window.ui</file>
     <file preprocess="xml-stripblanks">dashboard.ui</file>
+    <file preprocess="xml-stripblanks">tools.ui</file>
+    <file preprocess="xml-stripblanks">preview.ui</file>
   </gresource>
 </gresources>

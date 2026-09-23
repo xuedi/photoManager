@@ -118,7 +118,7 @@ impl Dashboard {
 
     pub fn cancel(&self) {
         if let Some(library) = self.imp().library.borrow().as_ref() {
-            library.cancel_scan();
+            library.cancel();
             self.imp().progress.set_text(Some("Stopping"));
         }
     }
@@ -154,6 +154,7 @@ impl Dashboard {
                 );
             }
             Event::Note(line) => progress.set_text(Some(&line)),
+            Event::Previewed(_) | Event::Applied(_, _) => {}
             Event::Places(imported) => {
                 self.running(false);
                 self.show_counts();

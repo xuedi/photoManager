@@ -1,0 +1,30 @@
+using Gtk 4.0;
+using Adw 1;
+
+template $PmTools: Adw.Bin {
+  child: Adw.NavigationView nav {
+    Adw.NavigationPage {
+      title: "Tools";
+      tag: "tools";
+
+      child: Adw.StatusPage {
+        icon-name: "applications-engineering-symbolic";
+        title: "Tools";
+        description: "Fix location, dates, tags, people, folders and file names in bulk.";
+
+        child: Box tools_box {
+          orientation: vertical;
+          spacing: 12;
+          halign: center;
+        };
+      };
+    }
+
+    Adw.NavigationPage {
+      title: "Preview";
+      tag: "preview";
+
+      child: $PmPreview preview {};
+    }
+  };
+}

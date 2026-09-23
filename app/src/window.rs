@@ -8,6 +8,8 @@ use photomanager_core::scan::Mode;
 
 use crate::dashboard::Dashboard;
 use crate::library::Library;
+use crate::preview::Preview;
+use crate::tools::Tools;
 
 pub const VIEWS: [&str; 4] = ["dashboard", "gallery", "tools", "suggestions"];
 
@@ -23,6 +25,9 @@ mod imp {
         pub import_button: TemplateChild<gtk::Button>,
         #[template_child]
         pub dashboard: TemplateChild<Dashboard>,
+        #[template_child]
+        pub tools: TemplateChild<Tools>,
+        pub library: std::cell::RefCell<Option<Rc<Library>>>,
     }
 
     #[glib::object_subclass]
@@ -33,6 +38,7 @@ mod imp {
 
         fn class_init(klass: &mut Self::Class) {
             Dashboard::ensure_type();
+            Tools::ensure_type();
             klass.bind_template();
         }
 
@@ -67,7 +73,21 @@ impl Window {
     }
 
     pub fn set_library(&self, library: Option<Rc<Library>>) {
-        self.imp().dashboard.set_library(library);
+        self.imp().dashboard.set_library(library.clone());
+        self.imp().tools.set_library(library.clone());
+        *self.imp().library.borrow_mut() = library;
+    }
+
+    pub fn library(&self) -> Option<Rc<Library>> {
+        self.imp().library.borrow().clone()
+    }
+
+    pub fn tools(&self) -> Tools {
+        self.imp().tools.clone()
+    }
+
+    pub fn preview(&self) -> Preview {
+        self.imp().tools.preview()
     }
 
     pub fn scan(&self, mode: Mode) {
@@ -119,6 +139,42 @@ impl Window {
         let cancel = gtk::gio::ActionEntry::builder("cancel-scan")
             .activate(|window: &Window, _, _| window.imp().dashboard.cancel())
             .build();
-        self.add_action_entries([show_view, scan, fill, places, cancel]);
+        let select_all = gtk::gio::ActionEntry::builder("preview-select-all")
+            .activate(|window: &Window, _, _| window.preview().select_all())
+            .build();
+        let select_none = gtk::gio::ActionEntry::builder("preview-select-none")
+            .activate(|window: &Window, _, _| window.preview().select_none())
+            .build();
+        let details = gtk::gio::ActionEntry::builder("preview-details")
+            .parameter_type(Some(glib::VariantTy::INT32))
+            .activate(|window: &Window, _, parameter| {
+                let Some(index) = parameter.and_then(|value| value.get::<i32>()) else {
+                    return;
+                };
+                window.preview().details(index.max(0) as usize);
+            })
+            .build();
+        let apply = gtk::gio::ActionEntry::builder("apply-change-set")
+            .activate(|window: &Window, _, _| window.preview().apply())
+            .build();
+        let stop = gtk::gio::ActionEntry::builder("cancel-apply")
+            .activate(|window: &Window, _, _| window.preview().cancel())
+            .build();
+        let undo = gtk::gio::ActionEntry::builder("undo-last")
+            .activate(|window: &Window, _, _| window.preview().undo())
+            .build();
+        self.add_action_entries([
+            show_view,
+            scan,
+            fill,
+            places,
+            cancel,
+            select_all,
+            select_none,
+            details,
+            apply,
+            stop,
+            undo,
+        ]);
     }
 }

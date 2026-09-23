@@ -7,12 +7,16 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 
 use photomanager_core::cache::Cache;
+use photomanager_core::changeset::{self, ChangeSet, Wanted};
 use photomanager_core::geo::Geo;
 use photomanager_core::geo::import::Imported;
+use photomanager_core::journal::{Journal, Kind, Pass};
 use photomanager_core::metadata::Exiv2;
 use photomanager_core::paths::Paths;
 use photomanager_core::scan::{self, Mode, Progress, Summary, Thumbnails};
+use photomanager_core::settings::{self, Settings};
 use photomanager_core::thumbs::{Size, Thumbs};
+use photomanager_core::write::{Engine, Summary as Applied};
 
 #[derive(Debug)]
 pub enum Event {
@@ -24,6 +28,10 @@ pub enum Event {
     Places(Imported),
     /// A line to show while something long is running.
     Note(String),
+    /// A change set is ready to be looked at. Nothing has been written.
+    Previewed(ChangeSet),
+    /// A change set was applied, or the last one was taken back.
+    Applied(Kind, Applied),
     Failed(String),
 }
 
@@ -42,7 +50,11 @@ pub struct Library {
     thumbs: Thumbs,
     cache: RefCell<Option<Cache>>,
     geo: RefCell<Option<Geo>>,
+    journal: RefCell<Option<Journal>>,
+    settings: RefCell<Option<Settings>>,
     scanning: Cell<bool>,
+    /// The cache is out for something that is not a scan: a preview, an apply, an undo.
+    working: Cell<bool>,
     cancel: Arc<AtomicBool>,
     last: RefCell<Option<Summary>>,
 }
@@ -53,12 +65,21 @@ impl Library {
         let geo = Geo::open(&paths.geo_db())
             .map_err(|error| tracing::error!(%error, "the place data cannot be opened"))
             .ok();
+        let journal = Journal::open(&paths.app_db())
+            .map_err(|error| tracing::error!(%error, "the journal cannot be opened, so nothing can be written"))
+            .ok();
+        let settings = Settings::open(&paths.app_db())
+            .map_err(|error| tracing::error!(%error, "the settings cannot be opened"))
+            .ok();
         Ok(Rc::new(Library {
             geo: RefCell::new(geo),
+            journal: RefCell::new(journal),
+            settings: RefCell::new(settings),
             thumbs: Thumbs::new(paths.thumbs_dir()),
             paths,
             cache: RefCell::new(Some(cache)),
             scanning: Cell::new(false),
+            working: Cell::new(false),
             cancel: Arc::new(AtomicBool::new(false)),
             last: RefCell::new(None),
         }))
@@ -74,6 +95,11 @@ impl Library {
 
     pub fn is_scanning(&self) -> bool {
         self.scanning.get()
+    }
+
+    /// Whether anything at all has the cache out. Nothing else may start while it has.
+    pub fn is_busy(&self) -> bool {
+        self.scanning.get() || self.working.get()
     }
 
     pub fn last_summary(&self) -> Option<Summary> {
@@ -183,6 +209,160 @@ impl Library {
         self.scanning.set(false);
     }
 
+    /// The first photos the cache knows, in path order. What a tool is pointed at is 3.0's; this
+    /// is how a change set gets photos before there is a scope selector.
+    pub fn photo_paths(&self, limit: usize) -> Vec<String> {
+        let cache = self.cache.borrow();
+        let Some(cache) = cache.as_ref() else {
+            return Vec::new();
+        };
+        let mut paths = cache.paths().unwrap_or_default();
+        paths.sort();
+        paths.truncate(limit);
+        paths
+    }
+
+    /// Whether the user still has to be asked before anything is ever written to a photo.
+    pub fn must_ask(&self) -> bool {
+        match (self.journal.borrow().as_ref(), self.settings.borrow().as_ref()) {
+            (Some(journal), Some(settings)) => settings::must_ask(journal, settings).unwrap_or(true),
+            _ => true,
+        }
+    }
+
+    /// Records that the user said their photos are backed up, and where they said it is.
+    pub fn acknowledge(&self, backup: Option<&Path>) {
+        let mut settings = self.settings.borrow_mut();
+        let Some(settings) = settings.as_mut() else {
+            return;
+        };
+        if let Err(error) = settings::acknowledge(settings, backup) {
+            tracing::error!(%error, "the acknowledgement could not be kept");
+        }
+    }
+
+    /// The pass the last applied change set left, if it can still be taken back.
+    pub fn undoable(&self) -> Option<Pass> {
+        self.journal
+            .borrow()
+            .as_ref()
+            .and_then(|journal| changeset::undoable(journal).ok())
+            .flatten()
+    }
+
+    /// An engine of its own, for the one photo a preview row is asked about.
+    pub fn engine(&self) -> Result<Engine, String> {
+        Engine::new(self.paths.library()).map_err(|error| error.to_string())
+    }
+
+    /// Builds a change set off the main thread. The cache alone: no photo is opened, nothing is
+    /// written.
+    pub fn preview<F: Fn(Event) + 'static>(self: &Rc<Self>, title: &str, wanted: Vec<Wanted>, report: F) {
+        if self.is_busy() {
+            return;
+        }
+        let Some(cache) = self.cache.borrow_mut().take() else {
+            report(Event::Failed("the cache is busy".to_string()));
+            return;
+        };
+        self.working.set(true);
+
+        let (sender, receiver) = async_channel::unbounded();
+        let title = title.to_string();
+        std::thread::spawn(move || {
+            let built = ChangeSet::build(&cache, &title, &wanted).map_err(|error| error.to_string());
+            let _ = sender.send_blocking(Message::Previewed(built, cache));
+        });
+
+        let this = self.clone();
+        gtk::glib::spawn_future_local(async move {
+            while let Ok(message) = receiver.recv().await {
+                let Message::Previewed(built, cache) = message else {
+                    continue;
+                };
+                *this.cache.borrow_mut() = Some(cache);
+                this.working.set(false);
+                report(match built {
+                    Ok(set) => Event::Previewed(set),
+                    Err(why) => Event::Failed(why),
+                });
+            }
+        });
+    }
+
+    /// Writes the selected rows, as one journal batch.
+    pub fn apply<F: Fn(Event) + 'static>(self: &Rc<Self>, set: &ChangeSet, report: F) {
+        self.write(Kind::Write, Some(set.clone()), report);
+    }
+
+    /// Puts the last applied change set back.
+    pub fn undo_last<F: Fn(Event) + 'static>(self: &Rc<Self>, report: F) {
+        self.write(Kind::Undo, None, report);
+    }
+
+    fn write<F: Fn(Event) + 'static>(self: &Rc<Self>, kind: Kind, set: Option<ChangeSet>, report: F) {
+        if self.is_busy() {
+            return;
+        }
+        let Some(mut journal) = self.journal.borrow_mut().take() else {
+            report(Event::Failed(
+                "the journal is not open, so nothing is written".to_string(),
+            ));
+            return;
+        };
+        let Some(mut cache) = self.cache.borrow_mut().take() else {
+            *self.journal.borrow_mut() = Some(journal);
+            report(Event::Failed("the cache is busy".to_string()));
+            return;
+        };
+        self.working.set(true);
+        self.cancel.store(false, Ordering::Relaxed);
+
+        let (sender, receiver) = async_channel::unbounded();
+        let library = self.paths.library().to_path_buf();
+        let cancel = self.cancel.clone();
+        let progress = sender.clone();
+
+        std::thread::spawn(move || {
+            let told = |done: usize, total: usize| {
+                let _ = progress.send_blocking(Message::Done(done, total));
+            };
+            let outcome = match Engine::new(&library) {
+                Ok(mut engine) => match &set {
+                    Some(set) => changeset::apply(set, &mut engine, &mut journal, &mut cache, &told, &cancel),
+                    None => changeset::undo_last(&mut engine, &mut journal, &mut cache, &told, &cancel),
+                },
+                Err(error) => Err(error),
+            };
+            let _ = sender.send_blocking(Message::Applied(
+                kind,
+                outcome.map_err(|error| error.to_string()),
+                cache,
+                journal,
+            ));
+        });
+
+        let this = self.clone();
+        gtk::glib::spawn_future_local(async move {
+            while let Ok(message) = receiver.recv().await {
+                let event = match message {
+                    Message::Done(done, total) => Event::Done(done, total),
+                    Message::Applied(kind, outcome, cache, journal) => {
+                        *this.cache.borrow_mut() = Some(cache);
+                        *this.journal.borrow_mut() = Some(journal);
+                        this.working.set(false);
+                        match outcome {
+                            Ok(summary) => Event::Applied(kind, summary),
+                            Err(why) => Event::Failed(why),
+                        }
+                    }
+                    _ => continue,
+                };
+                report(event);
+            }
+        });
+    }
+
     pub fn issue_counts(&self) -> Vec<(String, i64)> {
         let cache = self.cache.borrow();
         cache
@@ -191,7 +371,8 @@ impl Library {
             .unwrap_or_default()
     }
 
-    pub fn cancel_scan(&self) {
+    /// Stops whatever is running: a scan between photos, an apply between photos.
+    pub fn cancel(&self) {
         self.cancel.store(true, Ordering::Relaxed);
     }
 
@@ -339,5 +520,7 @@ enum Message {
     Places(Imported, Geo),
     PlacesFailed(String, Geo),
     Note(String),
+    Previewed(std::result::Result<ChangeSet, String>, Cache),
+    Applied(Kind, std::result::Result<Applied, String>, Cache, Journal),
     Failed(String, Cache),
 }

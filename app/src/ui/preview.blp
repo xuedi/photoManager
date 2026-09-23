@@ -1,0 +1,108 @@
+using Gtk 4.0;
+using Adw 1;
+
+template $PmPreview: Adw.Bin {
+  child: Adw.ToastOverlay toasts {
+    child: Adw.ToolbarView {
+      [top]
+      Adw.HeaderBar {
+        show-start-title-buttons: false;
+        show-end-title-buttons: false;
+
+        title-widget: Adw.WindowTitle title {
+          title: "Preview";
+          subtitle: "Nothing to look at yet";
+        };
+
+        [end]
+        Button apply_button {
+          label: "Apply";
+          sensitive: false;
+          action-name: "win.apply-change-set";
+
+          styles [
+            "suggested-action",
+          ]
+
+          accessibility {
+            label: "Apply";
+          }
+        }
+
+        [end]
+        Button cancel_button {
+          label: "Cancel";
+          visible: false;
+          action-name: "win.cancel-apply";
+
+          accessibility {
+            label: "Cancel the Apply";
+          }
+        }
+      }
+
+      content: Box {
+        orientation: vertical;
+        spacing: 12;
+        margin-top: 12;
+        margin-bottom: 12;
+        margin-start: 12;
+        margin-end: 12;
+
+        Adw.PreferencesGroup summary {}
+
+        Box {
+          orientation: horizontal;
+          spacing: 6;
+
+          Button select_all_button {
+            label: "Select All";
+            action-name: "win.preview-select-all";
+
+            accessibility {
+              label: "Select All";
+            }
+          }
+
+          Button select_none_button {
+            label: "Select None";
+            action-name: "win.preview-select-none";
+
+            accessibility {
+              label: "Select None";
+            }
+          }
+
+          Label traffic {
+            hexpand: true;
+            xalign: 1;
+
+            styles [
+              "dim-label",
+            ]
+          }
+        }
+
+        ProgressBar progress {
+          visible: false;
+          show-text: true;
+        }
+
+        ScrolledWindow {
+          vexpand: true;
+          hscrollbar-policy: automatic;
+
+          child: ColumnView table {
+            show-column-separators: true;
+            show-row-separators: true;
+          };
+        }
+
+        Adw.PreferencesGroup detail {
+          visible: false;
+          title: "The exact change";
+        }
+      };
+    };
+  };
+}

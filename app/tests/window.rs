@@ -1,7 +1,10 @@
 use adw::prelude::*;
 use photomanager::library::Library;
 use photomanager::window::{VIEWS, Window};
+use photomanager_core::changeset::Wanted;
 use photomanager_core::paths::Paths;
+use photomanager_core::write::{Change, Field};
+use std::rc::Rc;
 
 /// One test function on purpose: GTK objects belong to the thread that created them, and the
 /// test harness runs test functions in parallel.
@@ -137,6 +140,58 @@ fn scans_into_its_cache() {
     }
     assert_eq!(opened.counts().places, 149, "the excerpt was imported");
     assert_eq!(opened.dump_date().map(|date| date.len()), Some(19));
+
+    previews_what_a_tool_would_change(&window, &opened);
+}
+
+/// The preview knows only a change set: it counts it, it lets rows be dropped from it, and it
+/// asks the engine for the exact diff of one photo when that photo is asked about. Nothing here
+/// writes; the apply is the smoke test's.
+fn previews_what_a_tool_would_change(window: &Window, opened: &Rc<Library>) {
+    let wanted: Vec<Wanted> = opened
+        .photo_paths(3)
+        .into_iter()
+        .map(|rel_path| Wanted::new(rel_path, Change::of([Field::Rating(Some(4))])))
+        .collect();
+    assert_eq!(wanted.len(), 3);
+    window.tools().preview_change_set("Rate three", wanted);
+
+    let preview = window.preview();
+    let context = gtk::glib::MainContext::default();
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
+    while preview.counts().is_none() && std::time::Instant::now() < deadline {
+        context.iteration(false);
+    }
+
+    let counts = preview.counts().expect("the change set was built");
+    assert_eq!((counts.photos, counts.change, counts.refused), (3, 3, 0));
+    assert_eq!(counts.selected, 3, "what would change starts selected");
+    assert!(counts.traffic > 0, "three whole files would go up again");
+    assert_eq!(window.tools().showing(), "preview", "the preview page was pushed");
+
+    preview.select(0, false);
+    let fewer = preview.counts().unwrap();
+    assert_eq!(fewer.selected, 2);
+    assert_eq!(fewer.change, 3, "dropping a row does not change what it would do");
+    assert!(fewer.traffic < counts.traffic, "the photo that is out costs nothing");
+
+    preview.select_none();
+    assert_eq!(preview.counts().unwrap().traffic, 0);
+    preview.select_all();
+    assert_eq!(preview.counts().unwrap().selected, 3);
+
+    assert_eq!(
+        preview.asked(),
+        0,
+        "nothing is read from a photo until it is asked about"
+    );
+    preview.details(0);
+    preview.details(0);
+    assert_eq!(preview.asked(), 1, "one row, one read");
+    preview.details(1);
+    assert_eq!(preview.asked(), 2);
+
+    assert!(preview.applied().is_none(), "a preview writes nothing");
 }
 
 fn paths_of(library: &Library) -> Vec<std::path::PathBuf> {

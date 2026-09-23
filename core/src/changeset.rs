@@ -235,6 +235,24 @@ impl ChangeSet {
         engine.dry_run(&target).map_err(|error| error.to_string())
     }
 
+    /// An undo puts the photos back, so the rows it touched are open for applying again. They are
+    /// left deselected: taking a change back and putting it straight back on is never accidental.
+    pub fn unsettle(&mut self, summary: &Summary) {
+        let put_back: HashMap<&str, &Outcome> = summary
+            .outcomes
+            .iter()
+            .map(|(rel_path, outcome)| (rel_path.as_str(), outcome))
+            .collect();
+        for row in &mut self.rows {
+            if put_back.get(row.rel_path.as_str()) == Some(&&Outcome::Written)
+                && row.verdict == Verdict::Done(Outcome::Written)
+            {
+                row.verdict = Verdict::Change;
+                row.selected = false;
+            }
+        }
+    }
+
     /// Carries what became of every photo back into the rows it came from.
     pub fn settle(&mut self, summary: &Summary) {
         let outcomes: HashMap<&str, &Outcome> = summary

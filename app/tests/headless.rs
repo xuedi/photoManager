@@ -120,6 +120,8 @@ fn the_app_can_be_clicked_through_headless() {
     let places = settled(&ui, lib, "places");
     assert_eq!(places["places"].as_u64(), Some(149), "the excerpt was imported");
 
+    previews_applies_and_takes_it_back(&ui, lib);
+
     ui.run(&["act", "win.show-view", "'suggestions'"], lib);
     let state = state(&ui, lib);
     assert_eq!(state["view"], "suggestions");
@@ -136,6 +138,91 @@ fn the_app_can_be_clicked_through_headless() {
         (shot["width"].as_u64(), shot["height"].as_u64()),
         (Some(1024), Some(768))
     );
+}
+
+/// The whole point of 1.6, clicked through: a change set is previewed, what it promised is what
+/// is written, and the last one can be taken back.
+fn previews_applies_and_takes_it_back(ui: &Ui, library: &Path) {
+    let mut paths = photomanager_core::fixtures::photo_paths();
+    paths.sort();
+    let first = library.join(paths[0]);
+
+    ui.run(&["click", "Tools", "--role", "tab"], library);
+    ui.run(&["click", "Demo Change Set", "--role", "button"], library);
+    let previewed = settled_preview(ui, library);
+    assert_eq!(previewed["photos"].as_u64(), Some(5), "the demo is five photos");
+    assert_eq!(previewed["change"].as_u64(), Some(5));
+    assert_eq!(previewed["selected"].as_u64(), Some(5));
+    assert!(previewed["traffic"].as_u64().unwrap() > 0, "whole files go up again");
+    assert_eq!(state(ui, library)["page"], "preview");
+    assert_eq!(rating_of(&first), None, "nothing has been written yet");
+
+    // The first write of all is gated on the user saying their photos are backed up.
+    ui.run(&["click", "Apply", "--role", "button"], library);
+    ui.run(&["click", "My Photos Are Backed Up", "--role", "button"], library);
+    let applied = written(ui, library, "write", 0);
+    assert_eq!(applied["written"].as_u64(), Some(5));
+    assert_eq!(applied["failed"].as_u64(), Some(0));
+    assert_eq!(applied["cancelled"], false);
+    assert!(
+        state(ui, library)["toast"]
+            .as_str()
+            .unwrap()
+            .contains("5 photos changed"),
+        "the toast says what happened"
+    );
+    assert_eq!(rating_of(&first), Some(3), "the photo says what the preview promised");
+
+    ui.run(&["act", "win.undo-last"], library);
+    ui.run(&["click", "Take It Back", "--role", "button"], library);
+    let undone = written(ui, library, "undo", 0);
+    assert_eq!(undone["written"].as_u64(), Some(5));
+    assert_eq!(rating_of(&first), None, "the photos say again what they said before");
+
+    // Asked once and never again: this time the apply goes straight through.
+    ui.run(&["click", "Select All", "--role", "button"], library);
+    ui.run(&["click", "Apply", "--role", "button"], library);
+    let again = written(ui, library, "write", applied["batch"].as_i64().unwrap());
+    assert_eq!(again["written"].as_u64(), Some(5));
+    assert_eq!(rating_of(&first), Some(3));
+}
+
+fn rating_of(photo: &Path) -> Option<i64> {
+    let out = Command::new("exiftool")
+        .args(["-s3", "-n", "-XMP-xmp:Rating"])
+        .arg(photo)
+        .output()
+        .expect("run exiftool");
+    String::from_utf8_lossy(&out.stdout).trim().parse().ok()
+}
+
+/// The change set is built off the main thread, like everything else that takes a moment.
+fn settled_preview(ui: &Ui, library: &Path) -> Value {
+    for _ in 0..60 {
+        let state = state(ui, library);
+        if state["preview"]["photos"].as_u64().unwrap_or(0) > 0 {
+            return state["preview"].clone();
+        }
+        std::thread::sleep(std::time::Duration::from_millis(500));
+    }
+    panic!("the preview never arrived");
+}
+
+/// Waits for a pass of the given kind, newer than `after`, to be over and read back afterwards.
+fn written(ui: &Ui, library: &Path, kind: &str, after: i64) -> Value {
+    for _ in 0..120 {
+        let state = state(ui, library);
+        let applied = &state["applied"];
+        if applied["kind"] == kind
+            && applied["batch"].as_i64().unwrap_or(0) > after
+            && state["writing"] == false
+            && state["scanning"] == false
+        {
+            return applied.clone();
+        }
+        std::thread::sleep(std::time::Duration::from_millis(500));
+    }
+    panic!("the {kind} pass never finished");
 }
 
 /// The scan runs off the main thread, so the counts appear a moment after the click.

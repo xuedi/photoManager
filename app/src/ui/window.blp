@@ -74,11 +74,7 @@ template $PmWindow: Adw.ApplicationWindow {
         title: "Tools";
         icon-name: "applications-engineering-symbolic";
 
-        child: Adw.StatusPage {
-          icon-name: "applications-engineering-symbolic";
-          title: "Tools";
-          description: "Fix location, dates, tags, people, folders and file names in bulk.";
-        };
+        child: $PmTools tools {};
       }
 
       Adw.ViewStackPage {
