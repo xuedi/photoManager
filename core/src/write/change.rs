@@ -19,6 +19,45 @@ pub struct Assign {
     pub value: Value,
 }
 
+/// One tag a write would set, with what that tag says now: what a dry run is made of. `None` on
+/// either side is a tag that is not there, or is to be taken away.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Assignment {
+    pub tag: String,
+    pub key: String,
+    pub now: Option<Value>,
+    pub then: Option<Value>,
+}
+
+impl Assignment {
+    pub(crate) fn of(assign: &Assign, fields: &Map<String, Value>) -> Assignment {
+        let held = |value: Option<&Value>| match value {
+            None | Some(Value::Null) => None,
+            Some(value) => Some(value.clone()),
+        };
+        Assignment {
+            tag: assign.tag.clone(),
+            key: assign.key.clone(),
+            now: held(fields.get(&assign.key)),
+            then: held(Some(&assign.value)),
+        }
+    }
+
+    pub fn tells(&self) -> String {
+        format!("{} -> {}", shown(self.now.as_ref()), shown(self.then.as_ref()))
+    }
+}
+
+/// A tag value the way a person reads it, rather than as the JSON it is kept in.
+pub fn shown(value: Option<&Value>) -> String {
+    match value {
+        None | Some(Value::Null) => "none".to_string(),
+        Some(Value::Array(items)) => items.iter().map(plain).collect::<Vec<String>>().join(", "),
+        Some(object @ Value::Object(_)) => structured(object),
+        Some(other) => plain(other),
+    }
+}
+
 /// A position. Latitude and longitude are signed; ExifTool stores the size and the hemisphere
 /// apart, so that is how they are assigned and proved.
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -205,7 +244,7 @@ fn tag_assigns(paths: &[String]) -> Result<Vec<Assign>, String> {
 
 /// Every level of every path, so a reader that knows only the flat fields still sees the whole
 /// tree. `places/inChina/Beijing` also means `places` and `places/inChina`.
-fn expand(paths: &[String]) -> Result<Vec<String>, String> {
+pub fn expand(paths: &[String]) -> Result<Vec<String>, String> {
     let mut all = std::collections::BTreeSet::new();
     for path in paths {
         let levels: Vec<&str> = path.split('/').map(str::trim).collect();

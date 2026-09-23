@@ -11,6 +11,10 @@ use crate::scan::Issue;
 
 const SCHEMA_VERSION: i64 = 1;
 
+/// SQLite takes a few hundred parameters happily; a library's worth of paths is asked for in
+/// chunks of this size.
+const CHUNK: usize = 500;
+
 const SCHEMA: &str = "
 CREATE TABLE photo (
     id          INTEGER PRIMARY KEY,
@@ -74,6 +78,27 @@ pub struct Picture {
     pub rel_path: String,
     pub content_id: String,
     pub orientation: Option<i64>,
+}
+
+/// What a photo says, as a change set needs it: the fields a person thinks in, without the raw
+/// JSON, so a whole library of them fits in memory.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct Said {
+    pub taken_at: Option<String>,
+    pub taken_offset: Option<String>,
+    pub gps_lat: Option<f64>,
+    pub gps_lon: Option<f64>,
+    pub rating: Option<i64>,
+    pub tags: Vec<String>,
+}
+
+/// A photo as a change set needs it: where it is, how big it is, what it is, and what it says.
+#[derive(Debug, Clone)]
+pub struct Stated {
+    pub rel_path: String,
+    pub size: u64,
+    pub content_id: Option<String>,
+    pub said: Said,
 }
 
 #[derive(Debug, Clone)]
@@ -265,6 +290,65 @@ impl Cache {
         Ok(None)
     }
 
+    /// What these photos say, by path: everything a change set needs to know without opening a
+    /// single file. A photo the cache does not know is simply not in the result.
+    pub fn stated(&self, rel_paths: &[String]) -> Result<std::collections::HashMap<String, Stated>> {
+        let mut found = std::collections::HashMap::new();
+        let mut names: std::collections::HashMap<i64, String> = std::collections::HashMap::new();
+        for chunk in rel_paths.chunks(CHUNK) {
+            let sql = format!(
+                "SELECT id, rel_path, size, content_id, taken_at, taken_offset, gps_lat, gps_lon, rating
+                 FROM photo WHERE rel_path IN ({})",
+                holes(chunk.len())
+            );
+            let mut statement = self.connection.prepare(&sql)?;
+            let rows = statement.query_map(rusqlite::params_from_iter(chunk), |row| {
+                Ok((
+                    row.get::<_, i64>(0)?,
+                    Stated {
+                        rel_path: row.get(1)?,
+                        size: row.get::<_, i64>(2)? as u64,
+                        content_id: row.get(3)?,
+                        said: Said {
+                            taken_at: row.get(4)?,
+                            taken_offset: row.get(5)?,
+                            gps_lat: row.get(6)?,
+                            gps_lon: row.get(7)?,
+                            rating: row.get(8)?,
+                            tags: Vec::new(),
+                        },
+                    },
+                ))
+            })?;
+            for row in rows {
+                let (id, stated) = row?;
+                names.insert(id, stated.rel_path.clone());
+                found.insert(stated.rel_path.clone(), stated);
+            }
+        }
+
+        let ids: Vec<i64> = names.keys().copied().collect();
+        for chunk in ids.chunks(CHUNK) {
+            let sql = format!(
+                "SELECT photo_id, path FROM tag WHERE photo_id IN ({}) ORDER BY path",
+                holes(chunk.len())
+            );
+            let mut statement = self.connection.prepare(&sql)?;
+            let rows = statement.query_map(rusqlite::params_from_iter(chunk), |row| {
+                Ok((row.get::<_, i64>(0)?, row.get::<_, String>(1)?))
+            })?;
+            for row in rows {
+                let (id, path) = row?;
+                if let Some(name) = names.get(&id)
+                    && let Some(stated) = found.get_mut(name)
+                {
+                    stated.said.tags.push(path);
+                }
+            }
+        }
+        Ok(found)
+    }
+
     pub fn transaction(&mut self) -> Result<Writer<'_>> {
         Ok(Writer {
             transaction: self.connection.transaction()?,
@@ -280,6 +364,10 @@ impl Cache {
         writer.commit()?;
         Ok(removed)
     }
+}
+
+fn holes(count: usize) -> String {
+    std::iter::repeat_n("?", count).collect::<Vec<&str>>().join(",")
 }
 
 fn prepare(connection: &Connection) -> Result<()> {

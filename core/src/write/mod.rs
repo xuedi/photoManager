@@ -25,7 +25,7 @@ use std::time::Instant;
 
 use serde_json::{Map, Value};
 
-pub use change::{Assign, Change, Face, Faces, Field, Gps, Place, Taken};
+pub use change::{Assign, Assignment, Change, Face, Faces, Field, Gps, Place, Taken};
 use tool::Tool;
 
 use crate::cache::Cache;
@@ -134,6 +134,16 @@ impl Summary {
 struct Snapshot {
     fields: Map<String, Value>,
     image_hash: String,
+}
+
+/// Everything a write needs to know before it touches anything: where the photo is, what it says
+/// now, and the assignments that are not settled yet. A dry run stops right here.
+#[derive(Debug)]
+struct Intent {
+    rel_path: String,
+    content_id: String,
+    before: Snapshot,
+    want: Vec<Assign>,
 }
 
 /// Either a fresh intent, or the values a batch is putting back.
@@ -314,15 +324,19 @@ impl Engine {
         }
     }
 
-    fn attempt(
-        &mut self,
-        journal: &mut Journal,
-        cache: &mut Cache,
-        batch: i64,
-        path: &Path,
-        expected: &str,
-        wish: Wish<'_>,
-    ) -> Result<Outcome> {
+    /// What one write would do, tag by tag, without doing any of it. The same code path as a
+    /// write, up to and not including the journal: one read of the photo, nothing written,
+    /// nothing left behind.
+    pub fn dry_run(&mut self, target: &Target) -> Result<Vec<Assignment>> {
+        let intent = self.intent(&target.path, &target.content_id, &Wish::New(&target.change))?;
+        Ok(intent
+            .want
+            .iter()
+            .map(|assign| Assignment::of(assign, &intent.before.fields))
+            .collect())
+    }
+
+    fn intent(&mut self, path: &Path, expected: &str, wish: &Wish<'_>) -> Result<Intent> {
         let rel_path = self.inside(path)?;
         let bytes = std::fs::read(path).map_err(|error| Error::Refusing(format!("cannot be read: {error}")))?;
         let found = content_id(&bytes).ok_or_else(|| Error::Refusing("not a JPEG we understand".to_string()))?;
@@ -333,7 +347,7 @@ impl Engine {
         }
 
         let before = self.look(path)?;
-        let mut want = match &wish {
+        let mut want = match wish {
             Wish::New(change) => change.assigns().map_err(Error::Refusing)?,
             Wish::Back { want, expect } => {
                 if let Some(drifted) = expect.iter().find(|assign| !change::settled(assign, &before.fields)) {
@@ -346,6 +360,29 @@ impl Engine {
             }
         };
         want.retain(|assign| !change::settled(assign, &before.fields));
+        Ok(Intent {
+            rel_path,
+            content_id: found,
+            before,
+            want,
+        })
+    }
+
+    fn attempt(
+        &mut self,
+        journal: &mut Journal,
+        cache: &mut Cache,
+        batch: i64,
+        path: &Path,
+        expected: &str,
+        wish: Wish<'_>,
+    ) -> Result<Outcome> {
+        let Intent {
+            rel_path,
+            content_id: found,
+            before,
+            want,
+        } = self.intent(path, expected, &wish)?;
         if want.is_empty() {
             return Ok(Outcome::Skipped);
         }

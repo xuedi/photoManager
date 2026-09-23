@@ -1,4 +1,5 @@
 pub mod cache;
+pub mod changeset;
 pub mod clock;
 pub mod geo;
 pub mod identity;
