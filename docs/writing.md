@@ -105,9 +105,9 @@ they carry every level of every path: `places/inChina/Beijing` also means `place
 `places/inChina`. A level may not contain the separators, and a path with an empty level is
 refused.
 
-A position worked out rather than measured - a city centre derived from a tag - says so in the
-file itself, in two standard EXIF fields every GPS viewer shows and none uses to place the pin. So
-the file, not the database, is what remembers that a position is a guess; the scan reads the mark
+A position worked out rather than measured - a city centre derived from a tag, an event's town, a
+point chosen on a map - says so in the file itself, in two standard EXIF fields every GPS viewer
+shows and none uses to place the pin. So the file, not the database, is what remembers that a position is a guess; the scan reads the mark
 back and the photo's panel shows it, and the preview writes "(derived)" after such a position.
 
 EXIF leads on dates because every reader believes it; the XMP and IPTC dates are made to agree with

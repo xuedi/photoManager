@@ -66,11 +66,19 @@ the list. A tool that asks shows its questions first, and its row says what wait
 Some things a tool cannot decide from the cache: which place a tag like `places/inGreece/Atens`
 means is the person's answer, not a guess. So a tool may hand over **questions**, each about a
 group of photos: a key, a title, how many photos wait on it, what the place data offers for it
-best first with a confidence, and the answer so far. The window draws them on one page without
-knowing which tool asked or what the groups are, so another tool can ask the same shape about
-events.
+best first with a confidence, and the answer so far, and sometimes a note on the offers. The
+window draws them on one page without knowing which tool asked or what the groups are; the words
+on it - what a question is called, the heading, the bulk button - are the tool's.
 
-A question is answered with a place or with **Leave Alone**. The answer carries the place itself -
+A question is answered with a place, a **pin** or **Leave Alone**. A pin is a point the person
+chose on a map, **Pick on Map** in each row's menu: OpenStreetMap tiles, fetched only while the
+dialog is open, a click drops the pin and names the town it is in underneath, and **Use This
+Point** answers with it. The pin keeps the point and that town, whose name gives the words. Two
+pins are the same place only on the same point, and a pin is never the same as a place, even
+beside it. A place's position may be 5 000 m off, a pin's 1 000 m: put roughly where it was, not
+to the metre.
+
+The answer carries the place itself -
 its GeoNames id, name, region, country, code and coordinates - so it does not depend on the place
 data it was chosen from, and building the change set afterwards needs the cache alone, like every
 other tool. The answers are the tool's settings: one JSON object, sorted by question, so the same
@@ -83,16 +91,17 @@ flowchart TD
     geo[(place data, read only)] --> offers[what the place data offers]
     offers --> ask
     ask --> page[the question page]
-    page -- Confirm, Choose Another, Leave Alone --> answers[the tool's settings]
-    page -- Confirm Exact Matches --> answers
+    page -- Confirm, Choose Another, Pick on Map, Leave Alone --> answers[the tool's settings]
+    page -- the tool's bulk button --> answers
     answers --> kept[(app.db)]
     answers --> page
     page -- Preview --> preview[the change set with the answers so far]
 ```
 
-**Confirm Exact Matches** answers, in one click, every waiting question whose best offer matched
-a name exactly and with a confidence of 0.9 or more. Everything else is one click per question,
-and the preview afterwards still lists every photo. An answer changes the page at once, without
+An offer may be **sure**. The page's bulk button - worded by the tool, Confirm Exact Matches or
+Confirm Where the Rest Is - answers, in one click, every waiting question whose best offer is
+sure, and nothing else. What counts as sure is the tool's: see each tool below. Everything else is
+one click per question, and the preview afterwards still lists every photo. An answer changes the page at once, without
 asking the library again; the row on the list is counted again behind it.
 
 ## Remembered settings
@@ -112,7 +121,8 @@ coordinates of that city, one question per distinct tag rather than one per phot
   tag: `places/inChina/Beijing`, not the `places/inChina` beside it. A photo with a position is
   never in the change set, however it got that position.
 - **What the page offers.** The place data's candidates for the tag's last level, with its
-  country level as the hint. A typo, a region or a made-up place still gets its candidates, and
+  country level as the hint. Sure is an exact name the place data gives 0.9 or more, so the bulk
+  button is **Confirm Exact Matches**. A typo, a region or a made-up place still gets its candidates, and
   the search finds the right one or the tag is left alone; no rule for any spelling is written in
   code.
 - **A country alone** (`places/inChina`) is listed apart, starts as Leave Alone and is never
@@ -126,6 +136,37 @@ coordinates of that city, one question per distinct tag rather than one per phot
   the same place. A photo whose other tag still waits is held back until it is answered, so it
   cannot end up placed by the first tag before the second could refuse it.
 - **Nothing** reaches a photo whose tag is unanswered or left alone.
+- **A tag no place data knows** - a village, a made-up place - is answered with a pin.
+
+## GPS from the event
+
+For the photos the places tag cannot place: no GPS and no places tag that names a city - many
+carry the country alone. One question per event folder, sub-folders included, answered with a
+place, a pin or Leave Alone for an event that was nowhere in particular.
+
+- **Who is asked about.** The photos of the scope without GPS, in an event folder, without a
+  city-level places tag. A photo with a city tag belongs to the places tag, whatever that was
+  answered, so a trip over two tagged cities never gives one city's photos the other. A loose
+  file is not asked about.
+- **Where the rest of the event is**, first. The event's photos that have a position - from the
+  camera, or given from the places tag - each put in the town it stands in, from the place data.
+  One offer per town, "where 3 of its photos are". A small part of a town, a neighbourhood, counts
+  as the town unless the position stands on it, so a walk across a city is that city and not a
+  dozen neighbourhoods; a district the size of a town is one. The offer's position is the town's,
+  not the photos' average.
+- **What the folders name**, after that: the city level of the folder if it has one, then the
+  event's name, through the place data with the folder's country as the hint.
+- **Inside the folder's country.** Every offer is kept to the country the folder names, not just
+  weighed towards it. A folder whose country the place data does not know (a part of a country,
+  say) is not narrowed, and the row says so.
+- **Sure** is only where the rest is, and only when every located photo of the event stands in the
+  same town and there are at least three of them. A split event gets an offer per town, none sure.
+  A name is never sure, however exact: an event called `Wedding` is not in the Berlin district of
+  that name. The bulk button is **Confirm Where the Rest Is**.
+- **Nothing from the country alone**: a country centre is not a place anyone took a photo.
+- **What a photo gets** is what the places tag gives, with this tool's mark in the file: the
+  position, `photoManager: event` and how far off it may be, and the words only where the photo
+  has none. A pin is written at its point.
 
 ## The history
 

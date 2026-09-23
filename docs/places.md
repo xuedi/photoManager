@@ -89,6 +89,13 @@ Coordinates go into the R\*Tree, which is widened in steps until something is ne
 that come back are ranked by distance, discounted by how well known they are: a city of a
 million wins from ten kilometres away against a village two kilometres away.
 
+The same lookup also names the **town** the point is in, for words that go into a photo: the
+nearest place that is a town. GeoNames lists the parts of big cities as places of their own -
+hundreds of neighbourhoods in some - and a position in a city lands nearest to one of them. So a
+part of a town with fewer than a hundred thousand people is passed over, unless the point stands
+on it: a position given from a tag stands exactly on the place it was answered with, and stays
+there. The town is looked for inside the country the point is in.
+
 The **country** does not come from the nearest city, because the nearest city is often across a
 border. It comes from the country outlines, by asking which outline the point falls inside, and
 a point in a hole - Lesotho inside South Africa - is not inside.
