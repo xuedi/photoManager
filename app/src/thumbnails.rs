@@ -1,7 +1,8 @@
 //! The grid's pictures, loaded when a cell is bound and never before. A few workers read and
-//! decode off the main thread, newest request first so what is on screen now comes before what
-//! was scrolled past. The last few hundred results are kept. A cell that shows something else by
-//! the time its picture arrives never sees it.
+//! decode off the main thread, in the order the cells were bound, which puts the screen first. A
+//! cell that is unbound takes its request back out of the queue, so a fast scroll leaves nothing
+//! behind to wait for. The last few hundred results are kept. A cell that shows something else
+//! by the time its picture arrives never sees it.
 
 use std::cell::{Cell, RefCell};
 use std::collections::{HashMap, VecDeque};
@@ -110,7 +111,7 @@ type Source = dyn Fn(&Request) -> Option<Rgba> + Send + Sync;
 
 #[derive(Default)]
 struct Jobs {
-    queued: Vec<Request>,
+    queued: VecDeque<Request>,
     closed: bool,
 }
 
@@ -206,7 +207,7 @@ impl<T: Clone + 'static> Loader<T> {
             .push((slot.clone(), generation, Box::new(deliver)));
         if !asked {
             let mut jobs = self.inner.queue.jobs.lock().expect("the queue");
-            jobs.queued.push(request);
+            jobs.queued.push_back(request);
             self.inner.queue.ready.notify_one();
         }
     }
@@ -266,7 +267,7 @@ fn work(queue: &Queue, source: &Source, sender: &async_channel::Sender<(String, 
                 if jobs.closed {
                     return;
                 }
-                if let Some(request) = jobs.queued.pop() {
+                if let Some(request) = jobs.queued.pop_front() {
                     break request;
                 }
                 jobs = queue.ready.wait(jobs).expect("the queue");

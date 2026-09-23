@@ -610,6 +610,9 @@ impl Gallery {
         };
         let store = self.photos_store();
         store.splice(0, store.n_items(), &photos);
+        if store.n_items() > 0 {
+            imp.grid.scroll_to(0, gtk::ListScrollFlags::NONE, None);
+        }
         imp.pages.set_visible_child_name(match (found, all_files) {
             (0, _) => "empty",
             (_, true) => "files",
