@@ -23,6 +23,8 @@ jobs:
             blueprint-compiler just perl-image-exiftool
           rustup default stable
           rustup component add rustfmt clippy
+          # Arch puts exiftool in vendor_perl, which a non-login shell does not have on its PATH.
+          echo /usr/bin/vendor_perl >> "$GITHUB_PATH"
 
       - uses: actions/checkout@v5
 
