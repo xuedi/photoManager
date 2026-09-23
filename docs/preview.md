@@ -16,7 +16,7 @@ is, what would change in words, and a verdict.
 |---------|-------|
 | would change | the photo does not say this yet, so it would be written |
 | nothing to do | it already says it, as far as the cache knows |
-| refused | it will not be touched, and why: not in the cache, unreadable, an intent that cannot be written |
+| refused | it will not be touched, and why: not in the cache, unreadable, an intent that cannot be written, or the tool's own reason, such as two places for one photo |
 | written / failed | what became of it once the set was applied |
 
 Only a row that would change can be selected, and only selected rows are ever handed to the engine.

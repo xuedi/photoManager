@@ -89,7 +89,7 @@ as a GResource, so the binary carries its own interface.
 | GeoNames dumps | `…/geonames` in the cache | disposable, downloaded on request |
 | place data | `$XDG_DATA_HOME/…/geo.db` | disposable, built from the dumps |
 | journal of every write | `$XDG_DATA_HOME/…/app.db` | kept, never discarded: an undo has to outlive a cache rebuild |
-| settings, presets | `$XDG_DATA_HOME/…/app.db`, next to the journal | kept, for the same reason |
+| settings, presets, each tool's last settings and answers | `$XDG_DATA_HOME/…/app.db`, next to the journal | kept, for the same reason |
 
 Every location is resolved in one place, from the environment. Pointing `HOME`, `XDG_*` and
 `PHOTOMANAGER_LIBRARY` somewhere else moves the whole application, which is how tests keep away
@@ -111,7 +111,10 @@ shortcuts and tests all use:
 | `win.gallery-select-all`, `win.gallery-select-none` | select every photo in the gallery, or none |
 | `win.use-as-scope` | make what the gallery shows or has selected the scope of the tools |
 | `win.tools-scope` | set the scope: `all`, a country or event folder, or `picked` for the gallery's |
-| `win.run-tool` | open a tool by its key, or `key:settings`, for the scope: its change set in the preview |
+| `win.run-tool` | open a tool by its key, or `key:settings`, for the scope: its questions if it asks, else its change set in the preview; without settings, the ones it was last given |
+| `win.answer` | answer one question: a tool, a question and `best`, `offer:N`, `leave`, `forget`, `choose` for the place search, or a place as the settings write it |
+| `win.answer-exact` | Confirm Exact Matches for a tool |
+| `win.preview-answers` | the change set of the tool whose questions are shown, with the answers so far |
 | `win.show-history` | the list of every pass |
 | `win.history-details` | one pass and its photos, by batch |
 | `win.undo-pass` | take back one pass by batch, after a confirmation that names the photos changed since |

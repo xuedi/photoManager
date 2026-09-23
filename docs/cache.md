@@ -11,11 +11,17 @@ It lives in `$XDG_CACHE_HOME/org.beijingcode.PhotoManager/cache.db` (SQLite, wri
 
 | Table | Holds |
 |-------|-------|
-| `photo` | one row per JPEG: where it is, what the filesystem says (size, mtime, inode), its content id, what the folders say (country, city, event date and name, the event's folder, sub-folder), what the metadata says (dates, GPS, the city in the location text, camera, orientation, rating, size), and the raw metadata as JSON |
+| `photo` | one row per JPEG: where it is, what the filesystem says (size, mtime, inode), its content id, what the folders say (country, city, event date and name, the event's folder, sub-folder), what the metadata says (dates, GPS and how the position was worked out, the city in the location text, camera, orientation, rating, size), and the raw metadata as JSON |
 | `tag` | one row per tag path per photo, plus its leaf |
 | `issue` | one row per thing worth looking at, with its kind and a detail |
 
-The raw JSON is there so a field we have not modelled yet is not lost between scans.
+The raw JSON is there so a field we have not modelled yet is not lost between scans. It also
+answers whether a photo says anything at all about its place in words, in any part and either
+spelling, which a tool asks before it writes words that would take the photo's own away.
+
+How the position was worked out is `GPSProcessingMethod` as the photo says it. One this
+application wrote starts with `photoManager: `, which is how a position derived from a tag is told
+apart from one a camera measured; the file carries the mark, the column only remembers it.
 
 Because it holds what every photo says, the cache is also what answers "what would this change do
 to these photos" without opening a single file, which is what a [preview](preview.md) is built

@@ -94,7 +94,7 @@ visited as few times as possible, and it is never left half written.
 | Intent | Goes into |
 |--------|-----------|
 | tags | `XMP-digiKam:TagsList` and `XMP-microsoft:LastKeywordXMP` (`/`), `XMP-lr:HierarchicalSubject` (`\|`), flat `XMP-dc:Subject` and `IPTC:Keywords` |
-| position | `EXIF:GPSLatitude`/`Ref`, `GPSLongitude`/`Ref`, optional `GPSAltitude`/`Ref`, `GPSMapDatum` |
+| position | `EXIF:GPSLatitude`/`Ref`, `GPSLongitude`/`Ref`, optional `GPSAltitude`/`Ref`, `GPSMapDatum`; for a derived position also `GPSProcessingMethod` (`photoManager: ` and from what) and `GPSHPositioningError` (how many metres off it may be), which a measured position takes away |
 | place in words | `XMP-photoshop:City`/`State`/`Country`, `XMP-iptcCore:CountryCode`/`Location`, and the five IPTC spellings |
 | date | `EXIF:DateTimeOriginal` and `CreateDate` with `OffsetTimeOriginal`/`Digitized`/`OffsetTime`, `XMP-xmp:CreateDate`, `XMP-photoshop:DateCreated`, `IPTC:DateCreated`/`TimeCreated` |
 | rating | `XMP-xmp:Rating`, and nowhere else |
@@ -104,6 +104,11 @@ All five tag fields say the same thing, because different readers each read a di
 they carry every level of every path: `places/inChina/Beijing` also means `places` and
 `places/inChina`. A level may not contain the separators, and a path with an empty level is
 refused.
+
+A position worked out rather than measured - a city centre derived from a tag - says so in the
+file itself, in two standard EXIF fields every GPS viewer shows and none uses to place the pin. So
+the file, not the database, is what remembers that a position is a guess; the scan reads the mark
+back and the photo's panel shows it, and the preview writes "(derived)" after such a position.
 
 EXIF leads on dates because every reader believes it; the XMP and IPTC dates are made to agree with
 it, and the EXIF-shaped XMP date some old writers left behind is taken away. `XMP-xmp:Label` is

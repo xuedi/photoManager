@@ -36,7 +36,7 @@ hundred rows.
 |-------|-------|
 | `country`, `area` | countries and their first-level regions |
 | `place` | one row per populated place: where it is, how big it is, what kind it is |
-| `name` | every spelling of every place, folded to one comparable form |
+| `name` | every spelling of every place, folded to one comparable form, indexed by the spelling and by the place |
 | `name_search` | the same names in a full-text index |
 | `place_at` | the coordinates of every place, in an R\*Tree |
 | `ring`, `ring_at` | the country outlines, one row per ring, with a box around each |
@@ -73,6 +73,12 @@ Confidence is mostly about how much of the text was matched. `Beijing` on its ow
 0.94; the same word inside `BeijingSeaSide` comes out at 0.53, because one word out of three is
 not an answer. A country named in the text agrees or disagrees with the candidate and moves it
 up or down. A typo costs; being a place people have heard of helps a little.
+
+A typo is found in two steps: the names that start with the same three letters and are about as
+long, from the index over the spellings, and then each of those places measured by its nearest
+spelling, from the index over the places. Place data imported before the second index existed
+gains it when it is opened. The three letters are also its limit: `Atens` never reaches Athens,
+whose names start with `ath`, so a typo is offered, never confirmed without a person.
 
 A region has no coordinates of its own in the dumps, so `Hainan` answers with the largest place
 in Hainan and says that is what it did.
