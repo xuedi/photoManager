@@ -4,6 +4,7 @@ use adw::prelude::*;
 use adw::subclass::prelude::*;
 use gtk::glib;
 use gtk::glib::subclass::InitializingObject;
+use photomanager_core::filter::Filter;
 use photomanager_core::scan::Mode;
 
 use crate::dashboard::Dashboard;
@@ -27,7 +28,11 @@ mod imp {
         pub dashboard: TemplateChild<Dashboard>,
         #[template_child]
         pub tools: TemplateChild<Tools>,
+        #[template_child]
+        pub gallery: TemplateChild<adw::StatusPage>,
         pub library: std::cell::RefCell<Option<Rc<Library>>>,
+        /// The photos last handed to the gallery, and how many there were.
+        pub shown: std::cell::RefCell<Option<(Filter, Option<i64>)>>,
     }
 
     #[glib::object_subclass]
@@ -82,6 +87,10 @@ impl Window {
         self.imp().library.borrow().clone()
     }
 
+    pub fn dashboard(&self) -> Dashboard {
+        self.imp().dashboard.clone()
+    }
+
     pub fn tools(&self) -> Tools {
         self.imp().tools.clone()
     }
@@ -96,6 +105,29 @@ impl Window {
 
     pub fn fill_thumbnails(&self) {
         self.imp().dashboard.fill_thumbnails();
+    }
+
+    /// Hands a set of photos to the gallery and shows it.
+    pub fn show_photos(&self, filter: Filter) {
+        let count = self.library().and_then(|library| library.count(&filter));
+        let gallery = &self.imp().gallery;
+        gallery.set_title(&filter.title());
+        let noun = match filter.is_of_files() {
+            true => ("file", "files"),
+            false => ("photo", "photos"),
+        };
+        gallery.set_description(Some(&match count {
+            Some(1) => format!("1 {}", noun.0),
+            Some(count) => format!("{count} {}", noun.1),
+            None => "The library is busy, try again in a moment.".to_string(),
+        }));
+        tracing::info!(filter = %filter, count, "photos shown");
+        *self.imp().shown.borrow_mut() = Some((filter, count));
+        self.show_view("gallery");
+    }
+
+    pub fn shown(&self) -> Option<(Filter, Option<i64>)> {
+        self.imp().shown.borrow().clone()
     }
 
     pub fn visible_view(&self) -> String {
@@ -124,6 +156,18 @@ impl Window {
                 };
                 if !window.show_view(name) {
                     tracing::warn!(view = name, "no such view");
+                }
+            })
+            .build();
+        let show_photos = gtk::gio::ActionEntry::builder("show-photos")
+            .parameter_type(Some(glib::VariantTy::STRING))
+            .activate(|window: &Window, _, parameter| {
+                let Some(text) = parameter.and_then(|value| value.str()) else {
+                    return;
+                };
+                match text.parse::<Filter>() {
+                    Ok(filter) => window.show_photos(filter),
+                    Err(why) => tracing::warn!(why, "no such set of photos"),
                 }
             })
             .build();
@@ -165,6 +209,7 @@ impl Window {
             .build();
         self.add_action_entries([
             show_view,
+            show_photos,
             scan,
             fill,
             places,

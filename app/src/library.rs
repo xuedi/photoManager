@@ -8,6 +8,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 
 use photomanager_core::cache::Cache;
 use photomanager_core::changeset::{self, ChangeSet, Wanted};
+use photomanager_core::filter::Filter;
 use photomanager_core::geo::Geo;
 use photomanager_core::geo::import::Imported;
 use photomanager_core::journal::{Journal, Kind, Pass};
@@ -15,6 +16,7 @@ use photomanager_core::metadata::Exiv2;
 use photomanager_core::paths::Paths;
 use photomanager_core::scan::{self, Mode, Progress, Summary, Thumbnails};
 use photomanager_core::settings::{self, Settings};
+use photomanager_core::survey::Survey;
 use photomanager_core::thumbs::{Size, Thumbs};
 use photomanager_core::write::{Engine, Summary as Applied};
 
@@ -57,6 +59,9 @@ pub struct Library {
     working: Cell<bool>,
     cancel: Arc<AtomicBool>,
     last: RefCell<Option<Summary>>,
+    survey: RefCell<Option<Rc<Survey>>>,
+    /// Which survey is the newest asked for, so an older one that arrives late is dropped.
+    surveys: Cell<u64>,
 }
 
 impl Library {
@@ -82,6 +87,8 @@ impl Library {
             working: Cell::new(false),
             cancel: Arc::new(AtomicBool::new(false)),
             last: RefCell::new(None),
+            survey: RefCell::new(None),
+            surveys: Cell::new(0),
         }))
     }
 
@@ -118,6 +125,50 @@ impl Library {
             thumbnails: self.thumbs.count(Size::Small) as i64,
             places: self.place_count(),
         }
+    }
+
+    /// The last survey that arrived.
+    pub fn survey(&self) -> Option<Rc<Survey>> {
+        self.survey.borrow().clone()
+    }
+
+    /// Looks the library over again, off the main thread and through a read-only look at the
+    /// cache, so it can run while the cache itself is out for something else.
+    pub fn resurvey<F: Fn(Result<Rc<Survey>, String>) + 'static>(self: &Rc<Self>, done: F) {
+        let asked = self.surveys.get() + 1;
+        self.surveys.set(asked);
+
+        let (sender, receiver) = async_channel::bounded(1);
+        let file = self.paths.cache_db();
+        std::thread::spawn(move || {
+            let taken = match Cache::read_only(&file) {
+                Ok(Some(cache)) => Survey::take(&cache),
+                Ok(None) => Ok(Survey::default()),
+                Err(error) => Err(error),
+            };
+            let _ = sender.send_blocking(taken.map_err(|error| error.to_string()));
+        });
+
+        let this = self.clone();
+        gtk::glib::spawn_future_local(async move {
+            let Ok(taken) = receiver.recv().await else {
+                return;
+            };
+            if this.surveys.get() != asked {
+                return;
+            }
+            done(taken.map(|survey| {
+                let survey = Rc::new(survey);
+                *this.survey.borrow_mut() = Some(survey.clone());
+                survey
+            }));
+        });
+    }
+
+    /// How many photos a filter names, or nothing while the cache is out.
+    pub fn count(&self, filter: &Filter) -> Option<i64> {
+        let cache = self.cache.borrow();
+        filter.count(cache.as_ref()?).ok()
     }
 
     fn place_count(&self) -> i64 {

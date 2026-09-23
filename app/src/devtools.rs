@@ -98,7 +98,42 @@ fn state(window: &Window, paths: &Paths, library: Option<&Library>) -> String {
             "cancelled": summary.cancelled,
         })
     });
+    let survey = library.and_then(|library| library.survey()).map(|survey| {
+        let coverage: serde_json::Map<String, serde_json::Value> = survey
+            .coverage
+            .iter()
+            .map(|(gap, measure)| {
+                (
+                    gap.key().to_string(),
+                    serde_json::json!({ "of": measure.of, "missing": measure.missing }),
+                )
+            })
+            .collect();
+        serde_json::json!({
+            "photos": survey.photos,
+            "events": survey.events,
+            "bytes": survey.bytes,
+            "first": survey.first,
+            "last": survey.last,
+            "cameras": survey.camera_count(),
+            "coverage": coverage,
+            "countries": survey.countries.iter().map(|place| place.name.clone()).collect::<Vec<_>>(),
+            "tidy": survey.tidy.iter().map(|finding| serde_json::json!({
+                "title": finding.title,
+                "count": finding.count,
+                "filter": finding.filter.to_string(),
+            })).collect::<Vec<_>>(),
+        })
+    });
+    let dashboard = window.dashboard();
+    let gallery = window.shown().map(
+        |(filter, count)| serde_json::json!({ "filter": filter.to_string(), "title": filter.title(), "count": count }),
+    );
     serde_json::json!({
+        "survey": survey,
+        "field": dashboard.field().key(),
+        "listed": dashboard.listed_places(),
+        "gallery": gallery,
         "page": window.tools().showing(),
         "preview": previewed,
         "applied": applied,

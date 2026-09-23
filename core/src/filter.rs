@@ -161,6 +161,11 @@ impl Filter {
         }
     }
 
+    /// Whether the set is of files that may not be photos at all.
+    pub fn is_of_files(&self) -> bool {
+        matches!(self.kind, Kind::Loose | Kind::OffConvention | Kind::Issue(_))
+    }
+
     pub fn count(&self, cache: &Cache) -> Result<i64> {
         let (sql, params) = self.sql("count(DISTINCT {path})", "");
         cache

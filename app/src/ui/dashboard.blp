@@ -2,87 +2,172 @@ using Gtk 4.0;
 using Adw 1;
 
 template $PmDashboard: Adw.Bin {
-  child: Adw.StatusPage {
-    icon-name: "view-grid-symbolic";
-    title: "Dashboard";
-    description: "What the library holds and what it is missing.";
+  child: Stack pages {
+    transition-type: crossfade;
 
-    child: Box {
-      orientation: vertical;
-      spacing: 18;
-      halign: center;
+    StackPage {
+      name: "empty";
 
-      Box {
-        orientation: horizontal;
-        spacing: 12;
-        halign: center;
+      child: Adw.StatusPage {
+        icon-name: "view-grid-symbolic";
+        title: "Dashboard";
+        description: "What the library holds and what it is missing.";
 
-        Button scan_button {
-          label: "Scan the Library";
-          action-name: "win.scan";
+        child: Box empty_slot {
+          orientation: vertical;
+          halign: center;
 
-          styles [
-            "suggested-action",
-            "pill",
-          ]
+          Box controls {
+            orientation: vertical;
+            spacing: 12;
 
-          accessibility {
-            label: "Scan the Library";
+            Adw.WrapBox {
+              child-spacing: 12;
+              line-spacing: 12;
+              halign: center;
+
+              Button scan_button {
+                label: "Scan the Library";
+                action-name: "win.scan";
+
+                styles [
+                  "suggested-action",
+                  "pill",
+                ]
+
+                accessibility {
+                  label: "Scan the Library";
+                }
+              }
+
+              Button fill_button {
+                label: "Make Missing Thumbnails";
+                visible: false;
+                action-name: "win.fill-thumbnails";
+
+                styles [
+                  "pill",
+                ]
+
+                accessibility {
+                  label: "Make Missing Thumbnails";
+                }
+              }
+
+              Button places_button {
+                label: "Get Place Data";
+                action-name: "win.get-places";
+
+                styles [
+                  "pill",
+                ]
+
+                accessibility {
+                  label: "Get Place Data";
+                }
+              }
+
+              Button cancel_button {
+                label: "Cancel";
+                visible: false;
+                action-name: "win.cancel-scan";
+
+                styles [
+                  "pill",
+                ]
+
+                accessibility {
+                  label: "Cancel";
+                }
+              }
+            }
+
+            ProgressBar progress {
+              visible: false;
+              show-text: true;
+              width-request: 300;
+              halign: center;
+            }
           }
-        }
+        };
+      };
+    }
 
-        Button fill_button {
-          label: "Make Missing Thumbnails";
-          visible: false;
-          action-name: "win.fill-thumbnails";
+    StackPage {
+      name: "filled";
 
-          styles [
-            "pill",
-          ]
+      child: ScrolledWindow {
+        hscrollbar-policy: never;
 
-          accessibility {
-            label: "Make Missing Thumbnails";
-          }
-        }
+        child: Adw.Clamp {
+          maximum-size: 860;
+          tightening-threshold: 600;
 
-        Button places_button {
-          label: "Get Place Data";
-          action-name: "win.get-places";
+          child: Box {
+            orientation: vertical;
+            spacing: 24;
+            margin-top: 24;
+            margin-bottom: 24;
+            margin-start: 12;
+            margin-end: 12;
 
-          styles [
-            "pill",
-          ]
+            Box filled_slot {
+              orientation: vertical;
+            }
 
-          accessibility {
-            label: "Get Place Data";
-          }
-        }
+            Box {
+              orientation: vertical;
+              spacing: 12;
 
-        Button cancel_button {
-          label: "Cancel";
-          visible: false;
-          action-name: "win.cancel-scan";
+              Label {
+                label: "At a Glance";
+                xalign: 0;
 
-          styles [
-            "pill",
-          ]
+                styles [
+                  "heading",
+                ]
+              }
 
-          accessibility {
-            label: "Cancel";
-          }
-        }
-      }
+              FlowBox glance {
+                selection-mode: none;
+                homogeneous: true;
+                min-children-per-line: 1;
+                max-children-per-line: 3;
+                column-spacing: 12;
+                row-spacing: 12;
+              }
+            }
 
-      ProgressBar progress {
-        visible: false;
-        show-text: true;
-        width-request: 360;
-      }
+            Adw.PreferencesGroup coverage {
+              title: "Coverage";
+              description: "How many photos carry each field. Select one to see the photos without it.";
+            }
 
-      Adw.PreferencesGroup counts {
-        width-request: 360;
-        visible: false;
-      }
-    };
+            Adw.PreferencesGroup places {
+              title: "Where the Gaps Are";
+              description: "Countries and events, the most missing first.";
+
+              header-suffix: DropDown field {
+                valign: center;
+                tooltip-text: "The field to look at";
+
+                accessibility {
+                  label: "Field";
+                }
+              };
+            }
+
+            Adw.PreferencesGroup tidy {
+              title: "Tidy Up";
+              description: "Things that are untidy rather than missing. Each is fixed by a tool.";
+            }
+
+            Adw.PreferencesGroup data {
+              title: "Behind the Scenes";
+            }
+          };
+        };
+      };
+    }
   };
 }

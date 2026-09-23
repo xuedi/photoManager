@@ -116,6 +116,29 @@ fn the_app_can_be_clicked_through_headless() {
         "every photo got a thumbnail while it was scanned"
     );
 
+    let survey = surveyed(&ui, lib);
+    assert_eq!(survey["coverage"]["no-gps"]["missing"].as_u64(), Some(photos - 1));
+    assert_eq!(survey["coverage"]["no-date"]["missing"].as_u64(), Some(2));
+    assert!(
+        survey["tidy"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|finding| finding["filter"] == "loose" && finding["count"] == 1),
+        "the loose file is reported: {survey}"
+    );
+
+    ui.run(&["act", "win.show-photos", "'no-date'"], lib);
+    let shown = state(&ui, lib);
+    assert_eq!(shown["view"], "gallery", "a number opens the gallery");
+    assert_eq!(shown["gallery"]["filter"], "no-date");
+    assert_eq!(
+        shown["gallery"]["count"].as_u64(),
+        Some(2),
+        "with exactly the photos it counted"
+    );
+    ui.run(&["act", "win.show-view", "'dashboard'"], lib);
+
     ui.run(&["click", "Get Place Data", "--role", "button"], lib);
     let places = settled(&ui, lib, "places");
     assert_eq!(places["places"].as_u64(), Some(149), "the excerpt was imported");
@@ -234,6 +257,18 @@ fn written(ui: &Ui, library: &Path, kind: &str, after: i64) -> Value {
 /// The scan runs off the main thread, so the counts appear a moment after the click.
 fn scanned(ui: &Ui, library: &Path) -> Value {
     settled(ui, library, "photos")
+}
+
+/// The survey is taken off the main thread after the scan, a moment after its counts.
+fn surveyed(ui: &Ui, library: &Path) -> Value {
+    for _ in 0..60 {
+        let state = state(ui, library);
+        if state["survey"]["photos"].as_u64().unwrap_or(0) > 0 {
+            return state["survey"].clone();
+        }
+        std::thread::sleep(std::time::Duration::from_millis(500));
+    }
+    panic!("the survey never arrived");
 }
 
 /// Waits until nothing is running any more and the count asked about is there.
