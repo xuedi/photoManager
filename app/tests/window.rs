@@ -148,6 +148,7 @@ fn scans_into_its_cache() {
     assert_eq!(opened.dump_date().map(|date| date.len()), Some(19));
 
     reads_the_panel(&window);
+    edits_one_photo(&window);
 
     previews_what_a_tool_would_change(&window, &opened);
 }
@@ -538,6 +539,72 @@ fn reads_the_panel(window: &Window) {
     assert!(page.shows_panel());
 
     WidgetExt::activate_action(window, "win.photo-close", None).unwrap();
+    window.show_view("dashboard");
+}
+
+/// The form's change is exactly what was edited, the review lists what the engine would write
+/// for it, and nothing is written here: the apply is the smoke test's.
+fn edits_one_photo(window: &Window) {
+    let gallery = window.gallery();
+    let page = gallery.photo();
+    let act = |name: &str| WidgetExt::activate_action(window, name, None).unwrap();
+    WidgetExt::activate_action(window, "win.show-photos", Some(&"all".to_variant())).unwrap();
+    settle(window);
+    WidgetExt::activate_action(window, "win.show-photo", Some(&LOCATED.to_variant())).unwrap();
+    until(
+        || page.details().is_some_and(|details| details.rel_path == LOCATED),
+        "the details arrived",
+    );
+    let file = window.library().unwrap().paths().library().join(LOCATED);
+    let before = std::fs::read(&file).unwrap();
+
+    act("win.photo-edit");
+    assert!(page.editing());
+    assert_eq!(
+        page.pending(),
+        Some(Ok(Vec::new())),
+        "nothing edited, nothing to change"
+    );
+    assert!(!page.can_review(), "and nothing to review");
+
+    assert!(page.set_form("Date Taken", "2019-07-13 18:25:00"));
+    page.form_add_tag("mixed/food");
+    assert_eq!(page.pending(), Some(Ok(vec!["date", "tags"])), "exactly the two fields");
+    assert!(page.can_review());
+
+    page.set_form("Date Taken", "2019-13-13 18:25:00");
+    assert!(matches!(page.pending(), Some(Err(why)) if why.contains("month 13")));
+    assert!(!page.can_review(), "a form that does not parse cannot be reviewed");
+    page.set_form("Date Taken", "2019-07-13 18:25:00");
+
+    act("win.photo-review");
+    until(|| page.review_lines().is_some(), "the review arrived");
+    let lines = page.review_lines().unwrap();
+    let has = |tag: &str| lines.iter().any(|line| line.starts_with(&format!("{tag}: ")));
+    assert!(has("EXIF:DateTimeOriginal"), "{lines:#?}");
+    assert!(has("XMP-digiKam:TagsList"), "{lines:#?}");
+    assert!(!has("EXIF:GPSLatitude"), "the position was not touched: {lines:#?}");
+    page.cancel_review();
+    assert!(page.review_lines().is_none());
+
+    // Stepping away from a change asks first, and nothing moves until it is answered.
+    act("win.photo-next");
+    assert_eq!(
+        page.path().as_deref(),
+        Some(LOCATED),
+        "an unfinished edit is not dropped"
+    );
+    assert!(page.editing());
+    let dialog = window
+        .visible_dialog()
+        .and_downcast::<adw::AlertDialog>()
+        .expect("the question");
+    dialog.emit_by_name::<()>("response", &[&"discard"]);
+    assert!(!page.editing(), "discarded");
+    assert_ne!(page.path().as_deref(), Some(LOCATED), "and then it stepped on");
+
+    assert_eq!(before, std::fs::read(&file).unwrap(), "a review writes nothing");
+    act("win.photo-close");
     window.show_view("dashboard");
 }
 

@@ -147,7 +147,7 @@ impl Panel {
         while let Some(child) = slot.first_child() {
             slot.remove(&child);
         }
-        let map = map_at(lat, lon);
+        let (map, _) = map_at(lat, lon);
         slot.append(&map);
         self.map = Some(map);
         tracing::info!(lat, lon, "map shown");
@@ -502,7 +502,7 @@ fn boxed(row: &impl IsA<gtk::Widget>) -> gtk::ListBox {
 
 /// OpenStreetMap's standard layer through libshumate, with its attribution, and a mark on the
 /// point.
-pub fn map_at(lat: f64, lon: f64) -> shumate::SimpleMap {
+pub fn map_at(lat: f64, lon: f64) -> (shumate::SimpleMap, shumate::Marker) {
     let map = shumate::SimpleMap::new();
     let registry = shumate::MapSourceRegistry::with_defaults();
     if let Some(source) = registry.by_id(shumate::MAP_SOURCE_OSM_MAPNIK) {
@@ -514,17 +514,17 @@ pub fn map_at(lat: f64, lon: f64) -> shumate::SimpleMap {
     map.add_css_class("card");
     map.upcast_ref::<gtk::Widget>()
         .update_property(&[gtk::accessible::Property::Label("Map")]);
+    let mark = shumate::Marker::new();
+    let pin = gtk::Image::from_icon_name("mark-location-symbolic");
+    pin.set_pixel_size(32);
+    shumate::prelude::MarkerExt::set_child(&mark, Some(&pin));
+    shumate::prelude::LocationExt::set_location(&mark, lat, lon);
     if let (Some(inner), Some(viewport)) = (map.map(), map.viewport()) {
         let marks = shumate::MarkerLayer::new(&viewport);
-        let mark = shumate::Marker::new();
-        let pin = gtk::Image::from_icon_name("mark-location-symbolic");
-        pin.set_pixel_size(32);
-        shumate::prelude::MarkerExt::set_child(&mark, Some(&pin));
-        shumate::prelude::LocationExt::set_location(&mark, lat, lon);
         marks.add_marker(&mark);
         map.add_overlay_layer(&marks);
         viewport.set_zoom_level(14.0);
         inner.center_on(lat, lon);
     }
-    map
+    (map, mark)
 }

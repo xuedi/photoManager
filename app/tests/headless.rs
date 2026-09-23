@@ -148,6 +148,7 @@ fn the_app_can_be_clicked_through_headless() {
     assert_eq!(places["places"].as_u64(), Some(149), "the excerpt was imported");
 
     previews_applies_and_takes_it_back(&ui, lib);
+    edits_one_photo_and_takes_it_back(&ui, lib);
     a_scope_is_what_the_demo_works_on(&ui, lib);
 
     ui.run(&["act", "win.show-view", "'suggestions'"], lib);
@@ -219,6 +220,124 @@ fn previews_applies_and_takes_it_back(ui: &Ui, library: &Path) {
     let again = written(ui, library, "write", applied["batch"].as_i64().unwrap());
     assert_eq!(again["written"].as_u64(), Some(5));
     assert_eq!(rating_of(&first), Some(3));
+}
+
+/// One photo edited by hand goes the same way as a change set: reviewed, written, read back,
+/// taken back, and its image data is the same throughout.
+fn edits_one_photo_and_takes_it_back(ui: &Ui, library: &Path) {
+    const PHOTO: &str = "Denmark/2018-10-00 Wedding Trip to Copenhagen/DSCF0002.JPG";
+    let file = library.join(PHOTO);
+    ui.run(&["act", "win.show-photos", "'all'"], library);
+    pictured(ui, library, 1);
+    ui.run(&["act", "win.show-photo", &format!("'{PHOTO}'")], library);
+    let before = photo_details(ui, library, |details| details["taken_at"].is_string());
+    let content = before["content_id"].clone();
+    assert!(content.is_string());
+    assert_eq!(
+        read_back(&file),
+        ("2018:10:06 14:03:40".to_string(), String::new(), String::new())
+    );
+
+    ui.run(&["act", "win.photo-edit"], library);
+    let set = |name: &str, value: &str| {
+        ui.run(&["set", name, "--role", "text box", "--value", value], library);
+    };
+    set("Date Taken", "2018-10-06 15:00:00");
+    set("Coordinates", "55.6761, 12.5683");
+    set("Add a Tag", "food");
+    ui.run(&["click", "Add mixed/food", "--role", "button"], library);
+    assert_eq!(
+        state(ui, library)["photo"]["pending"],
+        serde_json::json!(["date", "location", "tags"])
+    );
+
+    ui.run(&["click", "Review Change", "--role", "button"], library);
+    for _ in 0..40 {
+        if state(ui, library)["photo"]["review"].is_array() {
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(250));
+    }
+    assert_eq!(read_back(&file).0, "2018:10:06 14:03:40", "the review wrote nothing");
+    ui.run(&["click", "Apply", "--role", "button"], library);
+    let applied = photo_applied(ui, library, "write");
+    assert_eq!(applied["written"].as_u64(), Some(1));
+
+    let (date, gps, tags) = read_back(&file);
+    assert_eq!(date, "2018:10:06 15:00:00");
+    assert_eq!(gps, "55.6761 12.5683");
+    assert_eq!(tags, "mixed, mixed/food");
+    let after = photo_details(ui, library, |details| details["taken_at"] == "2018-10-06 15:00:00");
+    assert_eq!(
+        after["tags"],
+        serde_json::json!(["mixed", "mixed/food"]),
+        "the panel shows what the file says"
+    );
+    assert_eq!(after["content_id"], content, "the picture itself is untouched");
+
+    ui.run(&["act", "win.undo-last"], library);
+    ui.run(&["click", "Take It Back", "--role", "button"], library);
+    photo_applied(ui, library, "undo");
+    assert_eq!(
+        read_back(&file),
+        ("2018:10:06 14:03:40".to_string(), String::new(), String::new())
+    );
+    let undone = photo_details(ui, library, |details| details["taken_at"] == "2018-10-06 14:03:40");
+    assert_eq!(undone["tags"], serde_json::json!([]));
+    assert_eq!(undone["content_id"], content);
+    ui.run(&["act", "win.photo-close"], library);
+}
+
+/// The open photo's details, once they satisfy `ready`.
+fn photo_details(ui: &Ui, library: &Path, ready: impl Fn(&Value) -> bool) -> Value {
+    for _ in 0..60 {
+        let details = state(ui, library)["photo"]["details"].clone();
+        if details.is_object() && ready(&details) {
+            return details;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(250));
+    }
+    panic!("the details never came to say that");
+}
+
+/// Waits for the photo page's pass of this kind, and for the read-back after it.
+fn photo_applied(ui: &Ui, library: &Path, kind: &str) -> Value {
+    for _ in 0..120 {
+        let state = state(ui, library);
+        let applied = &state["photo"]["applied"];
+        if applied["kind"] == kind && state["writing"] == false && state["scanning"] == false {
+            return applied.clone();
+        }
+        std::thread::sleep(std::time::Duration::from_millis(500));
+    }
+    panic!("the {kind} of one photo never finished");
+}
+
+/// The date, the position and the tags, as ExifTool reads them.
+fn read_back(photo: &Path) -> (String, String, String) {
+    let out = Command::new("exiftool")
+        .args([
+            "-s3",
+            "-n",
+            "-f",
+            "-DateTimeOriginal",
+            "-GPSPosition",
+            "-TagsList",
+            "-sep",
+            ", ",
+        ])
+        .arg(photo)
+        .output()
+        .expect("run exiftool");
+    let text = String::from_utf8_lossy(&out.stdout);
+    let lines: Vec<String> = text
+        .lines()
+        .map(|line| match line.trim() {
+            "-" => String::new(),
+            line => line.to_string(),
+        })
+        .collect();
+    (lines[0].clone(), lines[1].clone(), lines[2].clone())
 }
 
 /// What the gallery shows becomes the scope, and the next change set is about exactly those

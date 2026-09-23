@@ -573,11 +573,17 @@ impl Gallery {
         }
     }
 
-    /// Back to the grid.
+    /// Back to the grid, once no unfinished edit is left.
     pub fn close_photo(&self) {
-        if self.photo_open() {
-            self.imp().nav.pop();
+        if !self.photo_open() {
+            return;
         }
+        let gallery = self.downgrade();
+        self.imp().photo.leave(move |_| {
+            if let Some(gallery) = gallery.upgrade() {
+                gallery.imp().nav.pop();
+            }
+        });
     }
 
     pub fn say(&self, text: &str) {

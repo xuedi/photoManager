@@ -5,6 +5,10 @@
 //! The thumbnail is shown at once, from the gallery's loader, then glycin decodes the file in its
 //! sandbox and the full size replaces it. The photos on either side are decoded ahead, anything
 //! further away is dropped: a full-size texture is large.
+//!
+//! Editing is a change set of one photo: the form's change, the engine's exact diff in a dialog,
+//! the backup question before the first write of all, the write, the journal and the undo, the
+//! same way as for ten thousand photos. An unfinished edit is never dropped without asking.
 
 use std::cell::{Cell, RefCell};
 use std::collections::HashMap;
@@ -15,11 +19,15 @@ use adw::subclass::prelude::*;
 use gtk::glib::subclass::InitializingObject;
 use gtk::{gdk, gio, glib};
 
+use photomanager_core::changeset::{ChangeSet, Verdict, Wanted};
 use photomanager_core::details::Details;
 use photomanager_core::filter::Listed;
+use photomanager_core::journal::Kind;
+use photomanager_core::write::{Change, Engine, Field, Outcome, Summary};
 
+use crate::edit::Form;
 use crate::gallery::Photo;
-use crate::library::Library;
+use crate::library::{Event, Library};
 use crate::panel::{self, Look, Panel};
 use crate::thumbnails::{Loader, Request, Slot};
 
@@ -29,6 +37,14 @@ pub enum Full {
     Reading(gio::Cancellable),
     Ready(gdk::Texture),
     Failed(String),
+}
+
+/// A change built and diffed, waiting for Apply.
+#[derive(Debug)]
+pub struct Review {
+    set: ChangeSet,
+    lines: Vec<String>,
+    dialog: adw::AlertDialog,
 }
 
 mod imp {
@@ -72,6 +88,12 @@ mod imp {
         pub slot: Slot,
         pub details: RefCell<Option<Details>>,
         pub sheet: RefCell<Panel>,
+        pub form: RefCell<Option<Rc<Form>>>,
+        /// What the form adds up to: the change, or why it is not one.
+        pub pending: RefCell<Option<Result<Change, String>>>,
+        pub review: RefCell<Option<Review>>,
+        pub engine: RefCell<Option<Engine>>,
+        pub applied: RefCell<Option<(Kind, Summary)>>,
         /// Which answer about the details is the newest asked for.
         pub asked: Cell<u64>,
         pub toast: RefCell<String>,
@@ -172,21 +194,450 @@ impl PhotoPage {
         if count == 0 {
             return;
         }
-        let to = (i64::from(self.imp().at.get()) + by).clamp(0, count - 1);
-        if to as u32 != self.imp().at.get() {
-            self.show(to as u32);
+        let to = (i64::from(self.imp().at.get()) + by).clamp(0, count - 1) as u32;
+        if to != self.imp().at.get() {
+            self.leave(move |page| page.show(to));
         }
     }
 
     pub fn first(&self) {
         if self.count() > 0 {
-            self.show(0);
+            self.leave(|page| page.show(0));
         }
     }
 
     pub fn last(&self) {
         if self.count() > 0 {
-            self.show(self.count() - 1);
+            self.leave(|page| page.show(page.count() - 1));
+        }
+    }
+
+    /// Goes on with `then` once no unfinished edit is left: at once when nothing was changed,
+    /// after asking when something was.
+    pub fn leave(&self, then: impl FnOnce(&PhotoPage) + 'static) {
+        if !self.has_changes() {
+            self.stop_editing();
+            then(self);
+            return;
+        }
+        let dialog = adw::AlertDialog::new(
+            Some("Discard the Change?"),
+            Some("What was changed in the form has not been written, and would be lost."),
+        );
+        dialog.add_responses(&[("keep", "Keep Editing"), ("discard", "Discard")]);
+        dialog.set_response_appearance("discard", adw::ResponseAppearance::Destructive);
+        dialog.set_default_response(Some("keep"));
+        dialog.set_close_response("keep");
+        let then = RefCell::new(Some(then));
+        dialog.connect_response(
+            None,
+            glib::clone!(
+                #[weak(rename_to = page)]
+                self,
+                move |_: &adw::AlertDialog, response: &str| {
+                    if response != "discard" {
+                        return;
+                    }
+                    tracing::info!(photo = page.path(), "an unfinished edit was discarded");
+                    page.stop_editing();
+                    if let Some(then) = then.borrow_mut().take() {
+                        then(&page);
+                    }
+                }
+            ),
+        );
+        dialog.present(Some(self));
+    }
+
+    pub fn editing(&self) -> bool {
+        self.imp().form.borrow().is_some()
+    }
+
+    /// Whether the form says anything the photo does not.
+    pub fn has_changes(&self) -> bool {
+        let imp = self.imp();
+        match (imp.form.borrow().as_ref(), imp.details.borrow().as_ref()) {
+            (Some(form), Some(details)) => form.edited() != details.edited(),
+            _ => false,
+        }
+    }
+
+    /// Starts editing, or stops: asking first when the form holds a change.
+    pub fn toggle_editing(&self) {
+        match self.editing() {
+            true => self.leave(|_| {}),
+            false => self.start_editing(),
+        }
+        self.show_editing();
+    }
+
+    fn start_editing(&self) {
+        let imp = self.imp();
+        let (Some(library), Some(details)) = (imp.library.borrow().clone(), imp.details.borrow().clone()) else {
+            return;
+        };
+        let page = self.downgrade();
+        let form = Form::new(&details, library.clone(), move || {
+            if let Some(page) = page.upgrade() {
+                page.form_changed();
+            }
+        });
+        let known = Rc::downgrade(&form);
+        library.sidebars(move |read| {
+            if let (Some(form), Ok(sidebars)) = (known.upgrade(), read) {
+                form.set_known_tags(tag_paths(&sidebars.tags.tree()));
+            }
+        });
+        *imp.form.borrow_mut() = Some(form);
+        tracing::info!(photo = self.path(), "editing started");
+        self.fill_panel();
+        self.form_changed();
+    }
+
+    fn stop_editing(&self) {
+        let imp = self.imp();
+        if imp.form.borrow_mut().take().is_none() {
+            return;
+        }
+        *imp.pending.borrow_mut() = None;
+        self.enable("photo-review", false);
+        self.fill_panel();
+        self.show_editing();
+    }
+
+    fn show_editing(&self) {
+        let editing = self.editing();
+        self.set_can_pop(!editing);
+        if let Some(action) = self.action("photo-edit") {
+            action.set_state(&editing.to_variant());
+        }
+    }
+
+    fn form_changed(&self) {
+        let imp = self.imp();
+        let pending = match (imp.form.borrow().as_ref(), imp.details.borrow().as_ref()) {
+            (Some(form), Some(details)) => Some(details.change_to(&form.edited())),
+            _ => None,
+        };
+        if let Some(form) = imp.form.borrow().as_ref() {
+            form.show_problem(
+                pending
+                    .as_ref()
+                    .and_then(|pending| pending.as_ref().err())
+                    .map(String::as_str),
+            );
+        }
+        let ready = matches!(&pending, Some(Ok(change)) if !change.is_empty());
+        *imp.pending.borrow_mut() = pending;
+        self.enable("photo-review", ready);
+    }
+
+    /// Types into a field of the form by its title.
+    pub fn set_form(&self, title: &str, text: &str) -> bool {
+        self.imp()
+            .form
+            .borrow()
+            .as_ref()
+            .is_some_and(|form| form.set_text(title, text))
+    }
+
+    pub fn form_add_tag(&self, tag: &str) {
+        let form = self.imp().form.borrow().clone();
+        if let Some(form) = form {
+            form.add_tag(tag);
+        }
+    }
+
+    pub fn form_remove_tag(&self, tag: &str) {
+        let form = self.imp().form.borrow().clone();
+        if let Some(form) = form {
+            form.remove_tag(tag);
+        }
+    }
+
+    pub fn form_rating(&self, rating: Option<i64>) {
+        if let Some(form) = self.imp().form.borrow().as_ref() {
+            form.set_rating(rating);
+        }
+    }
+
+    /// The fields the form would change, or why it cannot.
+    pub fn pending(&self) -> Option<Result<Vec<&'static str>, String>> {
+        self.imp().pending.borrow().as_ref().map(|pending| {
+            pending
+                .as_ref()
+                .map(|change| change.fields.iter().map(field_name).collect())
+                .map_err(Clone::clone)
+        })
+    }
+
+    pub fn can_review(&self) -> bool {
+        self.action("photo-review").is_some_and(|action| action.is_enabled())
+    }
+
+    /// What the review dialog lists: one line per tag the engine would set.
+    pub fn review_lines(&self) -> Option<Vec<String>> {
+        self.imp().review.borrow().as_ref().map(|review| review.lines.clone())
+    }
+
+    pub fn applied(&self) -> Option<(Kind, Summary)> {
+        self.imp().applied.borrow().clone()
+    }
+
+    /// Builds the change set of this one photo and shows the engine's exact diff of it.
+    pub fn review(&self) {
+        let imp = self.imp();
+        let (Some(library), Some(path)) = (imp.library.borrow().clone(), self.path()) else {
+            return;
+        };
+        let Some(Ok(change)) = imp.pending.borrow().clone() else {
+            return;
+        };
+        if change.is_empty() {
+            return;
+        }
+        if library.is_busy() {
+            self.say("Something else is running. Try again when it is done.", false);
+            return;
+        }
+        let title = format!("Edit {}", self.title());
+        let page = self.downgrade();
+        library.preview(&title, vec![Wanted::new(path, change)], move |event| {
+            let Some(page) = page.upgrade() else {
+                return;
+            };
+            match event {
+                Event::Previewed(set) => page.reviewed(set),
+                Event::Failed(why) => page.say(&format!("Did not work: {why}"), false),
+                _ => {}
+            }
+        });
+    }
+
+    fn reviewed(&self, set: ChangeSet) {
+        let imp = self.imp();
+        let Some(row) = set.rows.first() else {
+            return;
+        };
+        match &row.verdict {
+            Verdict::Refused(why) => return self.say(&format!("This photo cannot be changed: {why}"), false),
+            Verdict::Nothing => return self.say("The photo already says all of that.", false),
+            _ => {}
+        }
+        let Some(library) = imp.library.borrow().clone() else {
+            return;
+        };
+        if imp.engine.borrow().is_none() {
+            match library.engine() {
+                Ok(engine) => *imp.engine.borrow_mut() = Some(engine),
+                Err(why) => return self.say(&format!("Did not work: {why}"), false),
+            }
+        }
+        let exact = {
+            let mut engine = imp.engine.borrow_mut();
+            set.exact(0, engine.as_mut().expect("started above"))
+        };
+        let assignments = match exact {
+            Ok(assignments) => assignments,
+            Err(why) => return self.say(&format!("This photo cannot be changed: {why}"), false),
+        };
+        if assignments.is_empty() {
+            return self.say("The photo already says all of that.", false);
+        }
+        let lines: Vec<String> = assignments
+            .iter()
+            .map(|one| match &one.then {
+                None => format!(
+                    "{}: {} -> removed",
+                    one.tag,
+                    photomanager_core::write::change::shown(one.now.as_ref())
+                ),
+                Some(_) => format!("{}: {}", one.tag, one.tells()),
+            })
+            .collect();
+
+        let dialog = adw::AlertDialog::new(
+            Some("Change This Photo?"),
+            Some(&format!(
+                "Only these fields of {} are written, never the picture. The whole file, {}, goes up to Nextcloud again.",
+                self.title(),
+                crate::preview::size(row.size)
+            )),
+        );
+        let list = gtk::ListBox::new();
+        list.add_css_class("boxed-list");
+        list.set_selection_mode(gtk::SelectionMode::None);
+        for one in &assignments {
+            let subtitle = match &one.then {
+                None => format!(
+                    "{} -> removed",
+                    photomanager_core::write::change::shown(one.now.as_ref())
+                ),
+                Some(_) => one.tells(),
+            };
+            let row = adw::ActionRow::builder()
+                .title(&one.tag)
+                .subtitle(subtitle)
+                .use_markup(false)
+                .subtitle_lines(0)
+                .build();
+            row.add_css_class("property");
+            list.append(&row);
+        }
+        let scrolled = gtk::ScrolledWindow::builder()
+            .child(&list)
+            .hscrollbar_policy(gtk::PolicyType::Never)
+            .propagate_natural_height(true)
+            .max_content_height(360)
+            .build();
+        dialog.set_extra_child(Some(&scrolled));
+        dialog.add_responses(&[("cancel", "Cancel"), ("apply", "Apply")]);
+        dialog.set_response_appearance("apply", adw::ResponseAppearance::Suggested);
+        dialog.set_default_response(Some("apply"));
+        dialog.set_close_response("cancel");
+        dialog.connect_response(
+            None,
+            glib::clone!(
+                #[weak(rename_to = page)]
+                self,
+                move |_: &adw::AlertDialog, response: &str| match response {
+                    "apply" => page.apply(),
+                    _ => {
+                        page.imp().review.borrow_mut().take();
+                        page.enable("photo-apply", false);
+                    }
+                }
+            ),
+        );
+        *imp.review.borrow_mut() = Some(Review {
+            set,
+            lines,
+            dialog: dialog.clone(),
+        });
+        self.enable("photo-apply", true);
+        dialog.present(Some(self));
+    }
+
+    /// Closes the review without writing anything.
+    pub fn cancel_review(&self) {
+        let review = self.imp().review.borrow_mut().take();
+        if let Some(review) = review {
+            review.dialog.force_close();
+        }
+        self.enable("photo-apply", false);
+    }
+
+    /// Writes the reviewed change, after the backup question if nothing was ever written.
+    pub fn apply(&self) {
+        let imp = self.imp();
+        let Some(review) = imp.review.borrow_mut().take() else {
+            return;
+        };
+        self.enable("photo-apply", false);
+        review.dialog.force_close();
+        let Some(library) = imp.library.borrow().clone() else {
+            return;
+        };
+        let set = review.set;
+        let page = self.downgrade();
+        let written = library.clone();
+        crate::confirm::before_first_write(self, &library, move || {
+            let Some(page) = page.upgrade() else {
+                return;
+            };
+            if written.is_busy() {
+                page.say("Something else is running, so nothing was written.", false);
+                return;
+            }
+            let reported = page.downgrade();
+            written.apply(&set, move |event| {
+                if let Some(page) = reported.upgrade() {
+                    page.report(event);
+                }
+            });
+        });
+    }
+
+    /// Takes the last applied change back, after asking.
+    pub fn undo(&self) {
+        let Some(library) = self.imp().library.borrow().clone() else {
+            return;
+        };
+        if library.is_busy() {
+            return;
+        }
+        let Some(pass) = library.undoable() else {
+            self.say("There is nothing to take back.", false);
+            return;
+        };
+        let page = self.downgrade();
+        crate::confirm::before_undo(self, &pass, move || {
+            let Some(page) = page.upgrade() else {
+                return;
+            };
+            let Some(library) = page.imp().library.borrow().clone() else {
+                return;
+            };
+            if library.is_busy() {
+                page.say("Something else is running, so nothing was taken back.", false);
+                return;
+            }
+            let reported = page.downgrade();
+            library.undo_last(move |event| {
+                if let Some(page) = reported.upgrade() {
+                    page.report(event);
+                }
+            });
+        });
+    }
+
+    fn report(&self, event: Event) {
+        match event {
+            Event::Applied(kind, summary) => {
+                let path = self.path().unwrap_or_default();
+                let outcome = summary
+                    .outcomes
+                    .iter()
+                    .find(|(rel_path, _)| *rel_path == path)
+                    .map(|(_, outcome)| outcome.clone());
+                let told = match (kind, outcome) {
+                    (Kind::Undo, _) if summary.written == 1 => "1 photo put back".to_string(),
+                    (Kind::Undo, _) => format!("{} photos put back", summary.written),
+                    (Kind::Write, Some(Outcome::Written)) => format!("{} changed", self.title()),
+                    (Kind::Write, Some(Outcome::Skipped)) => "The photo already says all of that.".to_string(),
+                    (Kind::Write, Some(Outcome::Refused(why))) => format!("Not changed: {why}"),
+                    (Kind::Write, Some(Outcome::Failed(why))) => format!("Did not work: {why}"),
+                    (Kind::Write, None) => "Nothing was written.".to_string(),
+                };
+                let undoable = kind == Kind::Write && summary.written > 0;
+                tracing::info!(kind = kind.as_str(), written = summary.written, "one photo applied");
+                *self.imp().applied.borrow_mut() = Some((kind, summary));
+                self.say(&told, undoable);
+                if undoable {
+                    self.stop_editing();
+                }
+                if let Some(window) = self.root().and_downcast::<crate::window::Window>() {
+                    window.scan(photomanager_core::scan::Mode::Reconcile);
+                }
+            }
+            Event::Failed(why) => {
+                self.say(&format!("Did not work: {why}"), false);
+                tracing::error!(why, "the edit was not applied");
+            }
+            _ => {}
+        }
+    }
+
+    fn action(&self, name: &str) -> Option<gio::SimpleAction> {
+        self.root()
+            .and_downcast::<gtk::ApplicationWindow>()?
+            .lookup_action(name)
+            .and_downcast::<gio::SimpleAction>()
+    }
+
+    fn enable(&self, name: &str, enabled: bool) {
+        if let Some(action) = self.action(name) {
+            action.set_enabled(enabled);
         }
     }
 
@@ -328,11 +779,7 @@ impl PhotoPage {
         self.set_title(&name);
         imp.name.set_label(&name);
         imp.name.set_tooltip_text(Some(&listed.rel_path));
-        let mut position = format!("{} of {}", at + 1, self.count());
-        if let Some(taken) = &listed.taken_at {
-            position.push_str(&format!(" - {taken}"));
-        }
-        imp.position.set_label(&position);
+        self.show_position(listed.taken_at.as_deref());
         imp.previous_button.set_visible(at > 0);
         imp.next_button.set_visible(at + 1 < self.count());
         *imp.shown.borrow_mut() = Some(listed.clone());
@@ -341,6 +788,14 @@ impl PhotoPage {
         self.read_ahead();
         self.show_full();
         self.read_details();
+    }
+
+    fn show_position(&self, taken: Option<&str>) {
+        let mut position = format!("{} of {}", self.imp().at.get() + 1, self.count());
+        if let Some(taken) = taken {
+            position.push_str(&format!(" - {taken}"));
+        }
+        self.imp().position.set_label(&position);
     }
 
     /// The list moved under the page: find the photo again, or show what is now in its place.
@@ -513,7 +968,13 @@ impl PhotoPage {
     }
 
     fn show_details(&self, details: Option<Details>) {
+        if let Some(details) = &details {
+            self.show_position(details.taken_at.as_deref());
+        }
         *self.imp().details.borrow_mut() = details;
+        if self.editing() {
+            self.form_changed();
+        }
         self.fill_panel();
     }
 
@@ -527,14 +988,15 @@ impl PhotoPage {
             return;
         };
         let nearest = details.gps.and_then(|(lat, lon)| library.nearest(lat, lon));
-        let always_map = library.setting(panel::ALWAYS_MAP).as_deref() == Some("true");
+        let always_map = library.setting(panel::ALWAYS_MAP).as_deref() == Some("true") && !self.editing();
         let look = Look {
             details: &details,
             nearest: nearest.as_ref(),
             has_places: library.counts().places > 0,
             always_map,
         };
-        imp.sheet.borrow_mut().fill(&imp.panel, &look, None);
+        let form = imp.form.borrow().as_ref().map(|form| form.widget());
+        imp.sheet.borrow_mut().fill(&imp.panel, &look, form.as_ref());
         if always_map {
             self.show_map();
         }
@@ -576,5 +1038,28 @@ impl PhotoPage {
             ));
         }
         self.add_controller(keys);
+    }
+}
+
+/// Every tag of the tree, parents before their children.
+fn tag_paths(tags: &[photomanager_core::browse::Tag]) -> Vec<String> {
+    let mut all = Vec::new();
+    for tag in tags {
+        all.push(tag.path.clone());
+        all.extend(tag_paths(&tag.children));
+    }
+    all
+}
+
+fn field_name(field: &Field) -> &'static str {
+    match field {
+        Field::Tags(_) => "tags",
+        Field::Rating(_) => "rating",
+        Field::Gps(_) => "location",
+        Field::Place(_) => "place",
+        Field::Taken(_) => "date",
+        Field::Faces(_) => "people",
+        Field::DropLabel => "label",
+        Field::DropCatalogSets => "catalog sets",
     }
 }

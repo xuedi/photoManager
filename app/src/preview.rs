@@ -8,7 +8,6 @@
 
 use std::cell::{Cell, OnceCell, RefCell};
 use std::collections::HashMap;
-use std::path::{Path, PathBuf};
 use std::rc::Rc;
 
 use adw::prelude::*;
@@ -18,7 +17,6 @@ use gtk::{gio, glib, pango};
 
 use photomanager_core::changeset::{ChangeSet, Counts};
 use photomanager_core::journal::Kind;
-use photomanager_core::settings;
 use photomanager_core::write::{Assignment, Engine, Summary};
 
 use crate::library::{Event, Library};
@@ -317,10 +315,12 @@ impl Preview {
         if library.is_busy() || self.is_busy() {
             return;
         }
-        match library.must_ask() {
-            true => self.ask_about_the_backup(),
-            false => self.write(),
-        }
+        let preview = self.downgrade();
+        crate::confirm::before_first_write(self, &library, move || {
+            if let Some(preview) = preview.upgrade() {
+                preview.write();
+            }
+        });
     }
 
     pub fn cancel(&self) {
@@ -342,99 +342,21 @@ impl Preview {
             self.say("There is nothing to take back.", false);
             return;
         };
-        let dialog = adw::AlertDialog::new(
-            Some("Take the Last Change Back?"),
-            Some(&format!(
-                "{} photos were changed on {}. Every one of them gets back what it said before.",
-                pass.written, pass.started_at
-            )),
-        );
-        dialog.add_responses(&[("cancel", "Cancel"), ("undo", "Take It Back")]);
-        dialog.set_default_response(Some("cancel"));
-        dialog.connect_response(
-            None,
-            glib::clone!(
-                #[weak(rename_to = preview)]
-                self,
-                move |_: &adw::AlertDialog, response: &str| {
-                    if response != "undo" {
-                        return;
-                    }
-                    let Some(library) = preview.imp().library.borrow().clone() else {
-                        return;
-                    };
-                    if library.is_busy() {
-                        preview.say("Something else is running, so nothing was taken back.", false);
-                        return;
-                    }
-                    preview.running(true, "Putting it back");
-                    library.undo_last(move |event| preview.report(event));
-                }
-            ),
-        );
-        dialog.present(Some(self));
-    }
-
-    /// We cannot know that a backup exists, so this asks rather than pretends to check. What the
-    /// user names is looked at and described; that is help, never proof.
-    fn ask_about_the_backup(&self) {
-        let dialog = adw::AlertDialog::new(
-            Some("Change Photos in the Library?"),
-            Some(concat!(
-                "This is the first time photoManager writes to your photos. Only what a photo says ",
-                "about itself is changed, never the picture, every change is written down and the ",
-                "last one can be taken back.\n\nEven so: confirm that these photos are backed up ",
-                "somewhere else."
-            )),
-        );
-        let entry = adw::EntryRow::builder().title("Where the backup is (optional)").build();
-        let told = gtk::Label::builder()
-            .wrap(true)
-            .xalign(0.0)
-            .label("A location here is only looked at, never taken as proof.")
-            .build();
-        told.add_css_class("dim-label");
-        entry.connect_changed(glib::clone!(
-            #[weak]
-            told,
-            move |entry| told.set_label(&looked_at(&entry.text()))
-        ));
-
-        let group = adw::PreferencesGroup::new();
-        group.add(&entry);
-        let box_ = gtk::Box::builder()
-            .orientation(gtk::Orientation::Vertical)
-            .spacing(12)
-            .build();
-        box_.append(&group);
-        box_.append(&told);
-        dialog.set_extra_child(Some(&box_));
-
-        dialog.add_responses(&[("cancel", "Cancel"), ("write", "My Photos Are Backed Up")]);
-        dialog.set_response_appearance("write", adw::ResponseAppearance::Destructive);
-        dialog.set_default_response(Some("cancel"));
-        dialog.connect_response(
-            None,
-            glib::clone!(
-                #[weak(rename_to = preview)]
-                self,
-                #[weak]
-                entry,
-                move |_: &adw::AlertDialog, response: &str| {
-                    if response != "write" {
-                        tracing::info!("the first write was declined, nothing was changed");
-                        return;
-                    }
-                    let named = entry.text().trim().to_string();
-                    let backup = (!named.is_empty()).then(|| PathBuf::from(named));
-                    if let Some(library) = preview.imp().library.borrow().as_ref() {
-                        library.acknowledge(backup.as_deref());
-                    }
-                    preview.write();
-                }
-            ),
-        );
-        dialog.present(Some(self));
+        let preview = self.downgrade();
+        crate::confirm::before_undo(self, &pass, move || {
+            let Some(preview) = preview.upgrade() else {
+                return;
+            };
+            let Some(library) = preview.imp().library.borrow().clone() else {
+                return;
+            };
+            if library.is_busy() {
+                preview.say("Something else is running, so nothing was taken back.", false);
+                return;
+            }
+            preview.running(true, "Putting it back");
+            library.undo_last(move |event| preview.report(event));
+        });
     }
 
     fn write(&self) {
@@ -762,18 +684,6 @@ fn told(kind: Kind, summary: &Summary) -> String {
         parts.push("stopped early".to_string());
     }
     parts.join(", ")
-}
-
-/// What can be said about a named backup location, and what cannot.
-pub fn looked_at(named: &str) -> String {
-    let named = named.trim();
-    if named.is_empty() {
-        return "A location here is only looked at, never taken as proof.".to_string();
-    }
-    format!(
-        "{} That is what is there, not proof that your photos are in it.",
-        settings::look_at(Path::new(named)).tells()
-    )
 }
 
 /// Nextcloud uploads the whole file again for every edit, so these are whole files.

@@ -158,7 +158,27 @@ fn state(window: &Window, paths: &Paths, library: Option<&Library>) -> String {
             "held": page.held(),
             "picture": page.shows_picture(),
             "panel": page.shows_panel(),
+            "map": page.shows_map(),
             "toast": page.toast(),
+            "editing": page.editing(),
+            "pending": page.pending().map(|pending| match pending {
+                Ok(fields) => serde_json::json!(fields),
+                Err(why) => serde_json::json!({ "refused": why }),
+            }),
+            "review": page.review_lines(),
+            "applied": page.applied().map(|(kind, summary)| serde_json::json!({
+                "kind": kind.as_str(),
+                "batch": summary.batch,
+                "written": summary.written,
+            })),
+            "details": page.details().map(|details| serde_json::json!({
+                "taken_at": details.taken_at,
+                "offset": details.taken_offset,
+                "gps": details.gps.map(|(lat, lon)| [lat, lon]),
+                "tags": details.tags,
+                "rating": details.rating,
+                "content_id": details.content_id,
+            })),
         })
     });
     let scope = window.scope().map(|scope| match scope {

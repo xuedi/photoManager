@@ -272,7 +272,13 @@ impl Window {
             .activate(|window: &Window, _, _| window.preview().cancel())
             .build();
         let undo = gtk::gio::ActionEntry::builder("undo-last")
-            .activate(|window: &Window, _, _| window.preview().undo())
+            .activate(|window: &Window, _, _| {
+                let gallery = &window.imp().gallery;
+                match window.visible_view() == "gallery" && gallery.photo_open() {
+                    true => gallery.photo().undo(),
+                    false => window.preview().undo(),
+                }
+            })
             .build();
         let show_photo = gtk::gio::ActionEntry::builder("show-photo")
             .parameter_type(Some(glib::VariantTy::STRING))
@@ -298,6 +304,16 @@ impl Window {
         };
         let photo_close = gtk::gio::ActionEntry::builder("photo-close")
             .activate(|window: &Window, _, _| window.imp().gallery.close_photo())
+            .build();
+        let photo_edit = gtk::gio::ActionEntry::builder("photo-edit")
+            .state(false.to_variant())
+            .activate(|window: &Window, action, _| {
+                let gallery = &window.imp().gallery;
+                match gallery.photo_open() {
+                    true => gallery.photo().toggle_editing(),
+                    false => action.set_state(&false.to_variant()),
+                }
+            })
             .build();
         self.add_action_entries([
             show_view,
@@ -327,8 +343,16 @@ impl Window {
             photo("photo-panel", |page| page.toggle_panel()),
             photo("photo-open-with", |page| page.open_with()),
             photo("photo-show-map", |page| page.show_map()),
+            photo("photo-review", |page| page.review()),
+            photo("photo-apply", |page| page.apply()),
             photo_close,
+            photo_edit,
         ]);
+        for name in ["photo-review", "photo-apply"] {
+            if let Some(action) = self.lookup_action(name).and_downcast::<gtk::gio::SimpleAction>() {
+                action.set_enabled(false);
+            }
+        }
     }
 }
 

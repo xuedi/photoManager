@@ -1,7 +1,9 @@
 pub mod application;
+pub mod confirm;
 pub mod dashboard;
 #[cfg(feature = "devtools")]
 pub mod devtools;
+pub mod edit;
 pub mod gallery;
 pub mod library;
 pub mod panel;
