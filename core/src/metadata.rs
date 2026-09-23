@@ -54,6 +54,14 @@ impl Metadata {
     }
 }
 
+/// exiv2 wants one initialisation per process, before the first file.
+pub(crate) fn start() {
+    static START: Once = Once::new();
+    START.call_once(|| {
+        rexiv2::initialize().expect("initialise the metadata library");
+    });
+}
+
 /// The in-process reader: exiv2 through gexiv2, a few milliseconds per photo.
 #[derive(Debug, Default, Clone, Copy)]
 pub struct Exiv2;
@@ -68,11 +76,7 @@ const TAG_FIELDS: [&str; 5] = [
 
 impl Reader for Exiv2 {
     fn read(&self, _path: &Path, bytes: &[u8]) -> Result<Metadata> {
-        static START: Once = Once::new();
-        START.call_once(|| {
-            rexiv2::initialize().expect("initialise the metadata library");
-        });
-
+        start();
         let source = rexiv2::Metadata::new_from_buffer(bytes).map_err(|error| Error::Unreadable(error.to_string()))?;
         let string = |tag: &str| source.get_tag_string(tag).ok().filter(|value| !value.is_empty());
         let number = |tag: &str| source.has_tag(tag).then(|| i64::from(source.get_tag_numeric(tag)));

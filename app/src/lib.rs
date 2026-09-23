@@ -4,6 +4,7 @@ pub mod dashboard;
 pub mod devtools;
 pub mod library;
 pub mod preview;
+pub mod thumbnails;
 pub mod tools;
 pub mod window;
 

@@ -1,7 +1,8 @@
 //! A small stand-in library with the shapes the real one has: events without a full date, a
 //! loose file in a country folder, sub-folders, photos without GPS but with a place tag, a
 //! photo without any date, XMP dates that disagree with EXIF, and one without tags at all. The
-//! tags are as untidy as real ones: a second spelling of a root, case twins, a typo.
+//! tags are as untidy as real ones: a second spelling of a root, case twins, a typo. One photo
+//! carries the small picture cameras embed, the rest do not.
 //!
 //! Only for tests and for looking at the application without touching real photos.
 
@@ -150,6 +151,9 @@ fn flat_tags(metadata: &[&str]) -> Vec<String> {
         .collect()
 }
 
+/// The photo that carries an embedded EXIF thumbnail, made from its own image.
+pub const WITH_EXIF_THUMBNAIL: &str = "Greece/0000-00-00 Aeron ilands/IMG_0004.JPG";
+
 pub fn photo_count() -> usize {
     PHOTOS.len()
 }
@@ -181,8 +185,36 @@ pub fn build(root: &Path) -> Result<()> {
         if !status.success() {
             return Err(Error::other(format!("exiftool failed on {}", photo.path)));
         }
+        if photo.path == WITH_EXIF_THUMBNAIL {
+            embed_thumbnail(&file, IMAGES[index % IMAGES.len()])?;
+        }
     }
     Ok(())
+}
+
+/// ExifTool reads the thumbnail from a file, so the image goes through one outside the library.
+fn embed_thumbnail(file: &Path, image: &[u8]) -> Result<()> {
+    static MADE: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+    let made = MADE.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    let thumbnail = std::env::temp_dir().join(format!(
+        "photomanager-fixture-thumbnail-{}-{made}.jpg",
+        std::process::id()
+    ));
+    std::fs::write(&thumbnail, image)?;
+    let status = Command::new("exiftool")
+        .arg("-overwrite_original")
+        .arg("-q")
+        .arg(format!("-ThumbnailImage<={}", thumbnail.display()))
+        .arg(file)
+        .status();
+    let _ = std::fs::remove_file(&thumbnail);
+    match status {
+        Ok(status) if status.success() => Ok(()),
+        _ => Err(Error::other(format!(
+            "exiftool could not embed a thumbnail in {}",
+            file.display()
+        ))),
+    }
 }
 
 /// The real library is never a target, whatever a caller passes in.

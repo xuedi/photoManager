@@ -110,6 +110,18 @@ impl Thumbs {
         Ok(true)
     }
 
+    /// What the grid draws for a photo: its stored thumbnail, else the one embedded in the file,
+    /// else nothing. Nothing is made and nothing is stored.
+    pub fn for_grid(&self, content_id: Option<&str>, file: &Path, orientation: Option<i64>) -> Option<Rgba> {
+        if let Some(stored) = content_id.and_then(|id| self.load(id, Size::Small)) {
+            match decode(&stored) {
+                Ok(picture) => return Some(picture),
+                Err(error) => tracing::warn!(%error, file = %file.display(), "a stored thumbnail cannot be read"),
+            }
+        }
+        exif_preview(file, orientation).ok().flatten()
+    }
+
     pub fn forget(&self, content_id: &str) -> Result<()> {
         for size in Size::ALL {
             let path = self.path(content_id, size)?;
@@ -139,6 +151,70 @@ impl Thumbs {
         }
         Ok(removed)
     }
+}
+
+/// A picture as rows of red, green, blue and alpha, ready to be drawn.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Rgba {
+    pub pixels: Vec<u8>,
+    pub width: u32,
+    pub height: u32,
+}
+
+impl Rgba {
+    /// Bytes per row.
+    pub fn stride(&self) -> usize {
+        self.width as usize * 4
+    }
+
+    fn of_rgb(pixels: &[u8], width: u32, height: u32) -> Rgba {
+        let mut rgba = Vec::with_capacity(pixels.len() / 3 * 4);
+        for pixel in pixels.chunks_exact(3) {
+            rgba.extend_from_slice(pixel);
+            rgba.push(255);
+        }
+        Rgba {
+            pixels: rgba,
+            width,
+            height,
+        }
+    }
+}
+
+/// A stored thumbnail, decoded for display.
+pub fn decode(webp: &[u8]) -> Result<Rgba> {
+    let image = webp::Decoder::new(webp)
+        .decode()
+        .ok_or_else(|| Error::Unusable("not a webp picture".to_string()))?;
+    let (width, height) = (image.width(), image.height());
+    Ok(match image.is_alpha() {
+        true => Rgba {
+            pixels: image.to_vec(),
+            width,
+            height,
+        },
+        false => Rgba::of_rgb(&image, width, height),
+    })
+}
+
+/// The small picture a camera embeds in the file, turned the right way up. Reads the photo, so
+/// it is only for a photo that has no stored thumbnail. `None` when the file carries none.
+pub fn exif_preview(file: &Path, orientation: Option<i64>) -> Result<Option<Rgba>> {
+    crate::metadata::start();
+    let metadata = rexiv2::Metadata::new_from_path(file).map_err(unusable)?;
+    let mut previews = metadata.get_preview_images().unwrap_or_default();
+    previews.sort_by_key(|preview| preview.get_width().max(preview.get_height()));
+    for preview in previews {
+        let Ok(jpeg) = preview.get_data() else {
+            continue;
+        };
+        let Ok(decoded) = fast(&jpeg, Size::Small.pixels()) else {
+            continue;
+        };
+        let (pixels, width, height) = turn(decoded.pixels, decoded.width, decoded.height, orientation.unwrap_or(1));
+        return Ok(Some(Rgba::of_rgb(&pixels, width, height)));
+    }
+    Ok(None)
 }
 
 /// JPEG bytes in, WebP bytes out: decoded at the smallest scale the DCT offers, resized to the
@@ -390,6 +466,17 @@ mod tests {
     }
 
     #[test]
+    fn decoding_gives_back_the_size_that_was_stored() {
+        let thumbs = store("decode");
+        let id = "0123456789abcdef0123456789abcdee";
+        thumbs.store(id, Size::Small, &jpeg(800, 600), Some(6)).unwrap();
+        let picture = decode(&thumbs.load(id, Size::Small).unwrap()).unwrap();
+        assert_eq!((picture.width, picture.height), (192, 256));
+        assert_eq!(picture.pixels.len(), picture.stride() * picture.height as usize);
+        assert!(decode(b"rubbish").is_err());
+    }
+
+    #[test]
     fn a_stored_thumbnail_is_found_by_its_content_id() {
         let thumbs = store("found");
         let id = "0123456789abcdef0123456789abcdef";
@@ -482,5 +569,50 @@ mod tests {
         thumbs.forget(kept).unwrap();
         assert_eq!(thumbs.count(Size::Small), 0);
         assert_eq!(thumbs.count(Size::Large), 0);
+    }
+}
+
+#[cfg(all(test, feature = "fixtures"))]
+mod fixture_tests {
+    use super::*;
+
+    fn library(name: &str) -> PathBuf {
+        let root = std::env::temp_dir().join(format!("photomanager-thumbs-{name}"));
+        crate::fixtures::build(&root).unwrap();
+        root
+    }
+
+    #[test]
+    fn the_embedded_thumbnail_is_there_only_when_the_camera_put_one_in() {
+        let root = library("exif");
+        let with = root.join(crate::fixtures::WITH_EXIF_THUMBNAIL);
+        let picture = exif_preview(&with, None).unwrap().expect("an embedded thumbnail");
+        assert!(picture.width > 0 && picture.height > 0);
+
+        let without = root.join("Germany/2019-07-13 Sommerfest/IMAG0001.jpg");
+        assert_eq!(exif_preview(&without, None).unwrap(), None, "none, and no error");
+        assert!(exif_preview(&root.join("not/there.jpg"), None).is_err());
+    }
+
+    #[test]
+    fn the_grid_falls_back_to_the_embedded_one_and_then_to_nothing() {
+        let root = library("fallback");
+        let thumbs = Thumbs::new(root.with_extension("thumbs"));
+        let _ = std::fs::remove_dir_all(thumbs.root());
+        let with = root.join(crate::fixtures::WITH_EXIF_THUMBNAIL);
+        let without = root.join("Germany/2019-07-13 Sommerfest/IMAG0001.jpg");
+        let id = "abcdefabcdefabcdefabcdefabcdefab";
+
+        let embedded = thumbs.for_grid(Some(id), &with, None).expect("the embedded one");
+        assert_eq!(thumbs.for_grid(Some(id), &without, None), None);
+        assert_eq!(thumbs.for_grid(None, &without, None), None);
+
+        thumbs
+            .store(id, Size::Small, &std::fs::read(&without).unwrap(), None)
+            .unwrap();
+        let stored = thumbs.for_grid(Some(id), &with, None).expect("the stored one");
+        assert_eq!(stored, decode(&thumbs.load(id, Size::Small).unwrap()).unwrap());
+        assert_ne!(stored, embedded, "the stored one wins");
+        assert!(thumbs.count(Size::Small) == 1, "nothing more was stored");
     }
 }
