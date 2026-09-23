@@ -13,6 +13,8 @@ use photomanager_core::details::Details;
 use photomanager_core::filter::{Filter, Listed, Order};
 use photomanager_core::geo::Geo;
 use photomanager_core::geo::import::Imported;
+use photomanager_core::geo::lookup::Candidate;
+use photomanager_core::geo::reverse::At;
 use photomanager_core::journal::{Journal, Kind, Pass};
 use photomanager_core::metadata::Exiv2;
 use photomanager_core::paths::Paths;
@@ -285,6 +287,42 @@ impl Library {
             .and_then(|geo| geo.counts().ok())
             .map(|counts| counts.places)
             .unwrap_or_default()
+    }
+
+    /// What is at a point, from the local place data: no network. `None` when there is no place
+    /// data yet or it is busy.
+    pub fn nearest(&self, lat: f64, lon: f64) -> Option<At> {
+        let geo = self.geo.borrow();
+        let geo = geo.as_ref().filter(|geo| geo.is_filled())?;
+        geo.at(lat, lon)
+            .map_err(|error| tracing::warn!(%error, "the place data could not be asked"))
+            .ok()
+    }
+
+    /// The places a name could mean, best first, from the local place data.
+    pub fn find_place(&self, text: &str) -> Vec<Candidate> {
+        let geo = self.geo.borrow();
+        let Some(geo) = geo.as_ref().filter(|geo| geo.is_filled()) else {
+            return Vec::new();
+        };
+        geo.find(text, None)
+            .map(|found| found.candidates)
+            .map_err(|error| tracing::warn!(%error, "the place data could not be asked"))
+            .unwrap_or_default()
+    }
+
+    pub fn setting(&self, name: &str) -> Option<String> {
+        self.settings.borrow().as_ref()?.get(name).ok().flatten()
+    }
+
+    pub fn put_setting(&self, name: &str, value: &str) {
+        let mut settings = self.settings.borrow_mut();
+        let Some(settings) = settings.as_mut() else {
+            return;
+        };
+        if let Err(error) = settings.put(name, value) {
+            tracing::error!(%error, name, "the setting could not be kept");
+        }
     }
 
     /// When the dumps the place data was built from were last changed.

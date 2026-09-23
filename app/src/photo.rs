@@ -20,6 +20,7 @@ use photomanager_core::filter::Listed;
 
 use crate::gallery::Photo;
 use crate::library::Library;
+use crate::panel::{self, Look, Panel};
 use crate::thumbnails::{Loader, Request, Slot};
 
 /// The full size of one photo: on its way, there, or not to be had.
@@ -70,6 +71,7 @@ mod imp {
         pub full: RefCell<HashMap<String, Full>>,
         pub slot: Slot,
         pub details: RefCell<Option<Details>>,
+        pub sheet: RefCell<Panel>,
         /// Which answer about the details is the newest asked for.
         pub asked: Cell<u64>,
         pub toast: RefCell<String>,
@@ -161,6 +163,7 @@ impl PhotoPage {
         imp.picture.set_paintable(None::<&gdk::Paintable>);
         *imp.shown.borrow_mut() = None;
         *imp.details.borrow_mut() = None;
+        imp.sheet.borrow_mut().clear(&imp.panel);
     }
 
     /// Steps through the list; past either end it stays where it is.
@@ -257,6 +260,31 @@ impl PhotoPage {
 
     pub fn details(&self) -> Option<Details> {
         self.imp().details.borrow().clone()
+    }
+
+    /// Every title and subtitle the panel shows.
+    pub fn panel_texts(&self) -> Vec<String> {
+        self.imp().sheet.borrow().texts()
+    }
+
+    pub fn filter_raw(&self, query: &str) {
+        self.imp().sheet.borrow().filter_raw(query);
+    }
+
+    pub fn raw_shown(&self) -> usize {
+        self.imp().sheet.borrow().raw_shown()
+    }
+
+    pub fn shows_map(&self) -> bool {
+        self.imp().sheet.borrow().shows_map()
+    }
+
+    /// Shows the map around the photo's coordinates: the one thing here that uses the network.
+    pub fn show_map(&self) {
+        let Some((lat, lon)) = self.details().and_then(|details| details.gps) else {
+            return;
+        };
+        self.imp().sheet.borrow_mut().show_map(lat, lon);
     }
 
     pub fn toast(&self) -> String {
@@ -486,6 +514,48 @@ impl PhotoPage {
 
     fn show_details(&self, details: Option<Details>) {
         *self.imp().details.borrow_mut() = details;
+        self.fill_panel();
+    }
+
+    fn fill_panel(&self) {
+        let imp = self.imp();
+        let Some(library) = imp.library.borrow().clone() else {
+            return;
+        };
+        let Some(details) = imp.details.borrow().clone() else {
+            imp.sheet.borrow_mut().fill_unknown(&imp.panel);
+            return;
+        };
+        let nearest = details.gps.and_then(|(lat, lon)| library.nearest(lat, lon));
+        let always_map = library.setting(panel::ALWAYS_MAP).as_deref() == Some("true");
+        let look = Look {
+            details: &details,
+            nearest: nearest.as_ref(),
+            has_places: library.counts().places > 0,
+            always_map,
+        };
+        imp.sheet.borrow_mut().fill(&imp.panel, &look, None);
+        if always_map {
+            self.show_map();
+        }
+        let always = imp.sheet.borrow().always_switch();
+        if let Some(always) = always {
+            always.connect_active_notify(glib::clone!(
+                #[weak(rename_to = page)]
+                self,
+                move |switch| page.set_always_map(switch.is_active())
+            ));
+        }
+    }
+
+    fn set_always_map(&self, always: bool) {
+        if let Some(library) = self.imp().library.borrow().as_ref() {
+            library.put_setting(panel::ALWAYS_MAP, if always { "true" } else { "false" });
+        }
+        tracing::info!(always, "the map setting changed");
+        if always {
+            self.show_map();
+        }
     }
 
     fn build_keys(&self) {

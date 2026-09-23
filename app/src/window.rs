@@ -326,6 +326,7 @@ impl Window {
             photo("photo-last", |page| page.last()),
             photo("photo-panel", |page| page.toggle_panel()),
             photo("photo-open-with", |page| page.open_with()),
+            photo("photo-show-map", |page| page.show_map()),
             photo_close,
         ]);
     }

@@ -147,6 +147,8 @@ fn scans_into_its_cache() {
     assert_eq!(opened.counts().places, 149, "the excerpt was imported");
     assert_eq!(opened.dump_date().map(|date| date.len()), Some(19));
 
+    reads_the_panel(&window);
+
     previews_what_a_tool_would_change(&window, &opened);
 }
 
@@ -480,6 +482,64 @@ fn looks_at_one_photo(window: &Window, library: &std::path::Path) {
 }
 
 const LOCATED: &str = "Germany/2019-07-13 Sommerfest/img_0657.jpg";
+
+/// The panel says what the cache knows, the nearest place comes from the local place data, and
+/// the map, the one thing that would ask a server, is not made until it is asked for.
+fn reads_the_panel(window: &Window) {
+    let gallery = window.gallery();
+    let page = gallery.photo();
+    let open = |path: &str| {
+        WidgetExt::activate_action(window, "win.show-photos", Some(&"all".to_variant())).unwrap();
+        settle(window);
+        WidgetExt::activate_action(window, "win.show-photo", Some(&path.to_variant())).unwrap();
+        until(
+            || page.details().is_some_and(|details| details.rel_path == path),
+            "the details arrived",
+        );
+        page.panel_texts()
+    };
+    let has = |texts: &[String], wanted: &str| {
+        assert!(texts.iter().any(|text| text == wanted), "no {wanted:?} in {texts:#?}");
+    };
+
+    let texts = open("Germany/2019-07-13 Sommerfest/IMAG0001.jpg");
+    has(&texts, "Taken: 2019-07-13 20:41:00");
+    has(&texts, "Folder date: 2019-07-13");
+    has(&texts, "Folder date agrees");
+    has(&texts, "Tag: people/family/Anna");
+    has(&texts, "Tag: places/inGermany");
+    has(&texts, "Person: Anna");
+    has(&texts, "Person: me");
+    has(&texts, "No coordinates");
+    assert!(!page.shows_map(), "no coordinates, no map");
+
+    let texts = open("Denmark/2018-10-00 Wedding Trip to Copenhagen/DSCF0001.JPG");
+    has(&texts, "Camera: FUJIFILM X100S");
+    has(&texts, "Folder date: 2018-10");
+    has(&texts, "No people");
+
+    let texts = open(LOCATED);
+    has(&texts, "Coordinates: 53.551100, 9.993700");
+    has(&texts, "Nearest place: Hamburg, Germany");
+    has(&texts, "Orientation: 6, turned right");
+    assert!(!page.shows_map(), "no map until it is asked for");
+
+    let all = page.raw_shown();
+    assert!(all > 5, "every raw field is listed: {all}");
+    page.filter_raw("gpslat");
+    let narrowed = page.raw_shown();
+    assert!(narrowed > 0 && narrowed < all, "{narrowed} of {all}");
+    page.filter_raw("");
+    assert_eq!(page.raw_shown(), all);
+
+    WidgetExt::activate_action(window, "win.photo-panel", None).unwrap();
+    assert!(!page.shows_panel(), "F9 hides the panel");
+    WidgetExt::activate_action(window, "win.photo-panel", None).unwrap();
+    assert!(page.shows_panel());
+
+    WidgetExt::activate_action(window, "win.photo-close", None).unwrap();
+    window.show_view("dashboard");
+}
 
 /// Runs the main loop until `done`, or fails after a while.
 fn until(done: impl Fn() -> bool, what: &str) {

@@ -777,7 +777,7 @@ pub fn looked_at(named: &str) -> String {
 }
 
 /// Nextcloud uploads the whole file again for every edit, so these are whole files.
-fn size(bytes: u64) -> String {
+pub(crate) fn size(bytes: u64) -> String {
     const UNITS: [&str; 4] = ["bytes", "kB", "MB", "GB"];
     let mut size = bytes as f64;
     let mut unit = 0;
