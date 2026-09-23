@@ -11,3 +11,4 @@ How the parts of photoManager work. One file per subsystem, added when the subsy
 | [writing.md](writing.md) | the only part that changes a photo: how one write works, what is proved, how it is taken back |
 | [preview.md](preview.md) | what a tool would change, on screen: the change set, the estimate, the confirmation, the undo |
 | [dashboard.md](dashboard.md) | what the library is missing and where, and the filters that name a set of photos |
+| [gallery.md](gallery.md) | finding photos by place, tag and gap, the grid and its pictures, the scope a tool is handed |

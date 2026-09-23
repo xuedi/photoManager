@@ -1,6 +1,6 @@
 # Thumbnails
 
-A grid of seventeen thousand photos cannot open seventeen thousand JPEGs. The thumbnail store
+A grid of thousands of photos cannot open thousands of JPEGs. The thumbnail store
 holds one small picture per photo, made once and read many times. Like the cache it is
 disposable: delete it and the next scan makes it again.
 
@@ -57,6 +57,18 @@ finished stays.
 
 A photo that cannot be decoded gets no thumbnail and no complaint: it is already reported as
 unreadable or as not a photo by the scan.
+
+## On screen
+
+The grid draws the 256 px thumbnail. It is decoded from WebP to plain pixels in `core`, so the
+application needs no image loader for WebP, and turned into a texture on the main thread. How the
+[gallery](gallery.md) asks for them, keeps them and drops them is described there.
+
+A photo without a stored thumbnail shows the small picture a camera embeds in the file instead,
+turned by the photo's orientation. Reading it means opening the photo, read only, so it is a
+fallback for the photos a scan has not reached, never the normal case. It is never stored: making
+thumbnails stays the scan's job and **Make Missing Thumbnails**'. A photo with neither shows an
+icon.
 
 ## What it never does
 

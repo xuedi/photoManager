@@ -46,8 +46,8 @@ the time zone of home, are not wrong.
 ## Filters, and why a number cannot lie
 
 Each number carries a **filter**: a small, closed description of a set of photos, optionally
-narrowed to a folder. It has a written form, which is what a click hands to the gallery and what
-tests and later suggestions use to name photos:
+narrowed to a folder. It has a written form, which is what a click hands to the
+[gallery](gallery.md) and what tests and later suggestions use to name photos:
 
 | Written | Means |
 |---------|-------|
@@ -57,6 +57,13 @@ tests and later suggestions use to name photos:
 | `loose`, `sub-folder`, `off-convention` | the folder findings |
 | `issue:sidecar`, `issue:duplicate content` | files with that issue |
 | `all` | every photo |
+| `no-gps+tag:people@Germany` | parts joined by `+` must all hold: here, photos tagged under `people` in that folder, without GPS |
+
+A filter holds at most one part of each sort and writes them in a fixed order, so every filter
+has exactly one written form. `tag:a|b` means either tag; `+` means both parts. A filter of one
+part is written exactly as before parts could be combined, so every form the dashboard hands out
+stays valid. Once one part is of files that may not be photos (loose files, an issue), the whole
+set is asked of those files, and each photo part applies to the ones that are photos.
 
 ```mermaid
 flowchart LR
@@ -66,10 +73,11 @@ flowchart LR
     filter -- count --> cache
     filter -- list --> cache
     numbers -- click --> action[win.show-photos]
-    action --> gallery
+    action --> gallery[gallery: exactly those photos]
 ```
 
-A filter's count and its list of photos come from the same predicate, and the survey's grouped
+A click shows exactly those photos in the gallery, where the other controls can narrow them
+further. A filter's count and its list of photos come from the same predicate, and the survey's grouped
 counts use those predicates too. A test takes every number the survey produces and checks that its
 filter lists exactly that many photos, over the stand-in library, and it has been checked the same
 way over a copy of real photos.

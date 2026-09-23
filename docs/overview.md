@@ -15,6 +15,8 @@ flowchart LR
         settings[(settings)]
         changeset[change set] --> cache
         survey --> filter --> cache
+        browse[browse<br/>places and tags] --> cache
+        scope --> filter
         changeset --> write
         scan --> cache[(cache)]
         scan --> metadata
@@ -28,6 +30,10 @@ flowchart LR
     application --> paths
     window --> dashboard[dashboard<br/>what is missing]
     dashboard --> survey
+    window --> gallery[gallery<br/>find photos, pick a scope]
+    gallery --> filter
+    gallery --> browse
+    gallery --> thumbs
     window --> preview[preview<br/>what a tool would change]
     window --> library[library<br/>work off the main thread]
     preview --> changeset
@@ -46,7 +52,8 @@ cache it fills, the thumbnails, the place data, and the one engine that writes t
 no GTK dependency, so it can be tested without a session. What the cache holds and how a scan
 works: [cache.md](cache.md); the small pictures: [thumbnails.md](thumbnails.md); names and
 coordinates: [places.md](places.md); changing what a photo says: [writing.md](writing.md); what
-the library is missing, counted: [dashboard.md](dashboard.md).
+the library is missing, counted: [dashboard.md](dashboard.md); the places and tags a gallery
+browses by, and the scope a tool is handed: [gallery.md](gallery.md).
 
 The window reaches the write engine through one thing only: a change set, previewed and confirmed
 before anything is written. How that works: [preview.md](preview.md).
@@ -82,6 +89,10 @@ shortcuts and tests all use:
 |--------|------|
 | `win.show-view` | show one of `dashboard`, `gallery`, `tools`, `suggestions` |
 | `win.show-photos` | hand a set of photos, named by a [filter](dashboard.md#filters-and-why-a-number-cannot-lie), to the gallery |
+| `win.gallery-place`, `win.gallery-tag` | narrow the gallery to a folder or a tag, or widen back from the chosen one |
+| `win.gallery-gap`, `win.gallery-sort` | the gallery's missing field and its order |
+| `win.gallery-select-all`, `win.gallery-select-none` | select every photo in the gallery, or none |
+| `win.use-as-scope` | make what the gallery shows or has selected the scope of the next tool |
 | `win.scan` | read what changed in the library into the cache |
 | `win.fill-thumbnails` | make the thumbnails the scan could not make |
 | `win.get-places` | fetch the GeoNames dumps and import them |
@@ -97,7 +108,7 @@ shortcuts and tests all use:
 | `app.quit` | quit |
 | `app.dump-state` | write the current state as JSON (only with `devtools`) |
 | `app.snapshot` | write the window as a PNG (only with `devtools`) |
-| `win.preview-demo` | a change set without a tool behind it, to drive the preview (only with `devtools`) |
+| `win.preview-demo` | a change set without a tool behind it, over the scope if there is one, to drive the preview (only with `devtools`) |
 
 ## Running and testing
 
