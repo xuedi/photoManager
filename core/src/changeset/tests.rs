@@ -529,3 +529,96 @@ fn applying_nothing_is_refused_rather_than_journaled() {
     assert!(refused.to_string().contains("no photo is selected"), "{refused}");
     assert!(setup.journal.passes(10).unwrap().is_empty());
 }
+
+// 3.0 - the history, and taking back any pass
+
+fn rate(setup: &mut Setup, title: &str, paths: &[&str], stars: i64) -> Summary {
+    setup.rescan();
+    let wanted: Vec<Wanted> = paths
+        .iter()
+        .map(|path| Wanted::new(*path, Change::of([Field::Rating(Some(stars))])))
+        .collect();
+    let mut set = setup.set(title, &wanted);
+    set.tool = Some("rating".to_string());
+    setup.apply(&set)
+}
+
+fn take(setup: &mut Setup, batch: i64) -> write::Result<Summary> {
+    let mut engine = setup.engine();
+    take_back(
+        &mut engine,
+        &mut setup.journal,
+        &mut setup.cache,
+        batch,
+        &|_, _| {},
+        &AtomicBool::new(false),
+    )
+}
+
+#[test]
+fn an_older_pass_is_taken_back_and_leaves_a_photo_changed_since_alone() {
+    let mut setup = Setup::new("take-back-older");
+    let all = crate::fixtures::photo_paths();
+    let first = rate(&mut setup, "Rate three", &all[0..3], 3).batch;
+    let second = rate(&mut setup, "Rate four", &all[2..4], 4).batch;
+
+    let passes = crate::history::passes(&setup.journal, 0, 50).unwrap();
+    assert_eq!(passes.iter().map(|pass| pass.id).collect::<Vec<_>>(), [second, first]);
+    assert_eq!(passes[1].title, "Rate three");
+    assert_eq!(passes[1].tool.as_deref(), Some("rating"));
+    assert!(passes.iter().all(|pass| pass.can_take_back()));
+    assert_eq!(
+        passes[1].changed_since, 1,
+        "the second pass rated one of its photos again"
+    );
+    assert_eq!(passes[0].changed_since, 0);
+
+    let undone = take(&mut setup, first).unwrap();
+    assert_eq!((undone.written, undone.refused), (2, 1));
+    assert_eq!(setup.rating_of(all[0]), None);
+    assert_eq!(setup.rating_of(all[1]), None);
+    assert_eq!(setup.rating_of(all[2]), Some(4), "the newer change was kept");
+    assert_eq!(setup.rating_of(all[3]), Some(4));
+
+    let passes = crate::history::passes(&setup.journal, 0, 50).unwrap();
+    let (undo, second_pass, first_pass) = (&passes[0], &passes[1], &passes[2]);
+    assert_eq!(undo.kind, Kind::Undo);
+    assert_eq!(undo.undoes, Some(first));
+    assert_eq!(undo.title, "Take back: Rate three");
+    assert!(!undo.can_take_back(), "an undo is not offered");
+    assert_eq!(first_pass.undone_by, Some(undo.id));
+    assert!(!first_pass.can_take_back(), "a pass is taken back once");
+    assert!(second_pass.can_take_back());
+
+    let refused = take(&mut setup, first).unwrap_err();
+    assert!(refused.to_string().contains("cannot be taken back"), "{refused}");
+    assert!(take(&mut setup, undo.id).is_err());
+
+    let photos = crate::history::photos(&setup.journal, first).unwrap();
+    assert_eq!(photos.len(), 3);
+    assert!(photos.iter().all(|photo| photo.outcome.as_deref() == Some("written")));
+    assert_eq!(
+        crate::history::photos(&setup.journal, undo.id).unwrap().len(),
+        2,
+        "a refusal is decided before anything is written down"
+    );
+}
+
+#[test]
+fn a_later_pass_taken_back_no_longer_counts_as_a_change_since() {
+    let mut setup = Setup::new("take-back-later");
+    let all = crate::fixtures::photo_paths();
+    let first = rate(&mut setup, "Rate three", &all[0..3], 3).batch;
+    let second = rate(&mut setup, "Rate four", &all[2..4], 4).batch;
+    assert_eq!(crate::history::pass(&setup.journal, first).unwrap().changed_since, 1);
+
+    take(&mut setup, second).unwrap();
+    assert_eq!(setup.rating_of(all[2]), Some(3), "back to what the first pass left");
+    assert_eq!(crate::history::pass(&setup.journal, first).unwrap().changed_since, 0);
+
+    let undone = take(&mut setup, first).unwrap();
+    assert_eq!((undone.written, undone.refused), (3, 0));
+    for path in &all[0..4] {
+        assert_eq!(setup.rating_of(path), None, "{path}");
+    }
+}

@@ -50,7 +50,7 @@ impl Setup {
     fn write(&mut self, rel_path: &str, change: Change) -> Outcome {
         let target = self.target(rel_path, change);
         self.engine
-            .write_one(&mut self.journal, &mut self.cache, &target)
+            .write_one(&mut self.journal, &mut self.cache, "Edit", &target)
             .unwrap()
     }
 
@@ -174,7 +174,7 @@ fn a_write_that_cannot_be_proved_leaves_the_original_alone() {
         key: "XMP-xmp:NoSuchTag".to_string(),
         value: Value::from(3),
     };
-    let batch = setup.journal.start(journal::Kind::Write, None).unwrap();
+    let batch = setup.journal.start(journal::Kind::Write, None, "Pass", None).unwrap();
     let id = content_id(&before).unwrap();
     let outcome = setup
         .engine
@@ -209,7 +209,7 @@ fn a_missing_file_is_a_reason_not_a_panic() {
     };
     let outcome = setup
         .engine
-        .write_one(&mut setup.journal, &mut setup.cache, &target)
+        .write_one(&mut setup.journal, &mut setup.cache, "Edit", &target)
         .unwrap();
     assert!(matches!(outcome, Outcome::Refused(_)), "{outcome:?}");
 }
@@ -227,7 +227,7 @@ fn a_file_that_is_not_a_photo_is_refused() {
     };
     let outcome = setup
         .engine
-        .write_one(&mut setup.journal, &mut setup.cache, &target)
+        .write_one(&mut setup.journal, &mut setup.cache, "Edit", &target)
         .unwrap();
     match &outcome {
         Outcome::Refused(why) => assert!(why.contains("JPEG"), "{why}"),
@@ -279,7 +279,7 @@ fn a_photo_outside_the_library_is_refused() {
     };
     let outcome = setup
         .engine
-        .write_one(&mut setup.journal, &mut setup.cache, &target)
+        .write_one(&mut setup.journal, &mut setup.cache, "Edit", &target)
         .unwrap();
 
     match &outcome {
@@ -300,7 +300,7 @@ fn a_photo_whose_image_data_moved_under_us_is_refused() {
     };
     let outcome = setup
         .engine
-        .write_one(&mut setup.journal, &mut setup.cache, &target)
+        .write_one(&mut setup.journal, &mut setup.cache, "Edit", &target)
         .unwrap();
     match &outcome {
         Outcome::Refused(why) => assert!(why.contains("built against"), "{why}"),
@@ -374,6 +374,55 @@ fn the_journal_survives_a_cache_rebuild() {
     assert_eq!(journal.passes(1).unwrap()[0].written, 1);
 }
 
+#[test]
+fn a_pass_from_before_the_migration_can_still_be_taken_back() {
+    let mut setup = Setup::new("pre-migration");
+    let target = setup.target(BARE, Change::of([Field::Rating(Some(4))]));
+    let written = setup
+        .engine
+        .write(
+            &mut setup.journal,
+            &mut setup.cache,
+            "Pass",
+            None,
+            &[target],
+            &quiet(),
+            &AtomicBool::new(false),
+        )
+        .unwrap();
+
+    // Back to how version 1 kept it: no names on the batches.
+    let file = setup.journal.file().to_path_buf();
+    setup.journal = Journal::open(&file.with_file_name("other.db")).unwrap();
+    let connection = rusqlite::Connection::open(&file).unwrap();
+    connection
+        .execute_batch(
+            "ALTER TABLE batch DROP COLUMN title; ALTER TABLE batch DROP COLUMN tool; PRAGMA user_version = 1;",
+        )
+        .unwrap();
+    drop(connection);
+
+    setup.journal = Journal::open(&file).unwrap();
+    assert!(file.with_file_name("app.db.v1").exists());
+    assert_eq!(setup.journal.pass(written.batch).unwrap().title(), journal::EARLIER);
+    let undone = setup
+        .engine
+        .undo(
+            &mut setup.journal,
+            &mut setup.cache,
+            written.batch,
+            &quiet(),
+            &AtomicBool::new(false),
+        )
+        .unwrap();
+    assert_eq!(undone.written, 1);
+    assert_eq!(setup.field(BARE, "XMP-xmp:Rating"), None);
+    assert_eq!(
+        setup.journal.pass(undone.batch).unwrap().title(),
+        "Take back: Earlier change"
+    );
+}
+
 // Phase 3 - taking it back
 
 #[test]
@@ -397,6 +446,8 @@ fn an_undo_puts_back_exactly_what_was_there() {
         .write(
             &mut setup.journal,
             &mut setup.cache,
+            "Pass",
+            None,
             &[target],
             &quiet(),
             &AtomicBool::new(false),
@@ -443,6 +494,8 @@ fn an_undo_is_itself_in_the_journal() {
         .write(
             &mut setup.journal,
             &mut setup.cache,
+            "Pass",
+            None,
             &[target],
             &quiet(),
             &AtomicBool::new(false),
@@ -476,6 +529,8 @@ fn undoing_the_same_batch_twice_refuses() {
         .write(
             &mut setup.journal,
             &mut setup.cache,
+            "Pass",
+            None,
             &[target],
             &quiet(),
             &AtomicBool::new(false),
@@ -504,6 +559,8 @@ fn a_photo_changed_by_something_else_is_not_undone() {
         .write(
             &mut setup.journal,
             &mut setup.cache,
+            "Pass",
+            None,
             &[target],
             &quiet(),
             &AtomicBool::new(false),
@@ -760,6 +817,8 @@ fn a_batch_writes_every_photo_and_changes_nothing_else() {
         .write(
             &mut setup.journal,
             &mut setup.cache,
+            "Pass",
+            None,
             &targets,
             &quiet(),
             &AtomicBool::new(false),
@@ -808,6 +867,8 @@ fn one_broken_photo_does_not_stop_the_others() {
         .write(
             &mut setup.journal,
             &mut setup.cache,
+            "Pass",
+            None,
             &targets,
             &quiet(),
             &AtomicBool::new(false),
@@ -839,7 +900,15 @@ fn a_cancelled_batch_stops_between_photos() {
     };
     let summary = setup
         .engine
-        .write(&mut setup.journal, &mut setup.cache, &targets, &stop, &cancel)
+        .write(
+            &mut setup.journal,
+            &mut setup.cache,
+            "Pass",
+            None,
+            &targets,
+            &stop,
+            &cancel,
+        )
         .unwrap();
 
     assert!(summary.cancelled, "{summary:?}");
@@ -869,6 +938,8 @@ fn a_batch_of_one_process_does_not_start_one_per_photo() {
         .write(
             &mut setup.journal,
             &mut setup.cache,
+            "Pass",
+            None,
             &targets,
             &quiet(),
             &AtomicBool::new(false),

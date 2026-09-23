@@ -148,6 +148,8 @@ pub struct Counts {
 #[derive(Debug, Clone)]
 pub struct ChangeSet {
     pub title: String,
+    /// The key of the tool that built it. A change set made by hand has none.
+    pub tool: Option<String>,
     pub rows: Vec<Row>,
 }
 
@@ -158,6 +160,7 @@ impl ChangeSet {
         let known = cache.stated(&paths)?;
         Ok(ChangeSet {
             title: title.to_string(),
+            tool: None,
             rows: wanted.iter().map(|one| row(one, known.get(&one.rel_path))).collect(),
         })
     }
@@ -269,8 +272,8 @@ impl ChangeSet {
     }
 }
 
-/// Applies the rows the user kept, as one journal batch. Every write is the engine's; all this
-/// does is choose which photos it is handed.
+/// Applies the rows the user kept, as one journal batch named after the change set. Every write
+/// is the engine's; all this does is choose which photos it is handed.
 pub fn apply(
     set: &ChangeSet,
     engine: &mut Engine,
@@ -283,11 +286,19 @@ pub fn apply(
     if targets.is_empty() {
         return Err(write::Error::Refusing("no photo is selected".to_string()));
     }
-    engine.write(journal, cache, &targets, progress, cancel)
+    engine.write(
+        journal,
+        cache,
+        &set.title,
+        set.tool.as_deref(),
+        &targets,
+        progress,
+        cancel,
+    )
 }
 
-/// The pass the last applied change set left behind, if it can still be taken back. The whole
-/// history with per-batch undo is another day's work; this is the last one only.
+/// The pass the last applied change set left behind, if it can still be taken back: what the
+/// toast's Undo means. Any other pass is taken back from the history with [`take_back`].
 pub fn undoable(journal: &Journal) -> journal::Result<Option<journal::Pass>> {
     let last = journal
         .passes(RECENT)?
@@ -307,6 +318,22 @@ pub fn undo_last(
 ) -> write::Result<Summary> {
     let pass = undoable(journal)?.ok_or_else(|| write::Error::Refusing("there is nothing to take back".to_string()))?;
     engine.undo(journal, cache, pass.id, progress, cancel)
+}
+
+/// Takes back any pass that can still be taken back, not only the last. A photo a later pass
+/// changed again is refused by the engine and keeps what it says now.
+pub fn take_back(
+    engine: &mut Engine,
+    journal: &mut Journal,
+    cache: &mut Cache,
+    batch: i64,
+    progress: &(dyn Fn(usize, usize) + Sync),
+    cancel: &AtomicBool,
+) -> write::Result<Summary> {
+    if !crate::history::pass(journal, batch)?.can_take_back() {
+        return Err(write::Error::Refusing(format!("pass {batch} cannot be taken back")));
+    }
+    engine.undo(journal, cache, batch, progress, cancel)
 }
 
 fn row(wanted: &Wanted, known: Option<&Stated>) -> Row {

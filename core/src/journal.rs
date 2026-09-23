@@ -12,7 +12,7 @@ use rusqlite::{Connection, OptionalExtension, params};
 
 use crate::clock::now;
 
-const SCHEMA_VERSION: i64 = 1;
+const SCHEMA_VERSION: i64 = 2;
 
 const SCHEMA: &str = "
 CREATE TABLE batch (
@@ -20,7 +20,9 @@ CREATE TABLE batch (
     kind        TEXT NOT NULL,
     started_at  TEXT NOT NULL,
     finished_at TEXT,
-    undoes      INTEGER REFERENCES batch (id)
+    undoes      INTEGER REFERENCES batch (id),
+    title       TEXT,
+    tool        TEXT
 );
 CREATE INDEX batch_undoes ON batch (undoes);
 
@@ -46,6 +48,16 @@ CREATE TABLE swap (
 );
 CREATE INDEX swap_entry ON swap (entry_id);
 ";
+
+/// From version 1: a batch learns what ran it. Only columns are added, so every row a version-1
+/// journal holds reads the same afterwards, and a batch from before it has no title.
+const TO_2: &str = "
+ALTER TABLE batch ADD COLUMN title TEXT;
+ALTER TABLE batch ADD COLUMN tool TEXT;
+";
+
+/// What a batch from before batches had names is called.
+pub const EARLIER: &str = "Earlier change";
 
 /// What an entry came to. Anything but `WRITTEN` means the photo was left alone.
 pub const WRITTEN: &str = "written";
@@ -110,6 +122,16 @@ pub struct Pass {
     pub finished_at: Option<String>,
     pub undoes: Option<i64>,
     pub written: i64,
+    /// What ran it, as a person reads it. `None` for a batch from before batches had names.
+    pub title: Option<String>,
+    /// The key of the tool that ran it, if a tool did.
+    pub tool: Option<String>,
+}
+
+impl Pass {
+    pub fn title(&self) -> &str {
+        self.title.as_deref().unwrap_or(EARLIER)
+    }
 }
 
 #[derive(Debug)]
@@ -174,6 +196,7 @@ impl Journal {
                 connection.execute_batch(SCHEMA)?;
                 connection.pragma_update(None, "user_version", SCHEMA_VERSION)?;
             }
+            1 => migrate(&connection, file)?,
             SCHEMA_VERSION => {}
             other => return Err(Error::Foreign(other)),
         }
@@ -188,10 +211,10 @@ impl Journal {
     }
 
     /// Opens a batch. Everything one pass of a tool writes belongs to one.
-    pub fn start(&mut self, kind: Kind, undoes: Option<i64>) -> Result<i64> {
+    pub fn start(&mut self, kind: Kind, undoes: Option<i64>, title: &str, tool: Option<&str>) -> Result<i64> {
         self.connection.execute(
-            "INSERT INTO batch (kind, started_at, undoes) VALUES (?1, ?2, ?3)",
-            params![kind.as_str(), now(), undoes],
+            "INSERT INTO batch (kind, started_at, undoes, title, tool) VALUES (?1, ?2, ?3, ?4, ?5)",
+            params![kind.as_str(), now(), undoes, title, tool],
         )?;
         Ok(self.connection.last_insert_rowid())
     }
@@ -245,30 +268,30 @@ impl Journal {
         Ok(rows.collect::<rusqlite::Result<Vec<i64>>>()?)
     }
 
+    /// Newest first.
     pub fn passes(&self, limit: i64) -> Result<Vec<Pass>> {
-        let mut statement = self.connection.prepare(
-            "SELECT b.id, b.kind, b.started_at, b.finished_at, b.undoes,
-                    (SELECT count(*) FROM entry e WHERE e.batch_id = b.id AND e.outcome = ?1)
-             FROM batch b ORDER BY b.id DESC LIMIT ?2",
-        )?;
-        let rows = statement.query_map(params![WRITTEN, limit], |row| {
-            Ok(Pass {
-                id: row.get(0)?,
-                kind: row.get(1)?,
-                started_at: row.get(2)?,
-                finished_at: row.get(3)?,
-                undoes: row.get(4)?,
-                written: row.get(5)?,
-            })
-        })?;
+        self.passes_from(0, limit)
+    }
+
+    /// Newest first, leaving out the `skip` newest: the history asks for them a page at a time.
+    pub fn passes_from(&self, skip: i64, limit: i64) -> Result<Vec<Pass>> {
+        let mut statement = self
+            .connection
+            .prepare(&format!("{PASS} ORDER BY b.id DESC LIMIT ?2 OFFSET ?3"))?;
+        let rows = statement.query_map(params![WRITTEN, limit, skip], read_pass)?;
         Ok(rows.collect::<rusqlite::Result<Vec<Pass>>>()?)
     }
 
     pub fn pass(&self, batch: i64) -> Result<Pass> {
-        self.passes(i64::MAX)?
-            .into_iter()
-            .find(|pass| pass.id == batch)
+        self.connection
+            .query_row(&format!("{PASS} WHERE b.id = ?2"), params![WRITTEN, batch], read_pass)
+            .optional()?
             .ok_or_else(|| Error::Unknown(format!("there is no batch {batch}")))
+    }
+
+    /// For the queries that are about the whole history rather than one batch.
+    pub(crate) fn connection(&self) -> &Connection {
+        &self.connection
     }
 
     /// The entries of a batch that did change a photo, newest first: what an undo has to put back.
@@ -336,6 +359,48 @@ impl Journal {
     }
 }
 
+const PASS: &str = "SELECT b.id, b.kind, b.started_at, b.finished_at, b.undoes,
+        (SELECT count(*) FROM entry e WHERE e.batch_id = b.id AND e.outcome = ?1), b.title, b.tool
+    FROM batch b";
+
+fn read_pass(row: &rusqlite::Row<'_>) -> rusqlite::Result<Pass> {
+    Ok(Pass {
+        id: row.get(0)?,
+        kind: row.get(1)?,
+        started_at: row.get(2)?,
+        finished_at: row.get(3)?,
+        undoes: row.get(4)?,
+        written: row.get(5)?,
+        title: row.get(6)?,
+        tool: row.get(7)?,
+    })
+}
+
+/// Takes a version-1 journal to version 2. A copy of the whole file is made beside it first, as
+/// SQLite sees it, so what the write-ahead log still holds is in it too. A copy already there is
+/// from a migration that did not finish, of the same version-1 journal, and is kept as it is.
+fn migrate(connection: &Connection, file: &Path) -> Result<()> {
+    let copy = beside(file, ".v1");
+    if !copy.exists() {
+        let target = copy
+            .to_str()
+            .ok_or_else(|| Error::Unknown(format!("{} is not a name SQLite can take", copy.display())))?;
+        connection.execute("VACUUM INTO ?1", params![target])?;
+    }
+    let change = connection.unchecked_transaction()?;
+    change.execute_batch(TO_2)?;
+    change.pragma_update(None, "user_version", SCHEMA_VERSION)?;
+    change.commit()?;
+    tracing::info!(copy = %copy.display(), "the journal was migrated to version {SCHEMA_VERSION}");
+    Ok(())
+}
+
+fn beside(file: &Path, suffix: &str) -> PathBuf {
+    let mut name = file.file_name().unwrap_or_default().to_os_string();
+    name.push(suffix);
+    file.with_file_name(name)
+}
+
 fn read_entry(row: &rusqlite::Row<'_>) -> rusqlite::Result<Recorded> {
     Ok(Recorded {
         id: row.get(0)?,
@@ -389,7 +454,7 @@ mod tests {
     #[test]
     fn an_entry_holds_both_sides_of_every_field() {
         let mut journal = Journal::open(&temp("both-sides")).unwrap();
-        let batch = journal.start(Kind::Write, None).unwrap();
+        let batch = journal.start(Kind::Write, None, "Rate", None).unwrap();
         let id = journal.record(batch, &entry("a.jpg")).unwrap();
         journal.settle(id, WRITTEN, None).unwrap();
         journal.finish(batch).unwrap();
@@ -407,7 +472,7 @@ mod tests {
     fn an_entry_that_was_never_finished_is_still_there_and_findable() {
         let file = temp("unfinished");
         let mut journal = Journal::open(&file).unwrap();
-        let batch = journal.start(Kind::Write, None).unwrap();
+        let batch = journal.start(Kind::Write, None, "Rate", None).unwrap();
         journal.record(batch, &entry("a.jpg")).unwrap();
         drop(journal);
 
@@ -422,7 +487,7 @@ mod tests {
     #[test]
     fn a_finished_batch_is_not_unfinished() {
         let mut journal = Journal::open(&temp("finished")).unwrap();
-        let batch = journal.start(Kind::Write, None).unwrap();
+        let batch = journal.start(Kind::Write, None, "Rate", None).unwrap();
         let id = journal.record(batch, &entry("a.jpg")).unwrap();
         journal.settle(id, FAILED, Some("verification")).unwrap();
         journal.finish(batch).unwrap();
@@ -434,7 +499,7 @@ mod tests {
     fn a_journal_from_another_version_is_kept_not_thrown_away() {
         let file = temp("foreign");
         let mut journal = Journal::open(&file).unwrap();
-        let batch = journal.start(Kind::Write, None).unwrap();
+        let batch = journal.start(Kind::Write, None, "Rate", None).unwrap();
         journal.record(batch, &entry("a.jpg")).unwrap();
         journal
             .connection
@@ -456,11 +521,134 @@ mod tests {
     #[test]
     fn an_undo_says_which_batch_it_undoes() {
         let mut journal = Journal::open(&temp("undo-of")).unwrap();
-        let first = journal.start(Kind::Write, None).unwrap();
+        let first = journal.start(Kind::Write, None, "Rate", None).unwrap();
         assert_eq!(journal.undo_of(first).unwrap(), None);
-        let second = journal.start(Kind::Undo, Some(first)).unwrap();
+        let second = journal.start(Kind::Undo, Some(first), "Take back: Rate", None).unwrap();
         assert_eq!(journal.undo_of(first).unwrap(), Some(second));
         assert_eq!(journal.pass(second).unwrap().kind, "undo");
+    }
+
+    /// The journal as version 1 wrote it, before batches had names.
+    const SCHEMA_V1: &str = "
+    CREATE TABLE batch (
+        id          INTEGER PRIMARY KEY,
+        kind        TEXT NOT NULL,
+        started_at  TEXT NOT NULL,
+        finished_at TEXT,
+        undoes      INTEGER REFERENCES batch (id)
+    );
+    CREATE INDEX batch_undoes ON batch (undoes);
+    CREATE TABLE entry (
+        id         INTEGER PRIMARY KEY,
+        batch_id   INTEGER NOT NULL REFERENCES batch (id),
+        rel_path   TEXT NOT NULL,
+        content_id TEXT NOT NULL,
+        before     TEXT NOT NULL,
+        image_hash TEXT,
+        outcome    TEXT,
+        detail     TEXT
+    );
+    CREATE INDEX entry_batch ON entry (batch_id);
+    CREATE INDEX entry_path ON entry (rel_path);
+    CREATE TABLE swap (
+        entry_id INTEGER NOT NULL REFERENCES entry (id) ON DELETE CASCADE,
+        tag      TEXT NOT NULL,
+        key      TEXT NOT NULL,
+        old      TEXT,
+        new      TEXT
+    );
+    CREATE INDEX swap_entry ON swap (entry_id);
+    PRAGMA user_version = 1;
+    ";
+
+    /// Two passes, the second undoing the first, the way version 1 left them.
+    pub(crate) fn version_one(file: &Path) {
+        std::fs::create_dir_all(file.parent().unwrap()).unwrap();
+        let connection = Connection::open(file).unwrap();
+        connection.pragma_update(None, "journal_mode", "WAL").unwrap();
+        connection.execute_batch(SCHEMA_V1).unwrap();
+        connection
+            .execute_batch(
+                "INSERT INTO batch VALUES (1, 'write', '2026-09-20 10:00:00', '2026-09-20 10:00:01', NULL);
+                 INSERT INTO batch VALUES (2, 'undo', '2026-09-20 11:00:00', '2026-09-20 11:00:01', 1);
+                 INSERT INTO entry VALUES (1, 1, 'a.jpg', 'c1', '{}', 'h1', 'written', NULL);
+                 INSERT INTO entry VALUES (2, 1, 'b.jpg', 'c2', '{}', 'h2', 'refused', 'drifted');
+                 INSERT INTO entry VALUES (3, 2, 'a.jpg', 'c1', '{}', 'h1', 'written', NULL);
+                 INSERT INTO swap VALUES (1, 'XMP-xmp:Rating', 'XMP-xmp:Rating', NULL, '3');
+                 INSERT INTO swap VALUES (3, 'XMP-xmp:Rating', 'XMP-xmp:Rating', '3', NULL);",
+            )
+            .unwrap();
+    }
+
+    fn count(file: &Path, table: &str) -> i64 {
+        Connection::open(file)
+            .unwrap()
+            .query_row(&format!("SELECT count(*) FROM {table}"), [], |row| row.get(0))
+            .unwrap()
+    }
+
+    #[test]
+    fn a_version_one_journal_is_copied_then_learns_names_and_keeps_every_row() {
+        let file = temp("migrate");
+        version_one(&file);
+
+        let mut journal = Journal::open(&file).unwrap();
+        let version: i64 = journal
+            .connection
+            .query_row("PRAGMA user_version", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(version, SCHEMA_VERSION);
+
+        let passes = journal.passes(10).unwrap();
+        assert_eq!(passes.iter().map(|pass| pass.id).collect::<Vec<_>>(), [2, 1]);
+        assert_eq!(passes[1].written, 1);
+        assert_eq!(passes[0].undoes, Some(1));
+        assert!(passes.iter().all(|pass| pass.title.is_none() && pass.tool.is_none()));
+        assert_eq!(passes[1].title(), EARLIER);
+        assert_eq!(journal.entries(1).unwrap().len(), 2);
+        assert_eq!(journal.written(1).unwrap()[0].swaps[0].new.as_deref(), Some("3"));
+        assert_eq!(journal.undo_of(1).unwrap(), Some(2));
+
+        let copy = file.with_file_name("app.db.v1");
+        assert!(copy.exists(), "no copy was left beside it");
+        let old: i64 = Connection::open(&copy)
+            .unwrap()
+            .query_row("PRAGMA user_version", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(old, 1, "the copy is of the journal as it was");
+        for (table, rows) in [("batch", 2), ("entry", 3), ("swap", 2)] {
+            assert_eq!(count(&copy, table), rows, "{table} in the copy");
+            assert_eq!(count(&file, table), rows, "{table} after the migration");
+        }
+
+        let third = journal.start(Kind::Write, None, "Rate", Some("demo")).unwrap();
+        assert_eq!(journal.pass(third).unwrap().title(), "Rate");
+        drop(journal);
+        assert!(Journal::open(&file).is_ok(), "a migrated journal opens as it is");
+    }
+
+    #[test]
+    fn a_pass_is_written_with_its_title_and_read_back() {
+        let mut journal = Journal::open(&temp("titled")).unwrap();
+        let batch = journal
+            .start(Kind::Write, None, "Set a rating", Some("rating"))
+            .unwrap();
+        let pass = journal.pass(batch).unwrap();
+        assert_eq!(pass.title.as_deref(), Some("Set a rating"));
+        assert_eq!(pass.tool.as_deref(), Some("rating"));
+        assert!(journal.pass(batch + 1).is_err());
+    }
+
+    #[test]
+    fn passes_come_a_page_at_a_time_newest_first() {
+        let mut journal = Journal::open(&temp("pages")).unwrap();
+        let ids: Vec<i64> = (0..5)
+            .map(|at| journal.start(Kind::Write, None, &format!("pass {at}"), None).unwrap())
+            .collect();
+        let first: Vec<i64> = journal.passes_from(0, 2).unwrap().iter().map(|pass| pass.id).collect();
+        let second: Vec<i64> = journal.passes_from(2, 2).unwrap().iter().map(|pass| pass.id).collect();
+        assert_eq!(first, [ids[4], ids[3]]);
+        assert_eq!(second, [ids[2], ids[1]]);
     }
 
     #[test]

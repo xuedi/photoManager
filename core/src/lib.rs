@@ -5,6 +5,7 @@ pub mod clock;
 pub mod details;
 pub mod filter;
 pub mod geo;
+pub mod history;
 pub mod identity;
 pub mod journal;
 pub mod layout;
@@ -15,6 +16,7 @@ pub mod scope;
 pub mod settings;
 pub mod survey;
 pub mod thumbs;
+pub mod tools;
 pub mod write;
 
 #[cfg(feature = "fixtures")]

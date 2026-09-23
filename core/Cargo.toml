@@ -25,6 +25,8 @@ zune-jpeg = "0.5.15"
 
 [features]
 fixtures = []
+# a tool that only exists to drive the way from a tool to a photo in development builds
+demo = []
 
 [dev-dependencies]
 zip = { version = "8.6.0", default-features = false, features = ["deflate"] }

@@ -180,8 +180,14 @@ impl Engine {
 
     /// One photo, in a batch of its own. A batch is the unit an undo works on, so a single write
     /// gets one too.
-    pub fn write_one(&mut self, journal: &mut Journal, cache: &mut Cache, target: &Target) -> Result<Outcome> {
-        let batch = journal.start(Kind::Write, None)?;
+    pub fn write_one(
+        &mut self,
+        journal: &mut Journal,
+        cache: &mut Cache,
+        title: &str,
+        target: &Target,
+    ) -> Result<Outcome> {
+        let batch = journal.start(Kind::Write, None, title, None)?;
         let outcome = self.one(
             journal,
             cache,
@@ -194,17 +200,21 @@ impl Engine {
         outcome
     }
 
-    /// Photos one after another on one process. A refusal on one does not stop the others.
+    /// Photos one after another on one process. A refusal on one does not stop the others. The
+    /// batch is named by `title`, and by the key of the tool that asked, if one did.
+    #[allow(clippy::too_many_arguments)]
     pub fn write(
         &mut self,
         journal: &mut Journal,
         cache: &mut Cache,
+        title: &str,
+        tool: Option<&str>,
         targets: &[Target],
         progress: &(dyn Fn(usize, usize) + Sync),
         cancel: &AtomicBool,
     ) -> Result<Summary> {
         let started = Instant::now();
-        let batch = journal.start(Kind::Write, None)?;
+        let batch = journal.start(Kind::Write, None, title, tool)?;
         let mut summary = Summary {
             batch,
             ..Summary::default()
@@ -262,7 +272,13 @@ impl Engine {
             return Err(Error::Refusing(format!("batch {undoes} changed no photo")));
         }
 
-        let batch = journal.start(Kind::Undo, Some(undoes))?;
+        let taken_back = journal.pass(undoes)?;
+        let batch = journal.start(
+            Kind::Undo,
+            Some(undoes),
+            &format!("Take back: {}", taken_back.title()),
+            taken_back.tool.as_deref(),
+        )?;
         let mut summary = Summary {
             batch,
             ..Summary::default()

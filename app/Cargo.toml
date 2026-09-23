@@ -31,7 +31,7 @@ serde_json = "1"
 photomanager-core = { workspace = true, features = ["fixtures"] }
 
 [features]
-devtools = ["dep:serde_json"]
+devtools = ["dep:serde_json", "photomanager-core/demo"]
 
 [build-dependencies]
 glib-build-tools = "0.22.8"
