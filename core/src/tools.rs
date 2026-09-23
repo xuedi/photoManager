@@ -140,6 +140,36 @@ pub enum Answer {
 
 const LEAVE: &str = "leave";
 
+impl Answer {
+    /// `leave`, or the place as a JSON object: what one answer is in the settings.
+    pub fn read(text: &str) -> Result<Answer, String> {
+        if text.trim() == LEAVE {
+            return Ok(Answer::Leave);
+        }
+        let value: Value = serde_json::from_str(text).map_err(|_| format!("{text} is not an answer"))?;
+        Ok(Answer::Place(Located::read(&value)?))
+    }
+
+    pub fn written(&self) -> String {
+        self.value().to_string()
+    }
+
+    fn value(&self) -> Value {
+        match self {
+            Answer::Leave => Value::from(LEAVE),
+            Answer::Place(place) => place.written(),
+        }
+    }
+
+    /// `Beijing, Beijing, China`, or that it is left alone.
+    pub fn tells(&self) -> String {
+        match self {
+            Answer::Leave => "Left alone".to_string(),
+            Answer::Place(place) => place.tells(),
+        }
+    }
+}
+
 /// Every answer given so far, by question. Written as one JSON object, sorted by question, so
 /// the same answers are always the same text.
 #[derive(Debug, Clone, Default, PartialEq)]
@@ -183,13 +213,7 @@ impl Settings for Answers {
         let fields: Map<String, Value> = self
             .0
             .iter()
-            .map(|(key, answer)| {
-                let value = match answer {
-                    Answer::Leave => Value::from(LEAVE),
-                    Answer::Place(place) => place.written(),
-                };
-                (key.clone(), value)
-            })
+            .map(|(key, answer)| (key.clone(), answer.value()))
             .collect();
         Value::Object(fields).to_string()
     }
@@ -302,6 +326,8 @@ pub trait AnyTool: Sync {
     ) -> Result<Vec<Question>, String>;
     /// The settings with one answer given, or forgotten with `None`, as text.
     fn answer(&self, settings: Option<&str>, question: &str, answer: Option<Answer>) -> Result<String, String>;
+    /// What the settings answer a question with, if anything.
+    fn answered(&self, settings: Option<&str>, question: &str) -> Result<Option<Answer>, String>;
     fn waiting(&self, open: usize) -> String;
 }
 
@@ -356,6 +382,11 @@ impl<T: Tool> AnyTool for T {
         Ok(settings.written())
     }
 
+    fn answered(&self, settings: Option<&str>, question: &str) -> Result<Option<Answer>, String> {
+        let mut settings = settings_of::<T::Settings>(settings)?;
+        Ok(Tool::answers(self, &mut settings).and_then(|answers| answers.get(question).cloned()))
+    }
+
     fn waiting(&self, open: usize) -> String {
         Tool::waiting(self, open)
     }
@@ -389,6 +420,20 @@ pub fn waiting(tool: &dyn AnyTool, cache: &Cache, scope: &Scope, settings: Optio
         .iter()
         .filter(|question| question.waits())
         .count())
+}
+
+/// The questions asked before, with the answers these settings give them: what a page shows
+/// after one answer without asking the whole library again. A question listed apart that has
+/// no answer is left alone, as it was when it was asked.
+pub fn answer_again(tool: &dyn AnyTool, questions: &mut [Question], settings: Option<&str>) -> Result<(), String> {
+    for question in questions {
+        question.answer = match tool.answered(settings, &question.key)? {
+            Some(answer) => Some(answer),
+            None if question.apart => Some(Answer::Leave),
+            None => None,
+        };
+    }
+    Ok(())
 }
 
 /// Confirm Exact Matches: every question still waiting whose best offer is an exact name the

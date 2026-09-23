@@ -256,6 +256,26 @@ impl Window {
                 }
             })
             .build();
+        let answer = gtk::gio::ActionEntry::builder("answer")
+            .parameter_type(Some(glib::VariantTy::new("(sss)").expect("a tuple of three texts")))
+            .activate(|window: &Window, _, parameter| {
+                match parameter.and_then(|value| value.get::<(String, String, String)>()) {
+                    Some((key, question, answer)) => window.imp().tools.answer(&key, &question, &answer),
+                    None => tracing::warn!("an answer is a tool, a question and the answer"),
+                }
+            })
+            .build();
+        let answer_exact = gtk::gio::ActionEntry::builder("answer-exact")
+            .parameter_type(Some(glib::VariantTy::STRING))
+            .activate(|window: &Window, _, parameter| {
+                if let Some(key) = parameter.and_then(|value| value.str()) {
+                    window.imp().tools.answer_exact(key);
+                }
+            })
+            .build();
+        let preview_answers = gtk::gio::ActionEntry::builder("preview-answers")
+            .activate(|window: &Window, _, _| window.imp().tools.preview_answers())
+            .build();
         let show_history = gtk::gio::ActionEntry::builder("show-history")
             .activate(|window: &Window, _, _| window.imp().tools.show_history())
             .build();
@@ -364,6 +384,9 @@ impl Window {
             use_as_scope,
             tools_scope,
             run_tool,
+            answer,
+            answer_exact,
+            preview_answers,
             show_history,
             history_details,
             undo_pass,

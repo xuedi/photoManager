@@ -18,6 +18,7 @@ use photomanager_core::tools;
 use crate::history::History;
 use crate::library::{Counted, Event, Library};
 use crate::preview::Preview;
+use crate::questions::Questions;
 
 /// A tool's row, and the label that says what it would change.
 #[derive(Debug)]
@@ -46,6 +47,8 @@ mod imp {
         pub preview: TemplateChild<Preview>,
         #[template_child]
         pub history: TemplateChild<History>,
+        #[template_child]
+        pub questions: TemplateChild<Questions>,
         pub library: RefCell<Option<Rc<Library>>>,
         /// What the tools work on. The whole library until something else is chosen.
         pub scope: RefCell<Option<Scope>>,
@@ -67,6 +70,7 @@ mod imp {
         fn class_init(klass: &mut Self::Class) {
             Preview::ensure_type();
             History::ensure_type();
+            Questions::ensure_type();
             klass.bind_template();
         }
 
@@ -109,11 +113,13 @@ impl Tools {
     pub fn set_library(&self, library: Option<Rc<Library>>) {
         self.imp().preview.set_library(library.clone());
         self.imp().history.set_library(library.clone());
+        self.imp().questions.set_library(library.clone());
         if let Some(library) = &library {
             let tools = self.downgrade();
             library.connect_changed(move || {
                 if let Some(tools) = tools.upgrade() {
                     tools.recount();
+                    tools.ask_again();
                 }
             });
         }
@@ -138,6 +144,7 @@ impl Tools {
         *self.imp().scope.borrow_mut() = Some(scope);
         self.show_scope();
         self.recount();
+        self.ask_again();
     }
 
     /// What the gallery hands over becomes the scope, and stays on offer in the scope dialog.
@@ -169,7 +176,8 @@ impl Tools {
         self.imp().counted.borrow().clone()
     }
 
-    /// A tool by key, with its settings as text after a `:` if there are any. Builds its change
+    /// A tool by key, with its settings as text after a `:` if there are any; without, the ones
+    /// it was last given. A tool that asks shows its questions first; any other builds its change
     /// set for the scope and shows it. Nothing is written.
     pub fn run(&self, asked: &str) {
         let Some(library) = self.imp().library.borrow().clone() else {
@@ -179,7 +187,25 @@ impl Tools {
             Some((key, settings)) => (key, Some(settings.to_string())),
             None => (asked, None),
         };
+        let Some(tool) = tools::find(key) else {
+            tracing::warn!(tool = key, "no such tool");
+            return;
+        };
+        let settings = match settings {
+            Some(settings) => {
+                library.remember_tool_settings(key, &settings);
+                Some(settings)
+            }
+            None => library.tool_settings(key),
+        };
         tracing::info!(tool = key, scope = self.scope().title(), "tool opened");
+        if tool.asks() {
+            self.imp().questions.open(key, &self.scope());
+            let nav = &self.imp().nav;
+            nav.pop_to_tag("tools");
+            nav.push_by_tag("questions");
+            return;
+        }
         let tools = self.downgrade();
         library.run_tool(key, settings, &self.scope(), move |event| {
             let Some(tools) = tools.upgrade() else {
@@ -191,6 +217,61 @@ impl Tools {
                 _ => {}
             }
         });
+    }
+
+    pub fn questions(&self) -> Questions {
+        self.imp().questions.clone()
+    }
+
+    /// One answer to one question of the tool whose questions are shown.
+    pub fn answer(&self, key: &str, question: &str, answer: &str) {
+        let questions = &self.imp().questions;
+        if questions.key().as_deref() != Some(key) {
+            tracing::warn!(tool = key, "its questions are not the ones shown");
+            return;
+        }
+        if questions.answer(question, answer) {
+            self.recount();
+        }
+    }
+
+    pub fn answer_exact(&self, key: &str) {
+        let questions = &self.imp().questions;
+        if questions.key().as_deref() != Some(key) {
+            tracing::warn!(tool = key, "its questions are not the ones shown");
+            return;
+        }
+        if questions.answer_exact() > 0 {
+            self.recount();
+        }
+    }
+
+    /// The change set of the tool whose questions are shown, with the answers so far.
+    pub fn preview_answers(&self) {
+        let imp = self.imp();
+        let (Some(library), Some(key)) = (imp.library.borrow().clone(), imp.questions.key()) else {
+            return;
+        };
+        tracing::info!(tool = key, scope = self.scope().title(), "answers previewed");
+        let tools = self.downgrade();
+        library.run_tool(&key, imp.questions.settings(), &self.scope(), move |event| {
+            let Some(tools) = tools.upgrade() else {
+                return;
+            };
+            match event {
+                Event::Previewed(set) => tools.show(set),
+                Event::Failed(why) => tracing::error!(why, "the answers could not be previewed"),
+                _ => {}
+            }
+        });
+    }
+
+    /// The questions on screen are asked again, after a scan or for another scope.
+    fn ask_again(&self) {
+        let questions = &self.imp().questions;
+        if questions.key().is_some() {
+            questions.ask(&self.scope());
+        }
     }
 
     /// A change set made by hand rather than by a tool. Nothing is written.
@@ -341,8 +422,15 @@ impl Tools {
                 .as_ref()
                 .and_then(|counted| counted.tools.iter().find(|(key, _)| key == listed.key))
                 .map(|(_, count)| count);
+            let waiting = counted
+                .as_ref()
+                .and_then(|counted| counted.waiting.iter().find(|(key, _)| key == listed.key))
+                .map(|(_, waiting)| *waiting)
+                .unwrap_or_default();
+            let tool = tools::find(listed.key);
             listed.count.set_label(&match found {
                 None => "Counting".to_string(),
+                Some(Ok(0)) if waiting > 0 => tool.map(|tool| tool.waiting(waiting)).unwrap_or_default(),
                 Some(Ok(0)) => "Nothing to do here".to_string(),
                 Some(Ok(1)) => "1 photo would change".to_string(),
                 Some(Ok(count)) => format!("{count} photos would change"),

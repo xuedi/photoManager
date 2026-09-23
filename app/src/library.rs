@@ -24,7 +24,7 @@ use photomanager_core::scope::Scope;
 use photomanager_core::settings::{self, Settings};
 use photomanager_core::survey::Survey;
 use photomanager_core::thumbs::{Size, Thumbs};
-use photomanager_core::tools;
+use photomanager_core::tools::{self, Question};
 use photomanager_core::write::{Engine, Summary as Applied};
 
 #[derive(Debug)]
@@ -93,6 +93,8 @@ impl std::fmt::Debug for Watchers {
 pub struct Counted {
     pub photos: usize,
     pub tools: Vec<(String, Result<usize, String>)>,
+    /// How many questions of each tool that asks wait for an answer, by key.
+    pub waiting: Vec<(String, usize)>,
 }
 
 /// What the gallery's sidebars show.
@@ -232,18 +234,69 @@ impl Library {
     /// at the cache. The numbers are the ones the preview will show.
     pub fn count_tools<F: FnOnce(Result<Counted, String>) + 'static>(&self, scope: &Scope, done: F) {
         let scope = scope.clone();
+        let remembered: Vec<Option<String>> = tools::ALL.iter().map(|tool| self.tool_settings(tool.key())).collect();
         self.read_off_thread(
             move |cache| {
-                Ok(Counted {
+                let mut counted = Counted {
                     photos: scope.paths(cache)?.len(),
-                    tools: tools::ALL
-                        .iter()
-                        .map(|tool| (tool.key().to_string(), tools::count(*tool, cache, &scope, None)))
-                        .collect(),
-                })
+                    ..Counted::default()
+                };
+                for (tool, settings) in tools::ALL.iter().zip(&remembered) {
+                    let key = tool.key().to_string();
+                    counted
+                        .tools
+                        .push((key.clone(), tools::count(*tool, cache, &scope, settings.as_deref())));
+                    if tool.asks() {
+                        let waiting = tools::waiting(*tool, cache, &scope, settings.as_deref()).unwrap_or_default();
+                        counted.waiting.push((key, waiting));
+                    }
+                }
+                Ok(counted)
             },
             done,
         );
+    }
+
+    /// What a tool asks about the scope, with the answers these settings give, off the main thread
+    /// through read-only looks at the cache and the place data.
+    pub fn questions<F: FnOnce(Result<Vec<Question>, String>) + 'static>(
+        &self,
+        key: &str,
+        settings: Option<String>,
+        scope: &Scope,
+        done: F,
+    ) {
+        let Some(tool) = tools::find(key) else {
+            done(Err(format!("there is no tool {key}")));
+            return;
+        };
+        let scope = scope.clone();
+        let (sender, receiver) = async_channel::bounded(1);
+        let cache_db = self.paths.cache_db();
+        let geo_db = self.paths.geo_db();
+        std::thread::spawn(move || {
+            let geo = Geo::read_only(&geo_db).ok().flatten();
+            let asked = match Cache::read_only(&cache_db) {
+                Ok(Some(cache)) => tool.questions(&cache, geo.as_ref(), &scope, settings.as_deref()),
+                Ok(None) => Ok(Vec::new()),
+                Err(error) => Err(error.to_string()),
+            };
+            let _ = sender.send_blocking(asked);
+        });
+        gtk::glib::spawn_future_local(async move {
+            if let Ok(asked) = receiver.recv().await {
+                done(asked);
+            }
+        });
+    }
+
+    /// The settings a tool was last run or answered with, as text.
+    pub fn tool_settings(&self, key: &str) -> Option<String> {
+        self.setting(&tool_setting(key))
+    }
+
+    pub fn remember_tool_settings(&self, key: &str, settings: &str) {
+        self.put_setting(&tool_setting(key), settings);
     }
 
     /// The countries, the events and the tags, with their counts.
@@ -802,6 +855,11 @@ impl Library {
         self.scanning.set(false);
         self.moved_on();
     }
+}
+
+/// Where a tool's settings are kept in `app.db`.
+fn tool_setting(key: &str) -> String {
+    format!("tool.{key}")
 }
 
 /// What a write pass is asked to do.

@@ -157,7 +157,134 @@ fn scans_into_its_cache() {
 
     previews_what_a_tool_would_change(&window, &opened);
     lists_the_tools_for_a_scope(&window, &opened, &library);
+    answers_the_questions_of_a_tool(&window, &opened);
     reads_the_history(&window, &opened);
+}
+
+/// A tool that asks shows one row per tag with its photos, the row on the list says what waits,
+/// Confirm Exact Matches answers exactly the exact ones, an answer outlives the window, and the
+/// preview holds the answered photos and no other. Nothing is written here.
+fn answers_the_questions_of_a_tool(window: &Window, opened: &Rc<Library>) {
+    use photomanager_core::tools::Answer;
+    const TOOL: &str = "gps-from-places-tag";
+    let tools = window.tools();
+    let questions = tools.questions();
+    let act = |name: &str, target: gtk::glib::Variant| WidgetExt::activate_action(window, name, Some(&target)).unwrap();
+    let count_of = |tools: &photomanager::tools::Tools| {
+        until(|| tools.counted().is_some(), "the tools were counted");
+        let counted = tools.counted().unwrap();
+        let count = counted
+            .tools
+            .iter()
+            .find(|(key, _)| key == TOOL)
+            .unwrap()
+            .1
+            .clone()
+            .unwrap();
+        let waiting = counted.waiting.iter().find(|(key, _)| key == TOOL).unwrap().1;
+        (count, waiting)
+    };
+    window.show_view("tools");
+    act("win.tools-scope", "all".to_variant());
+    assert_eq!(count_of(&tools), (0, 8), "nothing is answered yet");
+    assert!(
+        labels(tools.upcast_ref())
+            .iter()
+            .any(|label| label == "8 tags wait for an answer"),
+        "the row says what waits instead of a count of nothing"
+    );
+
+    act("win.run-tool", TOOL.to_variant());
+    assert_eq!(tools.showing(), "questions");
+    until(|| !questions.is_busy(), "the questions were asked");
+    let asked = questions.questions();
+    assert_eq!(asked.len(), 10, "one question per tag");
+    let shown: Vec<String> = rows(questions.upcast_ref())
+        .iter()
+        .map(|row| row.title().to_string())
+        .collect();
+    for question in &asked {
+        assert_eq!(
+            shown.iter().filter(|title| **title == question.title).count(),
+            1,
+            "one row for {}",
+            question.title
+        );
+    }
+    let beijing = rows(questions.upcast_ref())
+        .into_iter()
+        .find(|row| row.title() == "inChina/Beijing")
+        .expect("a row for Beijing");
+    assert!(beijing.subtitle().unwrap().starts_with("2 photos - Best match Beijing"));
+
+    act("win.answer-exact", TOOL.to_variant());
+    let answered = questions.questions();
+    for question in &answered {
+        let exact = !question.apart && question.exact().is_some();
+        assert_eq!(
+            matches!(question.answer, Some(Answer::Place(_))),
+            exact,
+            "{} is answered only if it matched exactly",
+            question.key
+        );
+    }
+    let confirmed = answered
+        .iter()
+        .filter(|question| matches!(question.answer, Some(Answer::Place(_))))
+        .count();
+    assert_eq!(confirmed, 6);
+    until(|| count_of(&tools) == (7, 2), "the row counts what the answers give");
+
+    // Another window on another opening of the same library finds the answers where they were.
+    let again = Library::open(opened.paths().clone()).expect("open the library again");
+    let other: Window = gtk::glib::Object::builder().build();
+    other.set_library(Some(again));
+    WidgetExt::activate_action(&other, "win.run-tool", Some(&TOOL.to_variant())).unwrap();
+    let remembered = other.tools().questions();
+    until(
+        || !remembered.is_busy() && !remembered.questions().is_empty(),
+        "asked again",
+    );
+    assert_eq!(
+        remembered.settings(),
+        questions.settings(),
+        "the answers are remembered"
+    );
+    assert_eq!(
+        remembered
+            .questions()
+            .iter()
+            .map(|question| question.answer.clone())
+            .collect::<Vec<_>>(),
+        answered
+            .iter()
+            .map(|question| question.answer.clone())
+            .collect::<Vec<_>>()
+    );
+    other.close();
+
+    WidgetExt::activate_action(window, "win.preview-answers", None).unwrap();
+    let preview = window.preview();
+    until(
+        || preview.title().as_deref() == Some("Set GPS from the places tag") && !opened.is_busy(),
+        "the answers were previewed",
+    );
+    let counts = preview.counts().unwrap();
+    assert_eq!(
+        (counts.photos, counts.change),
+        (7, 7),
+        "the answered photos and no other"
+    );
+    assert_eq!(tools.showing(), "preview");
+
+    act("win.answer", (TOOL, "places/inGreece/Atens", "leave").to_variant());
+    until(
+        || count_of(&tools) == (8, 1),
+        "left alone, the photo with both tags is free",
+    );
+    act("win.answer", (TOOL, "places/inGreece/Atens", "forget").to_variant());
+    until(|| count_of(&tools) == (7, 2), "asked again, it waits again");
+    window.show_view("dashboard");
 }
 
 /// The preview knows only a change set: it counts it, it lets rows be dropped from it, and it
@@ -351,13 +478,13 @@ fn surveys_what_is_missing(window: &Window, opened: &Rc<Library>) {
     assert_eq!(dashboard.field(), Gap::Gps);
     assert_eq!(
         dashboard.listed_places(),
-        ["China", "Denmark", "Germany", "Ireland", "Greece"],
+        ["China", "Greece", "Denmark", "Germany", "Ireland"],
         "the most photos without GPS first"
     );
     dashboard.set_field(Gap::People);
     assert_eq!(
         dashboard.listed_places(),
-        ["China", "Denmark", "Germany", "Greece", "Ireland"],
+        ["Greece", "China", "Denmark", "Germany", "Ireland"],
         "another field, another order"
     );
     dashboard.set_field(Gap::Gps);

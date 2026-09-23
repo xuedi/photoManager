@@ -151,6 +151,7 @@ fn the_app_can_be_clicked_through_headless() {
     edits_one_photo_and_takes_it_back(&ui, lib);
     a_scope_is_what_the_demo_works_on(&ui, lib);
     takes_back_an_older_pass(&ui, lib);
+    gives_places_from_their_tag_and_takes_them_back(&ui, lib);
 
     ui.run(&["act", "win.show-view", "'suggestions'"], lib);
     let state = state(&ui, lib);
@@ -453,6 +454,158 @@ fn takes_back_an_older_pass(ui: &Ui, library: &Path) {
     assert!(passes[2]["undone_by"].is_i64(), "the first pass shows as taken back");
     assert_eq!(passes[2]["can_take_back"], false, "and offers nothing more");
     assert_eq!(passes[1]["can_take_back"], true);
+}
+
+/// GPS from the places tag, clicked through: the tags are answered on the question page, the
+/// preview holds the answered photos, the write puts the city centre, the mark that it was
+/// derived and the words into the files, and taking the pass back takes all of it away again.
+fn gives_places_from_their_tag_and_takes_them_back(ui: &Ui, library: &Path) {
+    const TOOL: &str = "gps-from-places-tag";
+    const BEIJING: &str = "China/2006-09-00 Besuch Ben/P1000001.JPG";
+    const WITH_WORDS: &str = "Ireland/2008-10-03 Galway/IMG_0003.JPG";
+    let beijing = library.join(BEIJING);
+    let with_words = library.join(WITH_WORDS);
+
+    ui.run(&["act", "win.show-view", "'tools'"], library);
+    ui.run(&["act", "win.tools-scope", "'all'"], library);
+    let tools = counted(ui, library, photomanager_core::fixtures::photo_count() as u64);
+    assert_eq!(tools["waiting"][TOOL].as_u64(), Some(8), "{tools}");
+    ui.run(&["act", "win.run-tool", &format!("'{TOOL}'")], library);
+    let asked = questions(ui, library, |questions| {
+        questions["questions"].as_array().unwrap().len() == 10
+    });
+    assert_eq!(state(ui, library)["page"], "questions");
+    assert!(
+        asked["questions"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .all(|question| question["answer"].is_null() || question["apart"] == true)
+    );
+
+    ui.run(&["act", "win.answer-exact", &format!("'{TOOL}'")], library);
+    ui.run(
+        &[
+            "act",
+            "win.answer",
+            &format!("('{TOOL}', 'places/inGreece/Atens', 'leave')"),
+        ],
+        library,
+    );
+    let answered = questions(ui, library, |questions| {
+        questions["questions"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|question| question["key"] == "places/inGreece/Atens" && question["answer"] == "leave")
+    });
+    let confirmed: Vec<&str> = answered["questions"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|question| question["exact"] == true && question["apart"] == false)
+        .map(|question| question["answer"].as_str().unwrap_or("unanswered"))
+        .collect();
+    assert_eq!(confirmed.len(), 6, "{answered}");
+    assert!(!confirmed.contains(&"unanswered"), "{answered}");
+
+    let before = state(ui, library)["applied"]["batch"].as_i64().unwrap_or(0);
+    ui.run(&["act", "win.preview-answers"], library);
+    let mut previewed = Value::Null;
+    for _ in 0..60 {
+        previewed = state(ui, library)["preview"].clone();
+        if previewed["title"] == "Set GPS from the places tag" {
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(500));
+    }
+    assert_eq!(previewed["change"].as_u64(), Some(8), "{previewed}");
+    assert_eq!(read_place(&beijing), None, "nothing has been written yet");
+
+    ui.run(&["click", "Apply", "--role", "button"], library);
+    let written = written(ui, library, "write", before);
+    assert_eq!(written["written"].as_u64(), Some(8), "{written}");
+    let batch = written["batch"].as_i64().unwrap();
+
+    let (lat, method, error, city) = read_place(&beijing).expect("a position");
+    assert!((lat - 39.9075).abs() < 0.001, "{lat}");
+    assert_eq!(method, "photoManager: places tag");
+    assert_eq!(error, 5000.0);
+    assert_eq!(city.as_deref(), Some("Beijing"));
+    let (_, _, _, kept) = read_place(&with_words).expect("a position");
+    assert_eq!(kept.as_deref(), Some("Galway"), "its own words were kept");
+
+    let taken_before = state(ui, library)["history"]["taken"]["batch"].as_i64().unwrap_or(0);
+    ui.run(&["act", "win.undo-pass", &format!("int64 {batch}")], library);
+    ui.run(&["click", "Take It Back", "--role", "button"], library);
+    let mut taken = Value::Null;
+    for _ in 0..120 {
+        let now = state(ui, library);
+        if now["history"]["taken"]["batch"].as_i64().unwrap_or(0) > taken_before
+            && now["writing"] == false
+            && now["scanning"] == false
+        {
+            taken = now["history"]["taken"].clone();
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(500));
+    }
+    assert_eq!(taken["written"].as_u64(), Some(8), "{taken}");
+    assert_eq!(
+        read_place(&beijing),
+        None,
+        "the position, the mark and the words are gone"
+    );
+    assert_eq!(city_of(&beijing), None);
+    assert_eq!(city_of(&with_words).as_deref(), Some("Galway"));
+}
+
+/// The questions on the page once they are asked and match what is waited for.
+fn questions(ui: &Ui, library: &Path, ready: impl Fn(&Value) -> bool) -> Value {
+    for _ in 0..60 {
+        let questions = state(ui, library)["questions"].clone();
+        if questions["busy"] == false && questions["questions"].is_array() && ready(&questions) {
+            return questions;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(500));
+    }
+    panic!("the questions never arrived");
+}
+
+/// Latitude, how it was worked out, how far off it may be, and the city, as ExifTool reads them.
+/// `None` when there is no position.
+fn read_place(photo: &Path) -> Option<(f64, String, f64, Option<String>)> {
+    let out = Command::new("exiftool")
+        .args([
+            "-j",
+            "-n",
+            "-GPSLatitude",
+            "-GPSProcessingMethod",
+            "-GPSHPositioningError",
+            "-XMP-photoshop:City",
+        ])
+        .arg(photo)
+        .output()
+        .expect("run exiftool");
+    let read: Value = serde_json::from_slice(&out.stdout).expect("exiftool json");
+    let fields = &read[0];
+    let lat = fields["GPSLatitude"].as_f64()?;
+    Some((
+        lat,
+        fields["GPSProcessingMethod"].as_str().unwrap_or_default().to_string(),
+        fields["GPSHPositioningError"].as_f64().unwrap_or_default(),
+        fields["City"].as_str().map(String::from),
+    ))
+}
+
+fn city_of(photo: &Path) -> Option<String> {
+    let out = Command::new("exiftool")
+        .args(["-s3", "-XMP-photoshop:City"])
+        .arg(photo)
+        .output()
+        .expect("run exiftool");
+    let city = String::from_utf8_lossy(&out.stdout).trim().to_string();
+    (!city.is_empty()).then_some(city)
 }
 
 /// A photo opens from the gallery and the arrow keys walk the grid's list, in its order.

@@ -184,7 +184,44 @@ fn state(window: &Window, paths: &Paths, library: Option<&Library>) -> String {
                 (key.clone(), count)
             })
             .collect();
-        serde_json::json!({ "photos": counted.photos, "counts": tools })
+        let waiting: serde_json::Map<String, serde_json::Value> = counted
+            .waiting
+            .iter()
+            .map(|(key, waiting)| (key.clone(), serde_json::json!(waiting)))
+            .collect();
+        serde_json::json!({ "photos": counted.photos, "counts": tools, "waiting": waiting })
+    });
+    let page = window.tools().questions();
+    let questions = page.key().map(|key| {
+        let asked: Vec<serde_json::Value> = page
+            .questions()
+            .iter()
+            .map(|question| {
+                serde_json::json!({
+                    "key": question.key,
+                    "title": question.title,
+                    "photos": question.photos,
+                    "apart": question.apart,
+                    "exact": question.exact().is_some(),
+                    "best": question.offers.first().map(|offer| serde_json::json!({
+                        "name": offer.place.name,
+                        "code": offer.place.code,
+                        "confidence": offer.confidence,
+                    })),
+                    "answer": question.answer.as_ref().map(|answer| match answer {
+                        photomanager_core::tools::Answer::Leave => serde_json::json!("leave"),
+                        photomanager_core::tools::Answer::Place(place) => serde_json::json!(place.name),
+                    }),
+                })
+            })
+            .collect();
+        serde_json::json!({
+            "tool": key,
+            "busy": page.is_busy(),
+            "settings": page.settings(),
+            "questions": asked,
+            "toast": page.toast(),
+        })
     });
     let history = window.tools().history();
     let passes: Vec<serde_json::Value> = history
@@ -224,6 +261,7 @@ fn state(window: &Window, paths: &Paths, library: Option<&Library>) -> String {
         "photo": photo,
         "scope": scope,
         "tools": tools,
+        "questions": questions,
         "page": window.tools().showing(),
         "preview": previewed,
         "applied": applied,

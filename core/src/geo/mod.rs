@@ -156,6 +156,24 @@ impl Geo {
         }))
     }
 
+    /// A second, read-only look at the place data someone else has open, for questions asked off
+    /// the main thread. `None` when there is none of this version to look at.
+    pub fn read_only(file: &Path) -> Result<Option<Geo>> {
+        if !file.exists() {
+            return Ok(None);
+        }
+        let connection = Connection::open_with_flags(file, rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY)?;
+        connection.busy_timeout(std::time::Duration::from_secs(5))?;
+        let version: i64 = connection.query_row("PRAGMA user_version", [], |row| row.get(0))?;
+        if version != SCHEMA_VERSION {
+            return Ok(None);
+        }
+        Ok(Some(Geo {
+            connection,
+            file: file.to_path_buf(),
+        }))
+    }
+
     fn create(file: &Path) -> Result<Geo> {
         let connection = Connection::open(file)?;
         prepare(&connection)?;

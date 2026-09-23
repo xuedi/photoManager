@@ -10,6 +10,7 @@ pub mod library;
 pub mod panel;
 pub mod photo;
 pub mod preview;
+pub mod questions;
 pub mod thumbnails;
 pub mod tools;
 pub mod window;
