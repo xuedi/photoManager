@@ -313,6 +313,16 @@ impl Journal {
         Ok(rows.collect::<rusqlite::Result<Vec<Swap>>>()?)
     }
 
+    /// Whether anything was ever written to a photo. The very first write of all is a moment the
+    /// application asks about, and this is what answers it.
+    pub fn ever_written(&self) -> Result<bool> {
+        Ok(self.connection.query_row(
+            "SELECT EXISTS(SELECT 1 FROM entry WHERE outcome = ?1)",
+            params![WRITTEN],
+            |row| row.get(0),
+        )?)
+    }
+
     /// The batch that already undid this one, if there is one.
     pub fn undo_of(&self, batch: i64) -> Result<Option<i64>> {
         Ok(self
@@ -340,10 +350,14 @@ fn read_entry(row: &rusqlite::Row<'_>) -> rusqlite::Result<Recorded> {
     })
 }
 
+/// Whether the journal's own tables are there yet. The settings sit in the same file and may have
+/// made it first, so the question is about `batch`, not about the file being bare.
 fn is_empty(connection: &Connection) -> rusqlite::Result<bool> {
-    let tables: i64 = connection.query_row("SELECT count(*) FROM sqlite_master WHERE type = 'table'", [], |row| {
-        row.get(0)
-    })?;
+    let tables: i64 = connection.query_row(
+        "SELECT count(*) FROM sqlite_master WHERE type = 'table' AND name = 'batch'",
+        [],
+        |row| row.get(0),
+    )?;
     Ok(tables == 0)
 }
 

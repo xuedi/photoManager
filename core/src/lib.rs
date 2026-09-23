@@ -7,6 +7,7 @@ pub mod layout;
 pub mod metadata;
 pub mod paths;
 pub mod scan;
+pub mod settings;
 pub mod thumbs;
 pub mod write;
 
