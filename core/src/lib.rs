@@ -1,11 +1,14 @@
 pub mod cache;
+pub mod clock;
 pub mod geo;
 pub mod identity;
+pub mod journal;
 pub mod layout;
 pub mod metadata;
 pub mod paths;
 pub mod scan;
 pub mod thumbs;
+pub mod write;
 
 #[cfg(feature = "fixtures")]
 pub mod fixtures;
