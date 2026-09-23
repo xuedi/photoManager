@@ -11,6 +11,7 @@ use serde_json::Value;
 use crate::cache::{Cache, Result};
 use crate::clock::stamp;
 use crate::filter::Gap;
+use crate::write::change::{DERIVED_BY, is_derived};
 use crate::write::{Change, Field, Gps, Place, Taken};
 
 /// One photo, as the last scan read it.
@@ -34,6 +35,8 @@ pub struct Details {
     pub city: Option<String>,
     pub event: Option<String>,
     pub gps: Option<(f64, f64)>,
+    /// How the position was worked out, when the photo says.
+    pub gps_method: Option<String>,
     pub altitude: Option<f64>,
     /// The place in words, as the photo says it: XMP first, IPTC where XMP says nothing.
     pub place: Place,
@@ -90,7 +93,7 @@ impl Details {
             "SELECT id, size, mtime_ns, content_id, country, city, event_name, event_year, event_month,
                 event_day, taken_at, taken_offset, xmp_taken_at, gps_lat, gps_lon, camera_make,
                 camera_model, orientation, rating, width, height, raw,
-                CASE WHEN {} THEN ({}) END
+                CASE WHEN {} THEN ({}) END, gps_method
              FROM photo p WHERE rel_path = ?1",
             gap.measured(),
             gap.missing()
@@ -121,6 +124,7 @@ impl Details {
                     width: row.get(19)?,
                     height: row.get(20)?,
                     agrees: off.map(|off| !off),
+                    gps_method: row.get(23)?,
                     ..Details::default()
                 };
                 Ok((row.get::<_, i64>(0)?, row.get::<_, String>(21)?, details))
@@ -144,6 +148,12 @@ impl Details {
         details.altitude = altitude(&details.raw);
         details.people = people(&details.tags, &details.raw);
         Ok(Some(details))
+    }
+
+    /// Whether the position was worked out here rather than measured, and from what: `places tag`.
+    pub fn derived_from(&self) -> Option<&str> {
+        let method = self.gps_method.as_deref()?;
+        is_derived(method).then(|| method.trim().trim_start_matches(DERIVED_BY.trim()).trim())
     }
 
     /// The tags below `places`, in either spelling of the root.
@@ -195,6 +205,7 @@ impl Details {
                 lat,
                 lon,
                 altitude: self.altitude,
+                derived: None,
             })));
         }
 

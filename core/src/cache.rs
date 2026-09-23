@@ -9,7 +9,7 @@ use crate::layout::Placement;
 use crate::metadata::Metadata;
 use crate::scan::Issue;
 
-const SCHEMA_VERSION: i64 = 3;
+const SCHEMA_VERSION: i64 = 4;
 
 /// SQLite takes a few hundred parameters happily; a library's worth of paths is asked for in
 /// chunks of this size.
@@ -37,6 +37,7 @@ CREATE TABLE photo (
     xmp_taken_at TEXT,
     gps_lat     REAL,
     gps_lon     REAL,
+    gps_method  TEXT,
     camera_make TEXT,
     camera_model TEXT,
     orientation INTEGER,
@@ -94,6 +95,8 @@ pub struct Said {
     pub taken_offset: Option<String>,
     pub gps_lat: Option<f64>,
     pub gps_lon: Option<f64>,
+    /// How the position was worked out, when the photo says; see [`crate::write::change::is_derived`].
+    pub gps_method: Option<String>,
     pub rating: Option<i64>,
     pub tags: Vec<String>,
 }
@@ -323,7 +326,8 @@ impl Cache {
         let mut names: std::collections::HashMap<i64, String> = std::collections::HashMap::new();
         for chunk in rel_paths.chunks(CHUNK) {
             let sql = format!(
-                "SELECT id, rel_path, size, content_id, taken_at, taken_offset, gps_lat, gps_lon, rating
+                "SELECT id, rel_path, size, content_id, taken_at, taken_offset, gps_lat, gps_lon, rating,
+                    gps_method
                  FROM photo WHERE rel_path IN ({})",
                 holes(chunk.len())
             );
@@ -341,6 +345,7 @@ impl Cache {
                             gps_lat: row.get(6)?,
                             gps_lon: row.get(7)?,
                             rating: row.get(8)?,
+                            gps_method: row.get(9)?,
                             tags: Vec::new(),
                         },
                     },
@@ -432,9 +437,9 @@ impl Writer<'_> {
             "INSERT INTO photo (rel_path, size, mtime_ns, inode, content_id, country, city, event_text,
                 event_year, event_month, event_day, event_name, sub_path, taken_at, taken_offset,
                 xmp_taken_at, gps_lat, gps_lon, camera_make, camera_model, orientation, rating,
-                width, height, raw, event_dir, location_city)
+                width, height, raw, event_dir, location_city, gps_method)
              VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17,
-                ?18, ?19, ?20, ?21, ?22, ?23, ?24, ?25, ?26, ?27)",
+                ?18, ?19, ?20, ?21, ?22, ?23, ?24, ?25, ?26, ?27, ?28)",
             params![
                 rel_path,
                 fingerprint.size as i64,
@@ -463,6 +468,7 @@ impl Writer<'_> {
                 metadata.raw,
                 placement.event_dir,
                 metadata.location_city,
+                metadata.gps_method,
             ],
         )?;
         let id = self.transaction.last_insert_rowid();

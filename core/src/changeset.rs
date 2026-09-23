@@ -379,8 +379,14 @@ fn difference(field: &Field, said: Option<&Said>) -> Difference {
         },
         Field::Gps(gps) => Difference {
             what: "location",
-            before: said.map(|said| shown_position(said.gps_lat.zip(said.gps_lon))),
-            after: shown_position(gps.map(|gps| (gps.lat, gps.lon))),
+            before: said.map(|said| {
+                let derived = said.gps_method.as_deref().is_some_and(change::is_derived);
+                shown_position(said.gps_lat.zip(said.gps_lon), derived)
+            }),
+            after: shown_position(
+                gps.map(|gps| (gps.lat, gps.lon)),
+                gps.is_some_and(|gps| gps.derived.is_some()),
+            ),
         },
         Field::Taken(taken) => Difference {
             what: "date",
@@ -448,8 +454,10 @@ fn shown_rating(rating: Option<i64>) -> String {
     rating.map(|stars| stars.to_string()).unwrap_or(NONE.to_string())
 }
 
-fn shown_position(position: Option<(f64, f64)>) -> String {
+/// A derived position says so, so a person never takes a city centre for where they stood.
+fn shown_position(position: Option<(f64, f64)>, derived: bool) -> String {
     match position {
+        Some((lat, lon)) if derived => format!("{lat:.5}, {lon:.5} (derived)"),
         Some((lat, lon)) => format!("{lat:.5}, {lon:.5}"),
         None => NONE.to_string(),
     }

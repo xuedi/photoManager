@@ -12,6 +12,8 @@ pub struct Metadata {
     pub xmp_taken_at: Option<String>,
     pub gps_lat: Option<f64>,
     pub gps_lon: Option<f64>,
+    /// `GPSProcessingMethod`: how the position was worked out, as the photo says it.
+    pub gps_method: Option<String>,
     pub camera_make: Option<String>,
     pub camera_model: Option<String>,
     pub orientation: Option<i64>,
@@ -98,6 +100,7 @@ impl Reader for Exiv2 {
                 .map(|value| as_timestamp(&value)),
             gps_lat: gps.map(|gps| gps.latitude),
             gps_lon: gps.map(|gps| gps.longitude),
+            gps_method: string("Exif.GPSInfo.GPSProcessingMethod").and_then(|value| method(&value)),
             camera_make: string("Exif.Image.Make"),
             camera_model: string("Exif.Image.Model"),
             orientation: number("Exif.Image.Orientation"),
@@ -174,6 +177,7 @@ impl Reader for ExifTool {
             xmp_taken_at: string("CreateDate").map(|value| as_timestamp(&value)),
             gps_lat: float("GPSLatitude"),
             gps_lon: float("GPSLongitude"),
+            gps_method: string("GPSProcessingMethod").and_then(|value| method(&value)),
             camera_make: string("Make"),
             camera_model: string("Model"),
             orientation: number("Orientation"),
@@ -194,6 +198,17 @@ impl Reader for ExifTool {
             raw: serde_json::Value::Object(fields.clone()).to_string(),
         })
     }
+}
+
+/// exiv2 puts the character set in front of a comment-like text: `charset=Ascii GPS`.
+fn method(value: &str) -> Option<String> {
+    let value = value.trim();
+    let text = match value.strip_prefix("charset=") {
+        Some(rest) => rest.split_once(' ').map(|(_, text)| text).unwrap_or_default(),
+        None => value,
+    };
+    let text = text.trim_matches(|c: char| c == '\0' || c.is_whitespace());
+    (!text.is_empty()).then(|| text.to_string())
 }
 
 /// Lightroom separates the levels with a pipe, everyone else with a slash.

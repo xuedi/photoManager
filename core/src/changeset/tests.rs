@@ -192,6 +192,7 @@ fn a_position_and_a_date_read_the_way_a_person_thinks_about_them() {
                         lat: 39.90420,
                         lon: 116.40740,
                         altitude: None,
+                        derived: None,
                     })),
                     Field::Taken(Some(Taken {
                         at: "2019-07-13 18:20:00".to_string(),
@@ -200,7 +201,24 @@ fn a_position_and_a_date_read_the_way_a_person_thinks_about_them() {
                 ]),
             ),
             Wanted::new(BARE, Change::of([Field::Gps(None)])),
+            Wanted::new(
+                TAGGED,
+                Change::of([Field::Gps(Some(Gps {
+                    lat: 39.90420,
+                    lon: 116.40740,
+                    altitude: None,
+                    derived: Some(crate::write::change::Derived {
+                        method: "photoManager: places tag",
+                        metres: 5000.0,
+                    }),
+                }))]),
+            ),
         ],
+    );
+    assert_eq!(
+        set.rows[2].tells(),
+        "location: none -> 39.90420, 116.40740 (derived)",
+        "a city centre is never taken for where someone stood"
     );
 
     let told = set.rows[0].tells();

@@ -161,6 +161,7 @@ fn state(window: &Window, paths: &Paths, library: Option<&Library>) -> String {
                 "taken_at": details.taken_at,
                 "offset": details.taken_offset,
                 "gps": details.gps.map(|(lat, lon)| [lat, lon]),
+                "derived": details.derived_from(),
                 "tags": details.tags,
                 "rating": details.rating,
                 "content_id": details.content_id,

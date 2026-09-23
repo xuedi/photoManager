@@ -217,6 +217,9 @@ impl Panel {
         match details.gps {
             Some((lat, lon)) => {
                 self.row(&group, "Coordinates", &position(lat, lon));
+                if let Some(from) = details.derived_from() {
+                    self.row(&group, "Derived", &format!("From the {from}, not measured"));
+                }
                 match (look.nearest, look.has_places) {
                     (Some(at), _) => {
                         let (name, far) = nearest(at);

@@ -438,6 +438,7 @@ fn an_undo_puts_back_exactly_what_was_there() {
             lat: 31.2304,
             lon: 121.4737,
             altitude: None,
+            derived: None,
         })),
     ]);
     let target = setup.target(TAGGED, change);
@@ -673,6 +674,7 @@ fn a_position_a_date_and_a_region_each_round_trip() {
             lat: -33.8568,
             lon: -70.6693,
             altitude: Some(520.5),
+            derived: None,
         })),
         Field::Taken(Some(Taken {
             at: "2006-09-14 10:12:00".to_string(),
@@ -729,6 +731,85 @@ fn a_position_a_date_and_a_region_each_round_trip() {
     assert_eq!(fields.get("XMP-photoshop:City"), Some(&Value::from("Santiago")));
     assert_eq!(fields.get("IPTC:City"), Some(&Value::from("Santiago")));
     assert_eq!(fields.get("XMP-iptcCore:CountryCode"), Some(&Value::from("CL")));
+}
+
+#[test]
+fn a_derived_position_is_written_proved_and_taken_back_whole() {
+    let mut setup = Setup::new("derived");
+    let before = setup.look(TAGGED);
+    let image = setup.image_data();
+    let hash = setup.exiftool_image_hash(TAGGED);
+
+    let derived = Change::of([Field::Gps(Some(Gps {
+        lat: 39.9042,
+        lon: 116.4074,
+        altitude: None,
+        derived: Some(change::Derived {
+            method: "photoManager: places tag",
+            metres: 5000.0,
+        }),
+    }))]);
+    let target = setup.target(TAGGED, derived);
+    let written = setup
+        .engine
+        .write(
+            &mut setup.journal,
+            &mut setup.cache,
+            "Derive",
+            None,
+            &[target],
+            &quiet(),
+            &AtomicBool::new(false),
+        )
+        .unwrap();
+    assert_eq!(written.written, 1, "{written:?}");
+
+    let fields = setup.look(TAGGED);
+    assert_eq!(fields.get("GPS:GPSLatitude"), Some(&Value::from(39.9042)));
+    assert_eq!(
+        fields.get("GPS:GPSProcessingMethod"),
+        Some(&Value::from("photoManager: places tag"))
+    );
+    assert_eq!(fields.get("GPS:GPSHPositioningError"), Some(&Value::from(5000)));
+    assert_eq!(setup.exiftool_image_hash(TAGGED), hash);
+
+    setup
+        .engine
+        .undo(
+            &mut setup.journal,
+            &mut setup.cache,
+            written.batch,
+            &quiet(),
+            &AtomicBool::new(false),
+        )
+        .unwrap();
+    let after = setup.look(TAGGED);
+    for key in [
+        "GPS:GPSLatitude",
+        "GPS:GPSLongitude",
+        "GPS:GPSMapDatum",
+        "GPS:GPSProcessingMethod",
+        "GPS:GPSHPositioningError",
+    ] {
+        assert_eq!(after.get(key), before.get(key), "{key} did not go");
+    }
+    assert_eq!(setup.image_data(), image, "the image data moved");
+}
+
+#[test]
+fn a_measured_position_writes_no_mark() {
+    let mut setup = Setup::new("measured");
+    let measured = Change::of([Field::Gps(Some(Gps {
+        lat: 39.9042,
+        lon: 116.4074,
+        altitude: None,
+        derived: None,
+    }))]);
+    assert_eq!(setup.write(BARE, measured), Outcome::Written);
+    let fields = setup.look(BARE);
+    assert!(fields.contains_key("GPS:GPSLatitude"));
+    assert_eq!(fields.get("GPS:GPSProcessingMethod"), None);
+    assert_eq!(fields.get("GPS:GPSHPositioningError"), None);
 }
 
 #[test]

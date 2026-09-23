@@ -145,6 +145,7 @@ fn one_edited_field_is_one_field() {
             lat: 53.6,
             lon: 10.0,
             altitude: Some(12.0),
+            derived: None,
         }))],
         "a moved point keeps its altitude"
     );
@@ -332,5 +333,39 @@ mod on_the_fixture {
             ["Ben"],
             "a face region names a person too"
         );
+    }
+
+    #[test]
+    fn a_derived_position_is_read_into_the_cache_and_said() {
+        let (root, cache) = scanned("derived", |root| {
+            let status = Command::new("exiftool")
+                .args([
+                    "-q",
+                    "-overwrite_original",
+                    "-EXIF:GPSLatitude=39.9042",
+                    "-EXIF:GPSLatitudeRef=N",
+                    "-EXIF:GPSLongitude=116.4074",
+                    "-EXIF:GPSLongitudeRef=E",
+                    "-EXIF:GPSProcessingMethod=photoManager: places tag",
+                    "-EXIF:GPSHPositioningError=5000",
+                ])
+                .arg(root.join(OFF))
+                .status()
+                .unwrap();
+            assert!(status.success());
+        });
+        let derived = Details::of(&cache, OFF).unwrap().unwrap();
+        assert_eq!(derived.gps_method.as_deref(), Some("photoManager: places tag"));
+        assert_eq!(derived.derived_from(), Some("places tag"));
+
+        let measured = Details::of(&cache, LOCATED).unwrap().unwrap();
+        assert!(measured.gps.is_some());
+        assert_eq!(measured.derived_from(), None, "a camera's position is not ours");
+
+        let file = root.join(OFF);
+        let bytes = std::fs::read(&file).unwrap();
+        let fast = crate::metadata::Reader::read(&Exiv2, &file, &bytes).unwrap();
+        let reference = crate::metadata::Reader::read(&crate::metadata::ExifTool, &file, &bytes).unwrap();
+        assert_eq!(fast.gps_method, reference.gps_method, "both readers say the same");
     }
 }

@@ -65,6 +65,25 @@ pub struct Gps {
     pub lat: f64,
     pub lon: f64,
     pub altitude: Option<f64>,
+    /// `None` is a position someone measured, and takes away any mark a derived one left.
+    pub derived: Option<Derived>,
+}
+
+/// A position worked out rather than measured, said in the file itself: how it was worked out, in
+/// `GPSProcessingMethod`, and how far off it may be, in `GPSHPositioningError`.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct Derived {
+    pub method: &'static str,
+    pub metres: f64,
+}
+
+/// What every method this application writes starts with, so a derived position is told apart
+/// from one a camera or a phone measured.
+pub const DERIVED_BY: &str = "photoManager: ";
+
+/// Whether a `GPSProcessingMethod` says the position was derived here.
+pub fn is_derived(method: &str) -> bool {
+    method.trim().starts_with(DERIVED_BY)
 }
 
 /// Where a photo was, in words. Each part that is `None` is taken away.
@@ -172,7 +191,7 @@ const DATE_TAGS: [(&str, &str); 5] = [
     ("EXIF:OffsetTime", "ExifIFD:OffsetTime"),
 ];
 
-const GPS_TAGS: [(&str, &str); 7] = [
+const GPS_TAGS: [(&str, &str); 9] = [
     ("EXIF:GPSLatitude", "GPS:GPSLatitude"),
     ("EXIF:GPSLatitudeRef", "GPS:GPSLatitudeRef"),
     ("EXIF:GPSLongitude", "GPS:GPSLongitude"),
@@ -180,7 +199,12 @@ const GPS_TAGS: [(&str, &str); 7] = [
     ("EXIF:GPSAltitude", "GPS:GPSAltitude"),
     ("EXIF:GPSAltitudeRef", "GPS:GPSAltitudeRef"),
     ("EXIF:GPSMapDatum", "GPS:GPSMapDatum"),
+    (METHOD.0, METHOD.1),
+    (ERROR.0, ERROR.1),
 ];
+
+const METHOD: (&str, &str) = ("EXIF:GPSProcessingMethod", "GPS:GPSProcessingMethod");
+const ERROR: (&str, &str) = ("EXIF:GPSHPositioningError", "GPS:GPSHPositioningError");
 
 /// City, state, country, country code and location, in both the XMP and the IPTC spelling.
 const PLACE_TAGS: [(&str, &str); 10] = [
@@ -285,6 +309,20 @@ fn gps_assigns(gps: Option<Gps>) -> Result<Vec<Assign>, String> {
     if gps.altitude.is_some_and(|metres| !metres.is_finite()) {
         return Err("that altitude is not a number".to_string());
     }
+    if let Some(derived) = gps.derived {
+        if !is_derived(derived.method) || derived.method.trim().len() == DERIVED_BY.trim().len() {
+            return Err(format!(
+                "{:?} does not say how the position was derived",
+                derived.method
+            ));
+        }
+        if !derived.metres.is_finite() || derived.metres <= 0.0 {
+            return Err(format!(
+                "{} metres is not how far off a position may be",
+                derived.metres
+            ));
+        }
+    }
 
     let mut assigns = vec![
         set("EXIF:GPSLatitude", "GPS:GPSLatitude", Value::from(gps.lat.abs())),
@@ -314,6 +352,13 @@ fn gps_assigns(gps: Option<Gps>) -> Result<Vec<Assign>, String> {
             gone("EXIF:GPSAltitude", "GPS:GPSAltitude"),
             gone("EXIF:GPSAltitudeRef", "GPS:GPSAltitudeRef"),
         ]),
+    }
+    match gps.derived {
+        Some(derived) => assigns.extend([
+            set(METHOD.0, METHOD.1, Value::from(derived.method)),
+            set(ERROR.0, ERROR.1, Value::from(derived.metres)),
+        ]),
+        None => assigns.extend([gone(METHOD.0, METHOD.1), gone(ERROR.0, ERROR.1)]),
     }
     Ok(assigns)
 }
@@ -689,6 +734,7 @@ mod tests {
             lat: -33.8568,
             lon: -70.6693,
             altitude: Some(-12.5),
+            derived: None,
         }))
         .unwrap();
         assert_eq!(by_tag(&gps, "EXIF:GPSLatitude"), Value::from(33.8568));
@@ -698,14 +744,22 @@ mod tests {
         assert_eq!(by_tag(&gps, "EXIF:GPSAltitudeRef"), Value::from(1));
         assert_eq!(by_tag(&gps, "EXIF:GPSMapDatum"), Value::from("WGS-84"));
 
+        assert_eq!(
+            by_tag(&gps, "EXIF:GPSProcessingMethod"),
+            Value::Null,
+            "measured, so no mark"
+        );
+        assert_eq!(by_tag(&gps, "EXIF:GPSHPositioningError"), Value::Null);
+
         let cleared = gps_assigns(None).unwrap();
-        assert_eq!(cleared.len(), 7);
+        assert_eq!(cleared.len(), 9);
         assert!(cleared.iter().all(|assign| assign.value == Value::Null));
         assert!(
             gps_assigns(Some(Gps {
                 lat: 100.0,
                 lon: 0.0,
-                altitude: None
+                altitude: None,
+                derived: None,
             }))
             .is_err()
         );
@@ -717,9 +771,35 @@ mod tests {
             lat: 39.9,
             lon: 116.4,
             altitude: None,
+            derived: None,
         }))
         .unwrap();
         assert_eq!(by_tag(&gps, "EXIF:GPSAltitude"), Value::Null);
+    }
+
+    #[test]
+    fn a_derived_position_says_so_and_how_far_off_it_may_be() {
+        let derived = |method: &'static str, metres: f64| {
+            gps_assigns(Some(Gps {
+                lat: 39.9042,
+                lon: 116.4074,
+                altitude: None,
+                derived: Some(Derived { method, metres }),
+            }))
+        };
+        let gps = derived("photoManager: places tag", 5000.0).unwrap();
+        assert_eq!(
+            by_tag(&gps, "EXIF:GPSProcessingMethod"),
+            Value::from("photoManager: places tag")
+        );
+        assert_eq!(by_tag(&gps, "EXIF:GPSHPositioningError"), Value::from(5000.0));
+        assert!(is_derived("photoManager: places tag"));
+        assert!(!is_derived("GPS"));
+
+        assert!(derived("GPS", 5000.0).is_err(), "only a mark of our own is written");
+        assert!(derived("photoManager: ", 5000.0).is_err(), "it says how");
+        assert!(derived("photoManager: places tag", 0.0).is_err());
+        assert!(derived("photoManager: places tag", f64::NAN).is_err());
     }
 
     #[test]
@@ -907,6 +987,7 @@ mod tests {
             lat: 39.9,
             lon: 116.4,
             altitude: None,
+            derived: None,
         }))
         .unwrap();
         let latitude = assigns.iter().find(|a| a.tag == "EXIF:GPSLatitude").unwrap();
