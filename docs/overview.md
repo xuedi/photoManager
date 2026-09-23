@@ -18,6 +18,7 @@ flowchart LR
         scan --> layout
         scan --> thumbs[(thumbnails)]
         geo[(places)]
+        write[write engine] --> journal[(journal)]
         fixtures[fixtures<br/>test data]
     end
     application --> paths
@@ -25,14 +26,19 @@ flowchart LR
     library --> scan
     library --> geo
     photos[(photo library)] -. read .-> scan
+    write -. the only writer .-> photos
     geonames[GeoNames dumps] -. downloaded on request .-> geo
 ```
 
 `core` holds everything that does not need a display: where things live on disk, reading a
 photo's metadata, identifying it by its image data, reading its folder names, the scan and the
-cache it fills, the thumbnails, and the place data. It has no GTK dependency, so it can be
-tested without a session. What the cache holds and how a scan works: [cache.md](cache.md); the
-small pictures: [thumbnails.md](thumbnails.md); names and coordinates: [places.md](places.md).
+cache it fills, the thumbnails, the place data, and the one engine that writes to a photo. It has
+no GTK dependency, so it can be tested without a session. What the cache holds and how a scan
+works: [cache.md](cache.md); the small pictures: [thumbnails.md](thumbnails.md); names and
+coordinates: [places.md](places.md); changing what a photo says: [writing.md](writing.md).
+
+Nothing in the window reaches the write engine yet: it is reachable from `core` only, and the
+preview and the apply that will drive it come with the tools.
 
 `app` holds the GTK application: the window, its views, and the actions they expose. The user
 interface is written in Blueprint, compiled to GtkBuilder XML by the build script and bundled
@@ -47,7 +53,8 @@ as a GResource, so the binary carries its own interface.
 | thumbnails | `…/thumbs` in the cache | disposable, made again while scanning |
 | GeoNames dumps | `…/geonames` in the cache | disposable, downloaded on request |
 | place data | `$XDG_DATA_HOME/…/geo.db` | disposable, built from the dumps |
-| settings, presets, journal | `$XDG_DATA_HOME/org.beijingcode.PhotoManager` | kept |
+| journal of every write | `$XDG_DATA_HOME/…/app.db` | kept, never discarded: an undo has to outlive a cache rebuild |
+| settings, presets | `$XDG_DATA_HOME/org.beijingcode.PhotoManager` | kept |
 
 Every location is resolved in one place, from the environment. Pointing `HOME`, `XDG_*` and
 `PHOTOMANAGER_LIBRARY` somewhere else moves the whole application, which is how tests keep away

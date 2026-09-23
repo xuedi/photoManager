@@ -61,6 +61,11 @@ There are two modes plus the rebuild:
 
 Nothing scans on its own. A scan happens because someone pressed the button.
 
+A photo the [write engine](writing.md) has changed has its cache row forgotten there and then, so
+the next scan reads the file again rather than trusting a row that is now stale. The journal of
+those writes is a database of its own and is not part of the cache: a rebuild must not lose an
+undo.
+
 ## Issues
 
 An issue is a photo or a file worth looking at, not an error. They are computed during the scan
