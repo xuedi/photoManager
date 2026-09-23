@@ -95,14 +95,9 @@ impl Located {
         }
     }
 
-    /// The place a point is in, in words: of the places around it, the nearest one inside the
-    /// country whose outline holds the point, since the nearest of all can be over a border.
+    /// The town a point is in, in words.
     pub fn near(at: &At) -> Option<Located> {
-        let inside = at
-            .country
-            .as_ref()
-            .and_then(|(code, _)| at.places.iter().find(|nearby| &nearby.place.country == code));
-        inside.or(at.places.first()).map(|nearby| Located::of(&nearby.place))
+        at.town.as_ref().map(|nearby| Located::of(&nearby.place))
     }
 
     /// `Beijing, Beijing, China`.

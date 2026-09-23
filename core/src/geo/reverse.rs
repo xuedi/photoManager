@@ -9,6 +9,10 @@ use super::{Geo, Result};
 /// How far the search widens before it gives up, in degrees.
 const REACHES: [f64; 4] = [0.25, 1.0, 4.0, 12.0];
 const MOST: usize = 5;
+/// A part of a town with this many people is a town of its own, such as a city district.
+const TOWN: i64 = 100_000;
+/// Closer than this a place is where the point is: a position given from a tag stands on it.
+const ON_THE_POINT_KM: f64 = 0.01;
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct Nearby {
@@ -16,33 +20,45 @@ pub struct Nearby {
     pub km: f64,
 }
 
-/// What is at a point: the country it lies in, and the places around it, nearest and biggest
-/// first. Like the forward lookup it decides nothing.
+/// What is at a point: the country it lies in, the places around it, nearest and biggest
+/// first, and the town it is in. Like the forward lookup it decides nothing.
 #[derive(Debug, Clone, PartialEq)]
 pub struct At {
     pub country: Option<(String, String)>,
     pub places: Vec<Nearby>,
+    /// The nearest place inside the country that is a town: a small part of a town, such as a
+    /// neighbourhood, only when the point stands on it.
+    pub town: Option<Nearby>,
 }
 
 impl Geo {
     pub fn at(&self, lat: f64, lon: f64) -> Result<At> {
-        Ok(At {
-            country: self.country_at(lat, lon)?,
-            places: self.places_around(lat, lon)?,
-        })
+        let country = self.country_at(lat, lon)?;
+        let (places, town) = self.places_around(lat, lon, country.as_ref())?;
+        Ok(At { country, places, town })
     }
 
-    fn places_around(&self, lat: f64, lon: f64) -> Result<Vec<Nearby>> {
+    /// The places around, from the nearest reach that has any; the town may need a wider one.
+    fn places_around(
+        &self,
+        lat: f64,
+        lon: f64,
+        country: Option<&(String, String)>,
+    ) -> Result<(Vec<Nearby>, Option<Nearby>)> {
+        let mut places: Option<Vec<Nearby>> = None;
         for reach in REACHES {
             let mut found = self.within(lat, lon, reach)?;
             if found.is_empty() {
                 continue;
             }
             found.sort_by(|one, other| weigh(one).total_cmp(&weigh(other)));
-            found.truncate(MOST);
-            return Ok(found);
+            let town = town(&found, country);
+            let places = places.get_or_insert_with(|| found.iter().take(MOST).cloned().collect());
+            if town.is_some() {
+                return Ok((places.clone(), town));
+            }
         }
-        Ok(Vec::new())
+        Ok((places.unwrap_or_default(), None))
     }
 
     fn within(&self, lat: f64, lon: f64, reach: f64) -> Result<Vec<Nearby>> {
@@ -112,6 +128,21 @@ impl Geo {
             .unwrap_or_else(|_| inside.0.clone());
         Ok(Some((inside.0, name)))
     }
+}
+
+/// Of the places around, sorted, the first that is a town, inside the country whose outline
+/// holds the point if there is one there: the nearest of all can be over a border.
+fn town(found: &[Nearby], country: Option<&(String, String)>) -> Option<Nearby> {
+    let is_town = |nearby: &&Nearby| {
+        nearby.km < ON_THE_POINT_KM || nearby.place.feature != "PPLX" || nearby.place.population >= TOWN
+    };
+    let inside = |nearby: &&Nearby| country.is_none_or(|(code, _)| &nearby.place.country == code);
+    found
+        .iter()
+        .filter(is_town)
+        .find(inside)
+        .or_else(|| found.iter().find(is_town))
+        .cloned()
 }
 
 /// Nearest wins, but a city people have heard of wins from a little further away.
@@ -214,10 +245,43 @@ mod tests {
     }
 
     #[test]
+    fn a_small_part_of_a_town_is_the_town_unless_the_point_stands_on_it() {
+        let near_wedding = geo().at(52.5500, 13.3600).unwrap();
+        assert_eq!(near_wedding.places[0].place.name, "Wedding", "the nearest place");
+        assert_eq!(
+            near_wedding.town.unwrap().place.name,
+            "Berlin",
+            "the town it is part of"
+        );
+
+        let on_wedding = geo().at(52.54734, 13.35594).unwrap();
+        assert_eq!(
+            on_wedding.town.unwrap().place.name,
+            "Wedding",
+            "a tag's answer stands on it"
+        );
+
+        let bergedorf = geo().at(53.4900, 10.2200).unwrap();
+        assert_eq!(
+            bergedorf.town.unwrap().place.name,
+            "Bergedorf",
+            "a district the size of a town is one"
+        );
+
+        let rhine = geo().at(47.5500, 7.7100).unwrap();
+        assert_eq!(
+            rhine.town.unwrap().place.country,
+            "DE",
+            "the town is inside the outline"
+        );
+    }
+
+    #[test]
     fn a_point_in_no_country_we_know_says_so() {
         let at = geo().at(0.0, -30.0).unwrap();
         assert_eq!(at.country, None, "the middle of the Atlantic");
         assert!(at.places.is_empty());
+        assert_eq!(at.town, None);
     }
 
     #[test]
