@@ -139,12 +139,18 @@ to say, and an undo has to outlive a cache rebuild.
 
 | Table | Holds |
 |-------|-------|
-| `batch` | one pass: what kind, when it started and finished, and which batch it undoes |
+| `batch` | one pass: what kind, what ran it (a title, and a tool's key when a tool did), when it started and finished, and which batch it undoes |
 | `entry` | one photo in a pass: its path, its content id, everything it said before the write in full, ExifTool's hash of its image data, and what became of it |
 | `swap` | one field of one entry: the tag, the name it reads back under, and its old and new value |
 
 An entry without an outcome and a batch without a finish are how an interrupted pass makes itself
 known on the next start.
+
+The journal carries its schema version. One it does not know is refused outright and left as it
+is. One it knows how to bring forward is copied first - the whole database as SQLite sees it, the
+write-ahead log included, to a file beside it named after the old version - and then migrated in
+one transaction that only adds: new columns, nothing rewritten, nothing dropped. The first such
+step gave batches their names; a batch from before it has none and reads as "Earlier change".
 
 ## Taking it back
 
@@ -153,7 +159,8 @@ metadata is ever changed and the image data is proved not to have moved, so rest
 values restores the photo. Fields that were not there before are removed.
 
 It goes through the same engine, with the same proof, and is journaled itself as a batch that says
-which batch it undoes. Two things make it refuse: a batch that was already undone, and a photo that
+which batch it undoes and is named after it: "Take back: " and its title. Any batch can be undone,
+not only the last - [tools.md](tools.md#taking-back-any-pass). Two things make it refuse: a batch that was already undone, and a photo that
 no longer says what the write left in it - checked field by field against the journal, so an edit
 made by something else in the meantime is never quietly overwritten.
 

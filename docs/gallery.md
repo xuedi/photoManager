@@ -115,8 +115,9 @@ A **scope** is what the next tool works on. It is one of two things:
 | some of the photos | their paths, in grid order |
 
 Keeping the filter rather than its paths means a scope over thousands of photos is a few words,
-and it still means the right photos after a scan. The scope is kept on the window, where the
-tools pick it up. A scope only describes photos: a tool still goes through the change set, the
+and it still means the right photos after a scan. It becomes the scope of the
+[Tools](tools.md#the-scope) tab, and stays on offer there as the gallery's pick; the tab does not
+switch. A scope only describes photos: a tool still goes through the change set, the
 [preview](preview.md) and the confirmation before anything is written.
 
 ## Actions

@@ -44,7 +44,7 @@ flowchart TD
     apply --> engine[write engine]
     engine --> photos[(the photos)]
     engine --> journal[(journal)]
-    journal --> undo[undo the last set]
+    journal --> undo[undo the last set,<br/>or any pass from the history]
 ```
 
 The cache does not keep everything a change can set. Where it cannot answer - a place in words, a
@@ -94,11 +94,14 @@ touched by it.
 
 ## Taking it back
 
-The toast carries an undo, and so does the tools page. It is the last applied change set only, put
-back through the engine and the journal that already do it, with its own confirmation. Once a batch
-has been undone there is nothing left to take back, and the rows it touched are open to be applied
-again - deselected, because taking a change back and putting it straight back on is never
-accidental. The full history with per-batch undo comes with the tools view.
+The toast carries an undo: the last applied change set, put back through the engine and the
+journal that already do it, with its own confirmation. Once a batch has been undone the rows it
+touched are open to be applied again - deselected, because taking a change back and putting it
+straight back on is never accidental.
+
+Any older pass is taken back from the [history](tools.md#the-history), through the same engine
+undo. A photo a later pass changed again is left as it is, and the confirmation says how many
+there are before anything runs.
 
 ## One photo
 
@@ -111,9 +114,14 @@ While a photo is open, the toast's Undo takes back the last applied change there
 
 ## On screen
 
-The tools view is a navigation stack. Its root is the list of tools; a tool that produces a change
-set pushes the preview on top of it, and the back button returns. A preview only means anything
-while a tool run is in flight, so it is not a view of its own.
+The tools view is a navigation stack. Its root is the scope and the list of [tools](tools.md);
+opening a tool builds its change set for the scope and pushes the preview on top of it, and the
+back button returns. A preview only means anything while a tool run is in flight, so it is not a
+view of its own. The change set carries the tool's title and key into the journal, which is how
+the history names the pass.
+
+On a narrow window the table keeps columns wide enough to read and scrolls sideways inside
+itself, so the preview never makes the window wider than a phone.
 
 The table is virtualised - a column view over a list model - because at one row per photo of the
 whole library a widget per row would take seconds to build and hundreds of megabytes.

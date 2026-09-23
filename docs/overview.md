@@ -13,6 +13,9 @@ flowchart LR
     subgraph core [core]
         paths
         settings[(settings)]
+        tools[tools<br/>what each would change] --> changeset
+        tools --> scope
+        history[history<br/>every pass, named] --> journal
         changeset[change set] --> cache
         details[details<br/>one photo, and an edit of it] --> cache
         survey --> filter --> cache
@@ -39,7 +42,10 @@ flowchart LR
     photo --> details
     photo --> changeset
     photo -. read at full size by glycin, sandboxed .-> photos
-    window --> preview[preview<br/>what a tool would change]
+    window --> toolsview[tools view<br/>scope, tools, history]
+    toolsview --> tools
+    toolsview --> history
+    toolsview --> preview[preview<br/>what a tool would change]
     window --> library[library<br/>work off the main thread]
     preview --> changeset
     library --> scan
@@ -63,7 +69,8 @@ browses by, and the scope a tool is handed: [gallery.md](gallery.md); everything
 and the form one photo is edited in: [photo.md](photo.md).
 
 The window reaches the write engine through one thing only: a change set, previewed and confirmed
-before anything is written. How that works: [preview.md](preview.md).
+before anything is written. How that works: [preview.md](preview.md). The tools that produce one,
+the scope they work on and the history of every pass: [tools.md](tools.md).
 
 `app` holds the GTK application: the window, its views, and the actions they expose. Two more
 GNOME libraries serve the photo page: glycin decodes a photo at full size in its sandbox, and
@@ -102,7 +109,12 @@ shortcuts and tests all use:
 | `win.gallery-place`, `win.gallery-tag` | narrow the gallery to a folder or a tag, or widen back from the chosen one |
 | `win.gallery-gap`, `win.gallery-sort` | the gallery's missing field and its order |
 | `win.gallery-select-all`, `win.gallery-select-none` | select every photo in the gallery, or none |
-| `win.use-as-scope` | make what the gallery shows or has selected the scope of the next tool |
+| `win.use-as-scope` | make what the gallery shows or has selected the scope of the tools |
+| `win.tools-scope` | set the scope: `all`, a country or event folder, or `picked` for the gallery's |
+| `win.run-tool` | open a tool by its key, or `key:settings`, for the scope: its change set in the preview |
+| `win.show-history` | the list of every pass |
+| `win.history-details` | one pass and its photos, by batch |
+| `win.undo-pass` | take back one pass by batch, after a confirmation that names the photos changed since |
 | `win.scan` | read what changed in the library into the cache |
 | `win.fill-thumbnails` | make the thumbnails the scan could not make |
 | `win.get-places` | fetch the GeoNames dumps and import them |
@@ -123,7 +135,6 @@ shortcuts and tests all use:
 | `app.quit` | quit |
 | `app.dump-state` | write the current state as JSON (only with `devtools`) |
 | `app.snapshot` | write the window as a PNG (only with `devtools`) |
-| `win.preview-demo` | a change set without a tool behind it, over the scope if there is one, to drive the preview (only with `devtools`) |
 | `win.photo-form-rating` | pick a rating in the photo form, which a test cannot click (only with `devtools`) |
 
 ## Running and testing
