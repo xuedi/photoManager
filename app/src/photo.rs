@@ -94,6 +94,10 @@ mod imp {
         pub review: RefCell<Option<Review>>,
         pub engine: RefCell<Option<Engine>>,
         pub applied: RefCell<Option<(Kind, Summary)>>,
+        /// When the photo on screen was asked for, and how long its two pictures took.
+        pub asked_at: Cell<Option<std::time::Instant>>,
+        pub thumb_took: Cell<Option<std::time::Duration>>,
+        pub full_took: Cell<Option<std::time::Duration>>,
         /// Which answer about the details is the newest asked for.
         pub asked: Cell<u64>,
         pub toast: RefCell<String>,
@@ -696,6 +700,24 @@ impl PhotoPage {
         }
     }
 
+    /// Notes how long the photo on screen took, the first time it shows.
+    fn took(&self, which: &Cell<Option<std::time::Duration>>) {
+        if which.get().is_none()
+            && let Some(asked) = self.imp().asked_at.get()
+        {
+            which.set(Some(asked.elapsed()));
+        }
+    }
+
+    /// How long the photo on screen took to show its thumbnail and its full size, in ms.
+    pub fn timings(&self) -> (Option<u128>, Option<u128>) {
+        let imp = self.imp();
+        (
+            imp.thumb_took.get().map(|took| took.as_millis()),
+            imp.full_took.get().map(|took| took.as_millis()),
+        )
+    }
+
     /// How many full pictures are kept or on their way.
     pub fn held(&self) -> usize {
         self.imp().full.borrow().len()
@@ -783,6 +805,9 @@ impl PhotoPage {
         imp.previous_button.set_visible(at > 0);
         imp.next_button.set_visible(at + 1 < self.count());
         *imp.shown.borrow_mut() = Some(listed.clone());
+        imp.asked_at.set(Some(std::time::Instant::now()));
+        imp.thumb_took.set(None);
+        imp.full_took.set(None);
 
         self.show_thumbnail(&listed);
         self.read_ahead();
@@ -841,6 +866,7 @@ impl PhotoPage {
             let full = matches!(page.imp().full.borrow().get(&path), Some(Full::Ready(_)));
             if page.path().as_deref() == Some(path.as_str()) && !full {
                 page.imp().picture.set_paintable(texture.as_ref());
+                page.took(&page.imp().thumb_took);
             }
         });
     }
@@ -857,6 +883,7 @@ impl PhotoPage {
             Some(Full::Ready(texture)) => {
                 imp.picture.set_paintable(Some(&texture));
                 imp.banner.set_revealed(false);
+                self.took(&imp.full_took);
             }
             Some(Full::Failed(_)) => {
                 imp.banner
@@ -901,18 +928,26 @@ impl PhotoPage {
             .borrow_mut()
             .insert(path.clone(), Full::Reading(cancellable.clone()));
 
+        // glycin turns the picture by its orientation inside the future, so the future runs on a
+        // thread of its own and only the finished frame comes back to the main loop.
+        let (sender, receiver) = async_channel::bounded(1);
+        let asked = cancellable.clone();
+        std::thread::spawn(move || {
+            let read = glib::MainContext::new().block_on(async {
+                let mut loader = glycin::Loader::new(file);
+                loader.cancellable(asked);
+                let mut image = loader.load().await?;
+                image.next_frame().await
+            });
+            let _ = sender.send_blocking(read.map_err(|error| error.to_string()));
+        });
         let page = self.downgrade();
         glib::spawn_future_local(async move {
-            let mut loader = glycin::Loader::new(file);
-            loader.cancellable(cancellable.clone());
-            let read = async {
-                let mut image = loader.load().await?;
-                let frame = image.next_frame().await?;
-                Ok::<gdk::Texture, glycin::Error>(frame.texture())
-            }
-            .await;
+            let Ok(read) = receiver.recv().await else {
+                return;
+            };
             if let Some(page) = page.upgrade() {
-                page.arrived(&path, &cancellable, read.map_err(|error| error.to_string()));
+                page.arrived(&path, &cancellable, read.map(|frame| frame.texture()));
             }
         });
     }

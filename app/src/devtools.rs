@@ -54,7 +54,18 @@ pub fn install(app: &adw::Application, window: &Window, paths: &Paths, library: 
     let demo = gio::ActionEntry::builder("preview-demo")
         .activate(|window: &Window, _, _| demo_change_set(window))
         .build();
-    window.add_action_entries([demo]);
+    // A combo row has nothing a test from outside can click; this picks a rating in the form.
+    let rating = gio::ActionEntry::builder("photo-form-rating")
+        .parameter_type(Some(glib::VariantTy::INT32))
+        .activate(|window: &Window, _, parameter| {
+            let stars = parameter.and_then(|value| value.get::<i32>()).unwrap_or(-1);
+            window
+                .gallery()
+                .photo()
+                .form_rating((stars >= 0).then_some(i64::from(stars)));
+        })
+        .build();
+    window.add_action_entries([demo, rating]);
 }
 
 /// A change set without a tool behind it, so the preview and the apply can be driven while the
@@ -156,6 +167,8 @@ fn state(window: &Window, paths: &Paths, library: Option<&Library>) -> String {
             "full": page.full_size().map(|(width, height)| serde_json::json!({ "width": width, "height": height })),
             "failed": page.full_failed(),
             "held": page.held(),
+            "thumb_ms": page.timings().0,
+            "full_ms": page.timings().1,
             "picture": page.shows_picture(),
             "panel": page.shows_panel(),
             "map": page.shows_map(),
