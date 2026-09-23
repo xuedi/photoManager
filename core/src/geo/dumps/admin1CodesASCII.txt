@@ -7,6 +7,7 @@ CH.AG	Aargau	Aargau	2661876
 CN.29	Yunnan	Yunnan	1785694
 CN.23	Shanghai	Shanghai	1796231
 CN.31	Hainan	Hainan	1809054
+CN.19	Liaoning	Liaoning	2036115
 CN.22	Beijing	Beijing	2038349
 DE.13	Saxony	Saxony	2842566
 DE.04	Hamburg	Hamburg	2911297

@@ -202,15 +202,20 @@ fn state(window: &Window, paths: &Paths, library: Option<&Library>) -> String {
                     "title": question.title,
                     "photos": question.photos,
                     "apart": question.apart,
-                    "exact": question.exact().is_some(),
+                    "sure": question.sure().is_some(),
+                    "note": question.note,
                     "best": question.offers.first().map(|offer| serde_json::json!({
                         "name": offer.place.name,
                         "code": offer.place.code,
                         "confidence": offer.confidence,
+                        "located": offer.located,
                     })),
                     "answer": question.answer.as_ref().map(|answer| match answer {
                         photomanager_core::tools::Answer::Leave => serde_json::json!("leave"),
                         photomanager_core::tools::Answer::Place(place) => serde_json::json!(place.name),
+                        photomanager_core::tools::Answer::Pin { lat, lon, near } => {
+                            serde_json::json!({ "pin": [lat, lon], "near": near.name })
+                        }
                     }),
                 })
             })
@@ -221,6 +226,7 @@ fn state(window: &Window, paths: &Paths, library: Option<&Library>) -> String {
             "settings": page.settings(),
             "questions": asked,
             "toast": page.toast(),
+            "picking": page.picking().map(|(question, _)| question),
         })
     });
     let history = window.tools().history();

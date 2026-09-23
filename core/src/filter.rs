@@ -514,10 +514,16 @@ pub(crate) mod tests {
     use std::sync::atomic::AtomicBool;
 
     pub(crate) fn scanned(name: &str) -> Cache {
+        scanned_after(name, |_| {})
+    }
+
+    /// The stand-in library scanned after `change` had its way with it.
+    pub(crate) fn scanned_after(name: &str, change: impl FnOnce(&std::path::Path)) -> Cache {
         let base = std::env::temp_dir().join(format!("photomanager-filter-{name}"));
         let _ = std::fs::remove_dir_all(&base);
         let root = base.join("library");
         crate::fixtures::build(&root).expect("build the stand-in library");
+        change(&root);
         let mut cache = Cache::open(&base.join("cache.db")).unwrap();
         let thumbs = Thumbs::new(base.join("thumbs"));
         scan::run(
@@ -673,7 +679,7 @@ pub(crate) mod tests {
             assert_eq!(combined.paths(&cache).unwrap(), expected, "{text}");
             assert_eq!(combined.count(&cache).unwrap(), expected.len() as i64, "{text}");
         }
-        assert_eq!(filter("no-gps+tag:places@Germany").count(&cache).unwrap(), 2);
+        assert_eq!(filter("no-gps+tag:places@Germany").count(&cache).unwrap(), 3);
         assert_eq!(filter("no-gps+loose").count(&cache).unwrap(), 1);
     }
 
@@ -716,7 +722,7 @@ pub(crate) mod tests {
         let all = crate::fixtures::photo_count() as i64;
 
         assert_eq!(count("all"), all);
-        assert_eq!(count("no-gps"), all - 1, "one photo carries GPS");
+        assert_eq!(count("no-gps"), all - 6, "six photos carry GPS");
         assert_eq!(count("no-date"), 2);
         assert_eq!(
             filter("date-off-folder").paths(&cache).unwrap(),
@@ -726,9 +732,9 @@ pub(crate) mod tests {
             ],
             "the folder says September, the photos August"
         );
-        assert_eq!(count("no-tag"), 2);
+        assert_eq!(count("no-tag"), 6);
         assert_eq!(count("no-location"), all - 1, "one photo names its city");
-        assert_eq!(count("no-gps@Germany"), 2);
+        assert_eq!(count("no-gps@Germany"), 4);
         assert_eq!(count("no-gps@Germany/2019-07-13 Sommerfest"), 2);
         assert_eq!(count("no-gps@Germ"), 0, "a folder is a whole name, not a prefix");
         assert_eq!(count("tag:mixed/Funny"), 1, "tags are compared as they are spelled");

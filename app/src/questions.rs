@@ -1,6 +1,7 @@
 //! The page a tool that asks shows before it can change anything: one row per question, the
-//! place data's best offer beside it, and Confirm, Choose Another and Leave Alone. It draws the
-//! questions `core` hands over and knows neither the tool nor what its questions are about.
+//! best offer beside it, and Confirm, Choose Another, Pick on Map and Leave Alone. It draws the
+//! questions `core` hands over and knows neither the tool nor what its questions are about: the
+//! words it uses for them are the tool's.
 //!
 //! Every answer goes into the tool's settings at once and is remembered, so leaving the page loses
 //! nothing and the next run over another scope asks only what is new.
@@ -15,6 +16,19 @@ use photomanager_core::scope::Scope;
 use photomanager_core::tools::{self, Answer, Located, Question};
 
 use crate::library::Library;
+use crate::panel::map_at;
+
+/// The map a question is answered on, while it is open.
+#[derive(Debug)]
+pub struct Picking {
+    pub question: String,
+    dialog: adw::Dialog,
+    mark: shumate::Marker,
+    near: gtk::Label,
+    use_point: gtk::Button,
+    /// The pin the last click made, if the place data knows where it is.
+    pub pin: Option<Answer>,
+}
 
 mod imp {
     use super::*;
@@ -39,6 +53,7 @@ mod imp {
         pub asking: Cell<u64>,
         pub busy: Cell<bool>,
         pub toast: RefCell<String>,
+        pub picking: RefCell<Option<Picking>>,
     }
 
     #[glib::object_subclass]
@@ -153,7 +168,8 @@ impl Questions {
     }
 
     /// One answer, in the words the `win.answer` action takes: `best`, `offer:N`, `leave`,
-    /// `forget`, `choose` for the place search, or a place as the settings write it.
+    /// `forget`, `choose` for the place search, `map` for the map, or a place or a pin as the
+    /// settings write it.
     pub fn answer(&self, question: &str, answer: &str) -> bool {
         let Some(asked) = self.question(question) else {
             tracing::warn!(question, "no such question");
@@ -162,6 +178,10 @@ impl Questions {
         let given = match answer {
             "choose" => {
                 self.choose(&asked);
+                return true;
+            }
+            "map" => {
+                self.pick_on_map(&asked);
                 return true;
             }
             "forget" => None,
@@ -203,33 +223,80 @@ impl Questions {
         true
     }
 
-    /// Confirm Exact Matches: every waiting question whose best offer is an exact name the place
-    /// data is sure of.
+    /// The tool's bulk button: every waiting question whose best offer is sure.
     pub fn answer_exact(&self) -> usize {
         let Some(tool) = self.key().and_then(|key| tools::find(&key)) else {
             return 0;
         };
         let questions = self.questions();
-        let confirmed = questions
-            .iter()
-            .filter(|question| !question.apart && question.waits() && question.exact().is_some())
-            .count();
+        let confirmed = questions.iter().filter(|question| question.confirmable()).count();
         if confirmed == 0 {
             return 0;
         }
-        match tools::confirm_exact(tool, &questions, self.settings().as_deref()) {
+        match tools::confirm_sure(tool, &questions, self.settings().as_deref()) {
             Ok(settings) => self.keep(settings),
             Err(why) => {
-                tracing::error!(why, "the exact matches could not be confirmed");
+                tracing::error!(why, "the sure answers could not be confirmed");
                 return 0;
             }
         }
-        tracing::info!(confirmed, "exact matches confirmed");
+        let wording = tool.wording();
+        tracing::info!(confirmed, "sure answers confirmed");
         self.say(&match confirmed {
-            1 => "1 exact match confirmed".to_string(),
-            count => format!("{count} exact matches confirmed"),
+            1 => format!("1 {} confirmed", wording.one),
+            count => format!("{count} {} confirmed", wording.many),
         });
         confirmed
+    }
+
+    /// The question the map is open for, and the pin it would answer with.
+    pub fn picking(&self) -> Option<(String, Option<Answer>)> {
+        self.imp()
+            .picking
+            .borrow()
+            .as_ref()
+            .map(|picking| (picking.question.clone(), picking.pin.clone()))
+    }
+
+    /// What a click on the map does: the mark moves there and the place it is in is named under
+    /// it.
+    pub fn pick_point(&self, lat: f64, lon: f64) {
+        let Some(library) = self.imp().library.borrow().clone() else {
+            return;
+        };
+        let mut picking = self.imp().picking.borrow_mut();
+        let Some(picking) = picking.as_mut() else {
+            return;
+        };
+        shumate::prelude::LocationExt::set_location(&picking.mark, lat, lon);
+        picking.mark.set_visible(true);
+        picking.pin = library.nearest(lat, lon).and_then(|at| Answer::pin(lat, lon, &at));
+        picking.near.set_label(&match &picking.pin {
+            Some(pin) => pin.tells(),
+            None if library.counts().places == 0 => "There is no place data yet: get it on the dashboard".to_string(),
+            None => "No place near this point".to_string(),
+        });
+        picking.use_point.set_sensitive(picking.pin.is_some());
+    }
+
+    /// Use This Point: the pin answers the question the map is open for, the way any answer
+    /// does, so the tools are counted again.
+    pub fn use_point(&self) -> bool {
+        let Some(picking) = self.imp().picking.borrow_mut().take() else {
+            return false;
+        };
+        picking.dialog.close();
+        let (Some(pin), Some(key)) = (picking.pin, self.key()) else {
+            return false;
+        };
+        let target = (key.as_str(), picking.question.as_str(), pin.written().as_str()).to_variant();
+        match WidgetExt::activate_action(self, "win.answer", Some(&target)) {
+            Ok(()) => true,
+            Err(error) => {
+                tracing::error!(%error, "the point could not be used");
+                false
+            }
+        }
     }
 
     /// The answers are the tool's settings: kept at once, and read back onto the questions on
@@ -270,6 +337,7 @@ impl Questions {
         }
         let key = self.key().unwrap_or_default();
         let tool = tools::find(&key);
+        let wording = tool.map(|tool| tool.wording()).unwrap_or_default();
         let questions = imp.questions.borrow();
         let has_places = imp
             .library
@@ -289,22 +357,17 @@ impl Questions {
 
         let busy = imp.busy.get();
         let waiting = questions.iter().filter(|question| question.waits()).count();
-        let exact = questions
-            .iter()
-            .filter(|question| !question.apart && question.waits() && question.exact().is_some())
-            .count();
+        let sure = questions.iter().filter(|question| question.confirmable()).count();
         let any = !questions.is_empty();
         imp.loading.set_visible(busy && !any);
         imp.empty.set_visible(!busy && !any);
+        imp.asked.set_title(wording.asked);
         imp.asked.set_visible(questions.iter().any(|question| !question.apart));
         imp.apart.set_visible(questions.iter().any(|question| question.apart));
         imp.exact_group.set_visible(any);
-        imp.exact.set_sensitive(exact > 0);
-        imp.exact_group.set_description(Some(&match exact {
-            0 => "Nothing waits that matches a place by its exact name. Every other tag is one click.".to_string(),
-            1 => "1 tag matches a place by its exact name. Every other tag is one click.".to_string(),
-            count => format!("{count} tags match a place by its exact name. Every other tag is one click."),
-        }));
+        imp.exact.set_title(wording.confirm);
+        imp.exact.set_sensitive(sure > 0);
+        imp.exact_group.set_description(Some(&wording.sure(sure)));
         imp.title.set_subtitle(&match (busy, tool) {
             (true, _) => "Looking at the photos".to_string(),
             (false, Some(tool)) if waiting > 0 => tool.waiting(waiting),
@@ -406,6 +469,112 @@ impl Questions {
         dialog.present(Some(self));
     }
 
+    /// A map to drop a pin on for one question: centred on the pin it has or the best offer,
+    /// the place the pin is in named under it, and Use This Point. The tiles come from
+    /// OpenStreetMap, and only while it is open.
+    fn pick_on_map(&self, question: &Question) {
+        let pinned = match &question.answer {
+            Some(Answer::Pin { lat, lon, .. }) => Some((*lat, *lon)),
+            _ => None,
+        };
+        let (lat, lon, zoom) = match (pinned, question.offers.first()) {
+            (Some((lat, lon)), _) => (lat, lon, 14.0),
+            (None, Some(offer)) => (offer.place.lat, offer.place.lon, 11.0),
+            (None, None) => (20.0, 0.0, 2.0),
+        };
+        let (map, mark) = map_at(lat, lon);
+        map.set_height_request(360);
+        map.set_vexpand(true);
+        if let Some(viewport) = map.viewport() {
+            viewport.set_zoom_level(zoom);
+        }
+        mark.set_visible(pinned.is_some());
+        let click = gtk::GestureClick::new();
+        click.connect_released(glib::clone!(
+            #[weak(rename_to = page)]
+            self,
+            move |gesture, _, x, y| {
+                let Some(map) = gesture.widget().and_downcast::<shumate::SimpleMap>() else {
+                    return;
+                };
+                if let Some(viewport) = map.viewport() {
+                    let (lat, lon) = viewport.widget_coords_to_location(&map, x, y);
+                    page.pick_point(lat, lon);
+                }
+            }
+        ));
+        map.add_controller(click);
+
+        let hint = gtk::Label::builder()
+            .label("Click the map where the photos were taken")
+            .xalign(0.0)
+            .wrap(true)
+            .build();
+        hint.add_css_class("dim-label");
+        let near = gtk::Label::builder()
+            .label(match &question.answer {
+                Some(answer @ Answer::Pin { .. }) => answer.tells(),
+                _ => "No point chosen yet".to_string(),
+            })
+            .xalign(0.0)
+            .wrap(true)
+            .build();
+        near.update_property(&[gtk::accessible::Property::Label("Chosen Point")]);
+        let use_point = gtk::Button::builder()
+            .label("Use This Point")
+            .halign(gtk::Align::Center)
+            .sensitive(false)
+            .build();
+        use_point.add_css_class("pill");
+        use_point.add_css_class("suggested-action");
+        use_point.connect_clicked(glib::clone!(
+            #[weak(rename_to = page)]
+            self,
+            move |_| {
+                page.use_point();
+            }
+        ));
+
+        let content = gtk::Box::builder()
+            .orientation(gtk::Orientation::Vertical)
+            .spacing(12)
+            .margin_top(12)
+            .margin_bottom(18)
+            .margin_start(12)
+            .margin_end(12)
+            .build();
+        content.append(&hint);
+        content.append(&map);
+        content.append(&near);
+        content.append(&use_point);
+        let view = adw::ToolbarView::new();
+        view.add_top_bar(&adw::HeaderBar::new());
+        view.set_content(Some(&content));
+        let dialog = adw::Dialog::builder()
+            .title(format!("Pick on Map: {}", question.title))
+            .content_width(640)
+            .content_height(560)
+            .child(&view)
+            .build();
+        dialog.connect_closed(glib::clone!(
+            #[weak(rename_to = page)]
+            self,
+            move |_| {
+                page.imp().picking.borrow_mut().take();
+            }
+        ));
+        *self.imp().picking.borrow_mut() = Some(Picking {
+            question: question.key.clone(),
+            dialog: dialog.clone(),
+            mark,
+            near,
+            use_point,
+            pin: None,
+        });
+        dialog.present(Some(self));
+        tracing::info!(question = question.key, "map shown to pick a point");
+    }
+
     fn build(&self) {
         let imp = self.imp();
 
@@ -488,18 +657,26 @@ fn row(key: &str, question: &Question, has_places: bool) -> adw::ActionRow {
     let best = question.offers.first();
     let state = match (&question.answer, best) {
         (Some(answer), _) => answer.tells(),
-        (None, Some(offer)) => format!("Best match {}, {}", offer.place.tells(), percent(offer.confidence)),
+        (None, Some(offer)) => match offer.located {
+            Some(1) => format!("Best match {}, where 1 of its photos is", offer.place.tells()),
+            Some(count) => format!("Best match {}, where {count} of its photos are", offer.place.tells()),
+            None => format!("Best match {}, {}", offer.place.tells(), percent(offer.confidence)),
+        },
         (None, None) if has_places => "No match in the place data".to_string(),
         (None, None) => "No place data yet".to_string(),
     };
+    let subtitle = match &question.note {
+        Some(note) => format!("{photos} - {state}\n{note}"),
+        None => format!("{photos} - {state}"),
+    };
     let row = adw::ActionRow::builder()
         .title(glib::markup_escape_text(&question.title))
-        .subtitle(glib::markup_escape_text(&format!("{photos} - {state}")))
-        .subtitle_lines(3)
+        .subtitle(glib::markup_escape_text(&subtitle))
+        .subtitle_lines(4)
         .build();
     let target = |answer: &str| (key, question.key.as_str(), answer).to_variant();
 
-    if let Some(Answer::Place(_)) = &question.answer {
+    if let Some(Answer::Place(_) | Answer::Pin { .. }) = &question.answer {
         let done = gtk::Image::from_icon_name("object-select-symbolic");
         done.update_property(&[gtk::accessible::Property::Label("Answered")]);
         row.add_prefix(&done);
@@ -531,6 +708,7 @@ fn row(key: &str, question: &Question, has_places: bool) -> adw::ActionRow {
         menu.append_item(&item);
     };
     item("Choose Another…", "choose");
+    item("Pick on Map…", "map");
     if question.answer != Some(Answer::Leave) {
         item("Leave Alone", "leave");
     }

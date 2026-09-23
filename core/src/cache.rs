@@ -403,6 +403,48 @@ impl Cache {
         Ok(found)
     }
 
+    /// The event folder of each of these photos that is in one.
+    pub fn event_dirs(&self, rel_paths: &[String]) -> Result<std::collections::HashMap<String, String>> {
+        let mut found = std::collections::HashMap::new();
+        for chunk in rel_paths.chunks(CHUNK) {
+            let sql = format!(
+                "SELECT rel_path, event_dir FROM photo WHERE rel_path IN ({}) AND event_dir IS NOT NULL",
+                holes(chunk.len())
+            );
+            let mut statement = self.connection.prepare(&sql)?;
+            let rows = statement.query_map(rusqlite::params_from_iter(chunk), |row| {
+                Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+            })?;
+            for row in rows {
+                let (rel_path, event_dir) = row?;
+                found.insert(rel_path, event_dir);
+            }
+        }
+        Ok(found)
+    }
+
+    /// Every position the photos of these event folders have, by folder: the whole event, not
+    /// only the part of it a scope holds.
+    pub fn positions_in(&self, event_dirs: &[String]) -> Result<Vec<(String, f64, f64)>> {
+        let mut found = Vec::new();
+        for chunk in event_dirs.chunks(CHUNK) {
+            let sql = format!(
+                "SELECT event_dir, gps_lat, gps_lon FROM photo
+                 WHERE event_dir IN ({}) AND gps_lat IS NOT NULL AND gps_lon IS NOT NULL
+                 ORDER BY rel_path",
+                holes(chunk.len())
+            );
+            let mut statement = self.connection.prepare(&sql)?;
+            let rows = statement.query_map(rusqlite::params_from_iter(chunk), |row| {
+                Ok((row.get::<_, String>(0)?, row.get::<_, f64>(1)?, row.get::<_, f64>(2)?))
+            })?;
+            for row in rows {
+                found.push(row?);
+            }
+        }
+        Ok(found)
+    }
+
     pub fn transaction(&mut self) -> Result<Writer<'_>> {
         Ok(Writer {
             transaction: self.connection.transaction()?,

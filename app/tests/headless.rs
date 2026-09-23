@@ -104,7 +104,7 @@ fn the_app_can_be_clicked_through_headless() {
     let scanned = scanned(&ui, lib);
     let photos = photomanager_core::fixtures::photo_count() as u64;
     assert_eq!(scanned["photos"].as_u64(), Some(photos), "the scan found every photo");
-    assert_eq!(scanned["events"].as_u64(), Some(6));
+    assert_eq!(scanned["events"].as_u64(), Some(9));
     assert!(
         scanned["issues"].as_u64().unwrap() > 0,
         "the stand-in library has issues to report"
@@ -117,7 +117,7 @@ fn the_app_can_be_clicked_through_headless() {
     );
 
     let survey = surveyed(&ui, lib);
-    assert_eq!(survey["coverage"]["no-gps"]["missing"].as_u64(), Some(photos - 1));
+    assert_eq!(survey["coverage"]["no-gps"]["missing"].as_u64(), Some(photos - 6));
     assert_eq!(survey["coverage"]["no-date"]["missing"].as_u64(), Some(2));
     assert!(
         survey["tidy"]
@@ -145,13 +145,14 @@ fn the_app_can_be_clicked_through_headless() {
 
     ui.run(&["click", "Get Place Data", "--role", "button"], lib);
     let places = settled(&ui, lib, "places");
-    assert_eq!(places["places"].as_u64(), Some(149), "the excerpt was imported");
+    assert_eq!(places["places"].as_u64(), Some(151), "the excerpt was imported");
 
     previews_applies_and_takes_it_back(&ui, lib);
     edits_one_photo_and_takes_it_back(&ui, lib);
     a_scope_is_what_the_demo_works_on(&ui, lib);
     takes_back_an_older_pass(&ui, lib);
     gives_places_from_their_tag_and_takes_them_back(&ui, lib);
+    gives_places_from_the_event_and_takes_them_back(&ui, lib);
 
     ui.run(&["act", "win.show-view", "'suggestions'"], lib);
     let state = state(&ui, lib);
@@ -353,9 +354,9 @@ fn read_back(photo: &Path) -> (String, String, String) {
 /// exactly those photos. Previewed only: nothing is applied.
 fn a_scope_is_what_the_demo_works_on(ui: &Ui, library: &Path) {
     ui.run(&["act", "win.show-photos", "'no-gps@Germany'"], library);
-    pictured(ui, library, 2);
+    pictured(ui, library, 4);
     ui.run(&["act", "win.gallery-select-all"], library);
-    assert_eq!(state(ui, library)["gallery"]["selected"].as_u64(), Some(2));
+    assert_eq!(state(ui, library)["gallery"]["selected"].as_u64(), Some(4));
     ui.run(&["click", "Use as Scope", "--role", "button"], library);
     let state_now = state(ui, library);
     assert_eq!(
@@ -363,18 +364,17 @@ fn a_scope_is_what_the_demo_works_on(ui: &Ui, library: &Path) {
         "the whole filter, not its paths"
     );
     assert!(
-        state_now["gallery"]["toast"].as_str().unwrap().contains("(2)"),
+        state_now["gallery"]["toast"].as_str().unwrap().contains("(4)"),
         "the toast says what the scope is: {}",
         state_now["gallery"]["toast"]
     );
 
-    let tools = counted(ui, library, 2);
-    assert_eq!(tools["counts"]["demo-rating"].as_u64(), Some(2));
+    let tools = counted(ui, library, 4);
+    assert_eq!(tools["counts"]["demo-rating"].as_u64(), Some(4));
     ui.run(&["act", "win.run-tool", "'demo-rating'"], library);
     for _ in 0..60 {
         let state = state(ui, library);
-        // The event before was two photos as well, all written by now.
-        if state["preview"]["photos"].as_u64() == Some(2) && state["preview"]["change"].as_u64() == Some(2) {
+        if state["preview"]["photos"].as_u64() == Some(4) && state["preview"]["change"].as_u64() == Some(4) {
             return;
         }
         std::thread::sleep(std::time::Duration::from_millis(500));
@@ -406,7 +406,7 @@ fn takes_back_an_older_pass(ui: &Ui, library: &Path) {
         written(ui, library, "write", before)["batch"].as_i64().unwrap()
     };
     ui.run(&["act", "win.show-view", "'tools'"], library);
-    let first = apply(COUNTRY, 4, "demo-rating", "Set a rating of 3");
+    let first = apply(COUNTRY, 7, "demo-rating", "Set a rating of 3");
     let second = apply(EVENT, 2, "demo-rating:4", "Set a rating of 4");
 
     ui.run(&["act", "win.show-history"], library);
@@ -427,7 +427,7 @@ fn takes_back_an_older_pass(ui: &Ui, library: &Path) {
         }
         std::thread::sleep(std::time::Duration::from_millis(500));
     }
-    assert_eq!(taken["taken"]["written"].as_u64(), Some(2), "{taken}");
+    assert_eq!(taken["taken"]["written"].as_u64(), Some(5), "{taken}");
     assert_eq!(
         taken["taken"]["refused"].as_u64(),
         Some(2),
@@ -441,6 +441,7 @@ fn takes_back_an_older_pass(ui: &Ui, library: &Path) {
     for (photo, rating) in [
         ("China/2008-01-00 Holiday SOUTHTOUR/IMG_0001.JPG", None),
         ("China/IMG_3140.JPG", None),
+        ("China/2012-04-00 Rail Trip/IMG_5003.JPG", None),
         ("China/2006-09-00 Besuch Ben/P1000001.JPG", Some(4)),
         ("China/2006-09-00 Besuch Ben/2006-08-21/P1000002.JPG", Some(4)),
     ] {
@@ -503,7 +504,7 @@ fn gives_places_from_their_tag_and_takes_them_back(ui: &Ui, library: &Path) {
         .as_array()
         .unwrap()
         .iter()
-        .filter(|question| question["exact"] == true && question["apart"] == false)
+        .filter(|question| question["sure"] == true && question["apart"] == false)
         .map(|question| question["answer"].as_str().unwrap_or("unanswered"))
         .collect();
     assert_eq!(confirmed.len(), 6, "{answered}");
@@ -558,6 +559,101 @@ fn gives_places_from_their_tag_and_takes_them_back(ui: &Ui, library: &Path) {
     );
     assert_eq!(city_of(&beijing), None);
     assert_eq!(city_of(&with_words).as_deref(), Some("Galway"));
+}
+
+/// GPS from the event, clicked through: one event answered with the place where the rest of it
+/// is, one with a pin as the map gives it, the preview holds their bare photos, the write puts
+/// position, mark, error and words into the files, and taking the pass back takes them away.
+fn gives_places_from_the_event_and_takes_them_back(ui: &Ui, library: &Path) {
+    const TOOL: &str = "gps-from-the-event";
+    const HARBOUR: &str = "Germany/2016-06-00 Harbour Walk";
+    const COPENHAGEN: &str = "Denmark/2018-10-00 Wedding Trip to Copenhagen";
+    const PIN: &str = r#"{"pin":[55.68,12.59],"near":{"id":2618425,"name":"Copenhagen","region":"Capital Region","country":"Denmark","code":"DK","lat":55.67594,"lon":12.56553}}"#;
+    let bare = library.join(HARBOUR).join("DSC_0104.JPG");
+    let pinned = library.join(COPENHAGEN).join("DSCF0002.JPG");
+
+    ui.run(&["act", "win.show-view", "'tools'"], library);
+    ui.run(&["act", "win.tools-scope", "'all'"], library);
+    let tools = counted(ui, library, photomanager_core::fixtures::photo_count() as u64);
+    assert_eq!(tools["waiting"][TOOL].as_u64(), Some(6), "{tools}");
+    ui.run(&["act", "win.run-tool", &format!("'{TOOL}'")], library);
+    let asked = questions(ui, library, |questions| {
+        questions["tool"] == TOOL && questions["questions"].as_array().unwrap().len() == 6
+    });
+    let harbour = asked["questions"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|question| question["key"] == HARBOUR)
+        .unwrap();
+    assert_eq!(harbour["sure"], true, "{harbour}");
+    assert_eq!(harbour["best"]["located"].as_u64(), Some(3), "{harbour}");
+
+    ui.run(
+        &["act", "win.answer", &format!("('{TOOL}', '{HARBOUR}', 'best')")],
+        library,
+    );
+    ui.run(
+        &["act", "win.answer", &format!("('{TOOL}', '{COPENHAGEN}', '{PIN}')")],
+        library,
+    );
+    questions(ui, library, |questions| {
+        questions["questions"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter(|question| !question["answer"].is_null())
+            .count()
+            == 2
+    });
+
+    let before = state(ui, library)["applied"]["batch"].as_i64().unwrap_or(0);
+    ui.run(&["act", "win.preview-answers"], library);
+    let mut previewed = Value::Null;
+    for _ in 0..60 {
+        previewed = state(ui, library)["preview"].clone();
+        if previewed["title"] == "Set GPS from the event" {
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(500));
+    }
+    assert_eq!(previewed["change"].as_u64(), Some(2), "{previewed}");
+
+    ui.run(&["click", "Apply", "--role", "button"], library);
+    let written = written(ui, library, "write", before);
+    assert_eq!(written["written"].as_u64(), Some(2), "{written}");
+    let batch = written["batch"].as_i64().unwrap();
+
+    let (lat, method, error, city) = read_place(&bare).expect("a position");
+    assert!((lat - 53.55073).abs() < 0.0001, "{lat}");
+    assert_eq!(method, "photoManager: event");
+    assert_eq!(error, 5000.0);
+    assert_eq!(city.as_deref(), Some("Hamburg"));
+    let (lat, method, error, city) = read_place(&pinned).expect("a position");
+    assert!((lat - 55.68).abs() < 0.0001, "the pin is written at its point: {lat}");
+    assert_eq!(method, "photoManager: event");
+    assert_eq!(error, 1000.0);
+    assert_eq!(city.as_deref(), Some("Copenhagen"));
+
+    let taken_before = state(ui, library)["history"]["taken"]["batch"].as_i64().unwrap_or(0);
+    ui.run(&["act", "win.undo-pass", &format!("int64 {batch}")], library);
+    ui.run(&["click", "Take It Back", "--role", "button"], library);
+    let mut taken = Value::Null;
+    for _ in 0..120 {
+        let now = state(ui, library);
+        if now["history"]["taken"]["batch"].as_i64().unwrap_or(0) > taken_before
+            && now["writing"] == false
+            && now["scanning"] == false
+        {
+            taken = now["history"]["taken"].clone();
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(500));
+    }
+    assert_eq!(taken["written"].as_u64(), Some(2), "{taken}");
+    assert_eq!(read_place(&bare), None, "the position, the mark and the words are gone");
+    assert_eq!(read_place(&pinned), None);
+    assert_eq!(city_of(&bare), None);
 }
 
 /// The questions on the page once they are asked and match what is waited for.
@@ -701,14 +797,16 @@ fn settled_preview(ui: &Ui, library: &Path) -> Value {
 
 /// Waits until the tools are counted for a scope of this many photos.
 fn counted(ui: &Ui, library: &Path, photos: u64) -> Value {
+    let mut tools = Value::Null;
     for _ in 0..60 {
         let state = state(ui, library);
-        if state["tools"]["photos"].as_u64() == Some(photos) {
-            return state["tools"].clone();
+        tools = state["tools"].clone();
+        if tools["photos"].as_u64() == Some(photos) {
+            return tools;
         }
         std::thread::sleep(std::time::Duration::from_millis(500));
     }
-    panic!("the tools were never counted for {photos} photos");
+    panic!("the tools were never counted for {photos} photos: {tools}");
 }
 
 /// Waits for a pass of the given kind, newer than `after`, to be over and read back afterwards.

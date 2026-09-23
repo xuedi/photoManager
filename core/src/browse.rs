@@ -344,10 +344,10 @@ mod fixture_tests {
             }
         }
         let china = &countries[0];
-        assert_eq!((china.name.as_str(), china.photos), ("China", 4));
+        assert_eq!((china.name.as_str(), china.photos), ("China", 7));
         assert_eq!(
             china.events.iter().map(|event| event.photos).sum::<i64>(),
-            3,
+            6,
             "the loose one is in no event"
         );
     }

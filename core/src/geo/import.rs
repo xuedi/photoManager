@@ -346,9 +346,9 @@ mod tests {
         let mut geo = geo("excerpt");
         let imported = run(&mut geo, &dumps(), &|_| {}).unwrap();
 
-        assert_eq!(imported.places, 149);
+        assert_eq!(imported.places, 151);
         assert_eq!(imported.countries, 18);
-        assert_eq!(imported.areas, 62);
+        assert_eq!(imported.areas, 63);
         assert!(imported.names > imported.places, "every place has more than one name");
         assert!(imported.rings > 7, "seven countries, more than seven rings");
 
@@ -403,7 +403,7 @@ mod tests {
 
         let mut geo = geo("zipped");
         let imported = run(&mut geo, &dir, &|_| {}).unwrap();
-        assert_eq!(imported.places, 149, "the same import, still in its zips");
+        assert_eq!(imported.places, 151, "the same import, still in its zips");
         assert!(imported.rings > 7);
     }
 

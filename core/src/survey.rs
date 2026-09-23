@@ -341,13 +341,13 @@ mod fixture_tests {
         let all = crate::fixtures::photo_count() as i64;
 
         assert_eq!(survey.photos, all);
-        assert_eq!(survey.events, 6);
+        assert_eq!(survey.events, 9);
         assert!(survey.bytes > 0);
         assert_eq!(survey.first.as_deref(), Some("2006-08-21"));
         assert_eq!(survey.last.as_deref(), Some("2019-07-13"));
         assert_eq!(survey.cameras[0], (None, all - 5), "most fixture photos name no camera");
         assert_eq!(survey.camera_count(), 3);
-        assert_eq!(survey.file_types, [("JPG".to_string(), 12), ("jpg".to_string(), 3)]);
+        assert_eq!(survey.file_types, [("JPG".to_string(), 20), ("jpg".to_string(), 3)]);
 
         let coverage: BTreeMap<&str, Measure> = survey
             .coverage
@@ -358,12 +358,12 @@ mod fixture_tests {
             coverage["no-gps"],
             Measure {
                 of: all,
-                missing: all - 1
+                missing: all - 6
             }
         );
         assert_eq!(coverage["no-date"], Measure { of: all, missing: 2 });
-        assert_eq!(coverage["date-off-folder"], Measure { of: 9, missing: 2 });
-        assert_eq!(coverage["no-tag"], Measure { of: all, missing: 2 });
+        assert_eq!(coverage["date-off-folder"], Measure { of: 17, missing: 2 });
+        assert_eq!(coverage["no-tag"], Measure { of: all, missing: 6 });
         assert_eq!(
             coverage["no-people"],
             Measure {
@@ -388,8 +388,8 @@ mod fixture_tests {
         assert_eq!(names, ["China", "Denmark", "Germany", "Greece", "Ireland"]);
 
         let china = &survey.countries[0];
-        assert_eq!(china.photos, 4, "three in events and the loose one");
-        assert_eq!(china.events.iter().map(|event| event.photos).sum::<i64>(), 3);
+        assert_eq!(china.photos, 7, "six in events and the loose one");
+        assert_eq!(china.events.iter().map(|event| event.photos).sum::<i64>(), 6);
         assert_eq!(china.events[0].name, "2006-09-00 Besuch Ben");
         assert_eq!(china.events[0].folder, "China/2006-09-00 Besuch Ben");
         assert_eq!(china.events[0].gap(Gap::DateOffFolder), Measure { of: 2, missing: 2 });

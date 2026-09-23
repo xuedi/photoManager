@@ -39,11 +39,11 @@ mod tests {
         let filter: Filter = "no-gps@Germany".parse().unwrap();
         let whole = Scope::Filter(filter.clone());
         let picked = Scope::Photos {
-            title: "2 photos".to_string(),
+            title: "4 photos".to_string(),
             paths: filter.paths(&cache).unwrap(),
         };
         assert_eq!(whole.paths(&cache).unwrap(), picked.paths(&cache).unwrap());
-        assert_eq!(whole.paths(&cache).unwrap().len(), 2);
+        assert_eq!(whole.paths(&cache).unwrap().len(), 4);
         assert_eq!(whole.title(), "Photos without GPS in Germany");
     }
 }

@@ -21,9 +21,13 @@ use crate::cache::{self, Cache};
 use crate::changeset::{ChangeSet, Wanted};
 use crate::geo::Geo;
 use crate::geo::lookup::{self, How};
+use crate::geo::reverse::At;
 use crate::scope::Scope;
 use crate::write;
+use crate::write::change::Derived;
+use crate::write::{Change, Field, Gps};
 
+pub mod gps_from_event;
 pub mod gps_from_places;
 
 /// What a tool can be told. A tool that needs nothing uses `()`.
@@ -47,6 +51,11 @@ impl Settings for () {
 
 /// How sure the place data has to be before Confirm Exact Matches takes its word.
 pub const EXACT: f64 = 0.9;
+
+/// A place's centre: a position given by one may be this many metres off.
+pub const PLACE_METRES: f64 = 5000.0;
+/// A point a person put roughly where it was on a map, not to the metre.
+pub const PIN_METRES: f64 = 1000.0;
 
 /// A place as an answer keeps it: everything a write needs, so an answer does not depend on the
 /// place data it was chosen from, and survives that data being imported again.
@@ -84,6 +93,16 @@ impl Located {
             country_code: Some(self.code.clone()),
             location: None,
         }
+    }
+
+    /// The place a point is in, in words: of the places around it, the nearest one inside the
+    /// country whose outline holds the point, since the nearest of all can be over a border.
+    pub fn near(at: &At) -> Option<Located> {
+        let inside = at
+            .country
+            .as_ref()
+            .and_then(|(code, _)| at.places.iter().find(|nearby| &nearby.place.country == code));
+        inside.or(at.places.first()).map(|nearby| Located::of(&nearby.place))
     }
 
     /// `Beijing, Beijing, China`.
@@ -134,20 +153,69 @@ impl Located {
 #[derive(Debug, Clone, PartialEq)]
 pub enum Answer {
     Place(Located),
+    /// A point a person chose on the map, with the place it is in for the words.
+    Pin {
+        lat: f64,
+        lon: f64,
+        near: Located,
+    },
     /// Its photos are not given a place by this tool.
     Leave,
 }
 
 const LEAVE: &str = "leave";
+const PIN: &str = "pin";
+
+/// Where an answer puts its photos.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct Spot<'a> {
+    pub lat: f64,
+    pub lon: f64,
+    /// The place in words.
+    pub near: &'a Located,
+    /// How far off the point may be.
+    pub metres: f64,
+}
 
 impl Answer {
-    /// `leave`, or the place as a JSON object: what one answer is in the settings.
+    /// A pin at a point, named after the place it is in. `None` where the place data knows
+    /// nothing around it.
+    pub fn pin(lat: f64, lon: f64, at: &At) -> Option<Answer> {
+        Some(Answer::Pin {
+            lat,
+            lon,
+            near: Located::near(at)?,
+        })
+    }
+
+    /// `leave`, a place or a pin as a JSON object: what one answer is in the settings.
     pub fn read(text: &str) -> Result<Answer, String> {
         if text.trim() == LEAVE {
             return Ok(Answer::Leave);
         }
         let value: Value = serde_json::from_str(text).map_err(|_| format!("{text} is not an answer"))?;
-        Ok(Answer::Place(Located::read(&value)?))
+        Answer::of(&value)
+    }
+
+    fn of(value: &Value) -> Result<Answer, String> {
+        match value {
+            Value::String(word) if word == LEAVE => Ok(Answer::Leave),
+            Value::Object(fields) if fields.contains_key(PIN) => {
+                let wrong = || format!("{value} is not a pin");
+                let point = fields.get(PIN).and_then(Value::as_array).ok_or_else(wrong)?;
+                let [lat, lon] = point.as_slice() else {
+                    return Err(wrong());
+                };
+                let (lat, lon) = (lat.as_f64().ok_or_else(wrong)?, lon.as_f64().ok_or_else(wrong)?);
+                if !(-90.0..=90.0).contains(&lat) || !(-180.0..=180.0).contains(&lon) {
+                    return Err(format!("{lat}, {lon} is not on earth"));
+                }
+                let near = Located::read(fields.get("near").ok_or_else(wrong)?)?;
+                Ok(Answer::Pin { lat, lon, near })
+            }
+            Value::Object(_) => Ok(Answer::Place(Located::read(value)?)),
+            other => Err(format!("{other} is not an answer")),
+        }
     }
 
     pub fn written(&self) -> String {
@@ -158,16 +226,95 @@ impl Answer {
         match self {
             Answer::Leave => Value::from(LEAVE),
             Answer::Place(place) => place.written(),
+            Answer::Pin { lat, lon, near } => {
+                let mut fields = Map::new();
+                fields.insert(PIN.to_string(), Value::from(vec![*lat, *lon]));
+                fields.insert("near".to_string(), near.written());
+                Value::Object(fields)
+            }
         }
     }
 
-    /// `Beijing, Beijing, China`, or that it is left alone.
+    /// `Beijing, Beijing, China`, a point near it, or that it is left alone.
     pub fn tells(&self) -> String {
         match self {
             Answer::Leave => "Left alone".to_string(),
             Answer::Place(place) => place.tells(),
+            Answer::Pin { lat, lon, near } => format!("A point near {} ({lat:.5}, {lon:.5})", near.tells()),
         }
     }
+
+    /// `Beijing`, or a point near it: short enough for a refusal.
+    pub fn names(&self) -> String {
+        match self {
+            Answer::Leave => "nothing".to_string(),
+            Answer::Place(place) => place.name.clone(),
+            Answer::Pin { near, .. } => format!("a point near {}", near.name),
+        }
+    }
+
+    /// Where its photos go, if anywhere.
+    pub fn spot(&self) -> Option<Spot<'_>> {
+        match self {
+            Answer::Leave => None,
+            Answer::Place(place) => Some(Spot {
+                lat: place.lat,
+                lon: place.lon,
+                near: place,
+                metres: PLACE_METRES,
+            }),
+            Answer::Pin { lat, lon, near } => Some(Spot {
+                lat: *lat,
+                lon: *lon,
+                near,
+                metres: PIN_METRES,
+            }),
+        }
+    }
+
+    /// Whether two answers put a photo in the same place: the same place, or a pin on the same
+    /// point. A pin and a place are never the same, even a pin on the place's centre.
+    pub fn same(&self, other: &Answer) -> bool {
+        match (self, other) {
+            (Answer::Place(one), Answer::Place(other)) => one.id == other.id,
+            (
+                Answer::Pin { lat, lon, .. },
+                Answer::Pin {
+                    lat: lat2, lon: lon2, ..
+                },
+            ) => lat == lat2 && lon == lon2,
+            (Answer::Leave, Answer::Leave) => true,
+            _ => false,
+        }
+    }
+}
+
+/// What photos without a position get from the answers that place them: the point with the mark
+/// of where it came from, and the place in words only where a photo says nothing yet, since
+/// writing the words takes away every part it does not set.
+pub fn place_photos(cache: &Cache, placed: &[(String, &Answer)], method: &'static str) -> cache::Result<Vec<Wanted>> {
+    let paths: Vec<String> = placed.iter().map(|(rel_path, _)| rel_path.clone()).collect();
+    let with_text = cache.with_place_text(&paths)?;
+    let mut wanted = Vec::new();
+    for (rel_path, answer) in placed {
+        let Some(spot) = answer.spot() else {
+            continue;
+        };
+        let mut fields = vec![Field::Gps(Some(Gps {
+            lat: spot.lat,
+            lon: spot.lon,
+            altitude: None,
+            derived: Some(Derived {
+                method,
+                metres: spot.metres,
+            }),
+        }))];
+        if !with_text.contains(rel_path) {
+            fields.push(Field::Place(Some(spot.near.place())));
+        }
+        wanted.push(Wanted::new(rel_path.clone(), Change::of(fields)));
+    }
+    Ok(wanted)
 }
 
 /// Every answer given so far, by question. Written as one JSON object, sorted by question, so
@@ -199,11 +346,7 @@ impl Settings for Answers {
         };
         let mut answers = Answers::default();
         for (key, value) in fields {
-            let answer = match value {
-                Value::String(word) if word == LEAVE => Answer::Leave,
-                Value::Object(_) => Answer::Place(Located::read(&value)?),
-                other => return Err(format!("{other} is not an answer to {key}")),
-            };
+            let answer = Answer::of(&value).map_err(|why| format!("{why} to {key}"))?;
             answers.0.insert(key, answer);
         }
         Ok(answers)
@@ -219,21 +362,30 @@ impl Settings for Answers {
     }
 }
 
-/// A place the place data offers for a question, and how sure it is of it.
+/// A place offered for a question, and how sure the offer is.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Offer {
     pub place: Located,
     pub confidence: f64,
     /// A name of the place, spelled the same once folded.
     pub exact: bool,
+    /// Sure enough to be confirmed in one click with the others, by the tool's bulk button.
+    pub sure: bool,
+    /// How many photos that belong with the question are already there, when that is why it
+    /// is offered.
+    pub located: Option<usize>,
 }
 
 impl Offer {
+    /// A candidate of the place data: sure when it matched a name exactly and is sure of it.
     pub fn of(candidate: &lookup::Candidate) -> Offer {
+        let exact = candidate.how == How::Exact;
         Offer {
             place: Located::of(&candidate.place),
             confidence: candidate.confidence,
-            exact: candidate.how == How::Exact,
+            exact,
+            sure: exact && candidate.confidence >= EXACT,
+            located: None,
         }
     }
 }
@@ -250,6 +402,8 @@ pub struct Question {
     pub answer: Option<Answer>,
     /// Listed apart and left alone until someone answers it by hand.
     pub apart: bool,
+    /// Something the person should know about the offers, such as that they were not narrowed.
+    pub note: Option<String>,
 }
 
 impl Question {
@@ -258,10 +412,13 @@ impl Question {
     }
 
     /// The best offer, when it is sure enough to be confirmed in one click with the others.
-    pub fn exact(&self) -> Option<&Offer> {
-        self.offers
-            .first()
-            .filter(|offer| offer.exact && offer.confidence >= EXACT)
+    pub fn sure(&self) -> Option<&Offer> {
+        self.offers.first().filter(|offer| offer.sure)
+    }
+
+    /// Whether the tool's bulk button would answer it.
+    pub fn confirmable(&self) -> bool {
+        !self.apart && self.waits() && self.sure().is_some()
     }
 }
 
@@ -306,6 +463,52 @@ pub trait Tool: Sync {
             open => format!("{open} questions wait for an answer"),
         }
     }
+
+    /// The words its question page uses.
+    fn wording(&self) -> Wording {
+        Wording::default()
+    }
+}
+
+/// What a tool's question page calls things. The page is the same for every tool; only the
+/// words change.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct Wording {
+    /// The heading over the questions.
+    pub asked: &'static str,
+    /// What one of them is, and many: `tag`, `tags`.
+    pub one: &'static str,
+    pub many: &'static str,
+    /// The bulk button that answers the sure ones.
+    pub confirm: &'static str,
+    /// What makes a question sure, after "1 tag" or "3 tags": `matches a place by its exact name`.
+    pub sure_one: &'static str,
+    pub sure_many: &'static str,
+}
+
+impl Default for Wording {
+    fn default() -> Wording {
+        Wording {
+            asked: "Questions",
+            one: "question",
+            many: "questions",
+            confirm: "Confirm Sure Answers",
+            sure_one: "has a sure answer",
+            sure_many: "have a sure answer",
+        }
+    }
+}
+
+impl Wording {
+    /// `3 tags match a place by its exact name. Every other tag is one click.`
+    pub fn sure(&self, count: usize) -> String {
+        let rest = format!("Every other {} is one click.", self.one);
+        match count {
+            0 => format!("Nothing waits that {}. {rest}", self.sure_one),
+            1 => format!("1 {} {}. {rest}", self.one, self.sure_one),
+            count => format!("{count} {} {}. {rest}", self.many, self.sure_many),
+        }
+    }
 }
 
 /// A tool as the list holds it, its settings as text.
@@ -329,6 +532,7 @@ pub trait AnyTool: Sync {
     /// What the settings answer a question with, if anything.
     fn answered(&self, settings: Option<&str>, question: &str) -> Result<Option<Answer>, String>;
     fn waiting(&self, open: usize) -> String;
+    fn wording(&self) -> Wording;
 }
 
 fn settings_of<S: Settings>(text: Option<&str>) -> Result<S, String> {
@@ -390,11 +594,16 @@ impl<T: Tool> AnyTool for T {
     fn waiting(&self, open: usize) -> String {
         Tool::waiting(self, open)
     }
+
+    fn wording(&self) -> Wording {
+        Tool::wording(self)
+    }
 }
 
 /// Every tool there is, in the order they are listed.
 pub const ALL: &[&dyn AnyTool] = &[
     &gps_from_places::GpsFromPlacesTag,
+    &gps_from_event::GpsFromEvent,
     #[cfg(feature = "demo")]
     &demo::Rating,
 ];
@@ -436,15 +645,13 @@ pub fn answer_again(tool: &dyn AnyTool, questions: &mut [Question], settings: Op
     Ok(())
 }
 
-/// Confirm Exact Matches: every question still waiting whose best offer is an exact name the
-/// place data is sure of is answered with it. A question listed apart is never among them.
-pub fn confirm_exact(tool: &dyn AnyTool, questions: &[Question], settings: Option<&str>) -> Result<String, String> {
+/// The tool's bulk button, Confirm Exact Matches or Confirm Where the Rest Is: every question
+/// still waiting whose best offer is sure is answered with it. A question listed apart is never
+/// among them.
+pub fn confirm_sure(tool: &dyn AnyTool, questions: &[Question], settings: Option<&str>) -> Result<String, String> {
     let mut text = settings.map(String::from);
-    for question in questions {
-        if question.apart || !question.waits() {
-            continue;
-        }
-        if let Some(offer) = question.exact() {
+    for question in questions.iter().filter(|question| question.confirmable()) {
+        if let Some(offer) = question.sure() {
             text = Some(tool.answer(text.as_deref(), &question.key, Some(Answer::Place(offer.place.clone())))?);
         }
     }

@@ -149,7 +149,7 @@ fn scans_into_its_cache() {
     while opened.is_scanning() && std::time::Instant::now() < deadline {
         context.iteration(false);
     }
-    assert_eq!(opened.counts().places, 149, "the excerpt was imported");
+    assert_eq!(opened.counts().places, 151, "the excerpt was imported");
     assert_eq!(opened.dump_date().map(|date| date.len()), Some(19));
 
     reads_the_panel(&window);
@@ -158,6 +158,7 @@ fn scans_into_its_cache() {
     previews_what_a_tool_would_change(&window, &opened);
     lists_the_tools_for_a_scope(&window, &opened, &library);
     answers_the_questions_of_a_tool(&window, &opened);
+    answers_by_event_and_on_the_map(&window);
     reads_the_history(&window, &opened);
 }
 
@@ -220,7 +221,7 @@ fn answers_the_questions_of_a_tool(window: &Window, opened: &Rc<Library>) {
     act("win.answer-exact", TOOL.to_variant());
     let answered = questions.questions();
     for question in &answered {
-        let exact = !question.apart && question.exact().is_some();
+        let exact = !question.apart && question.sure().is_some();
         assert_eq!(
             matches!(question.answer, Some(Answer::Place(_))),
             exact,
@@ -284,6 +285,121 @@ fn answers_the_questions_of_a_tool(window: &Window, opened: &Rc<Library>) {
     );
     act("win.answer", (TOOL, "places/inGreece/Atens", "forget").to_variant());
     until(|| count_of(&tools) == (7, 2), "asked again, it waits again");
+    window.show_view("dashboard");
+}
+
+/// The event tool asks one question per event on the same page, with its own words; its bulk
+/// button confirms only the events whose located photos agree, and a pin dropped on the map
+/// answers a question. Nothing is written here.
+fn answers_by_event_and_on_the_map(window: &Window) {
+    use photomanager_core::tools::Answer;
+    const TOOL: &str = "gps-from-the-event";
+    const HARBOUR: &str = "Germany/2016-06-00 Harbour Walk";
+    const COPENHAGEN: &str = "Denmark/2018-10-00 Wedding Trip to Copenhagen";
+    let tools = window.tools();
+    let questions = tools.questions();
+    let act = |name: &str, target: gtk::glib::Variant| WidgetExt::activate_action(window, name, Some(&target)).unwrap();
+    let count_of = |tools: &photomanager::tools::Tools| {
+        until(|| tools.counted().is_some(), "the tools were counted");
+        let counted = tools.counted().unwrap();
+        let count = counted
+            .tools
+            .iter()
+            .find(|(key, _)| key == TOOL)
+            .unwrap()
+            .1
+            .clone()
+            .unwrap();
+        let waiting = counted.waiting.iter().find(|(key, _)| key == TOOL).unwrap().1;
+        (count, waiting)
+    };
+    window.show_view("tools");
+    act("win.tools-scope", "all".to_variant());
+    assert_eq!(count_of(&tools), (0, 6));
+    assert!(
+        labels(tools.upcast_ref())
+            .iter()
+            .any(|label| label == "6 events wait for an answer"),
+        "the row says what waits"
+    );
+
+    act("win.run-tool", TOOL.to_variant());
+    until(
+        || questions.key().as_deref() == Some(TOOL) && !questions.is_busy(),
+        "the events were asked about",
+    );
+    let asked = questions.questions();
+    assert_eq!(asked.len(), 6, "one question per event");
+    let shown = rows(questions.upcast_ref());
+    for question in &asked {
+        assert_eq!(
+            shown.iter().filter(|row| row.title() == question.title).count(),
+            1,
+            "one row for {}",
+            question.title
+        );
+    }
+    let harbour = shown
+        .iter()
+        .find(|row| row.title() == "2016-06-00 Harbour Walk")
+        .expect("a row for the walk");
+    assert_eq!(
+        harbour.subtitle().unwrap(),
+        "1 photo - Best match Hamburg, Hamburg, Germany, where 3 of its photos are"
+    );
+    let menu = descendants(harbour.upcast_ref())
+        .into_iter()
+        .find_map(|widget| widget.downcast::<gtk::MenuButton>().ok())
+        .and_then(|button| button.menu_model())
+        .expect("a menu of answers");
+    let items: Vec<String> = (0..menu.n_items())
+        .filter_map(|index| {
+            menu.item_attribute_value(index, "label", None)
+                .and_then(|label| label.get::<String>())
+        })
+        .collect();
+    assert!(items.iter().any(|item| item == "Pick on Map…"), "{items:?}");
+    assert!(
+        labels(questions.upcast_ref())
+            .iter()
+            .any(|label| label == "Confirm Where the Rest Is"),
+        "the bulk button is worded by the tool"
+    );
+
+    act("win.answer-exact", TOOL.to_variant());
+    let answered: Vec<String> = questions
+        .questions()
+        .into_iter()
+        .filter(|question| question.answer.is_some())
+        .map(|question| question.key)
+        .collect();
+    assert_eq!(answered, [HARBOUR], "only where the rest agrees");
+
+    act("win.answer", (TOOL, COPENHAGEN, "map").to_variant());
+    assert_eq!(
+        questions.picking(),
+        Some((COPENHAGEN.to_string(), None)),
+        "the map is open"
+    );
+    questions.pick_point(55.6800, 12.5900);
+    let (_, pin) = questions.picking().unwrap();
+    let Some(Answer::Pin { near, .. }) = pin else {
+        panic!("the click made no pin: {pin:?}");
+    };
+    assert_eq!(near.name, "Copenhagen");
+    assert!(questions.use_point());
+    assert_eq!(questions.picking(), None, "the map closed");
+    let copenhagen = questions
+        .questions()
+        .into_iter()
+        .find(|question| question.key == COPENHAGEN)
+        .unwrap();
+    assert!(
+        matches!(copenhagen.answer, Some(Answer::Pin { lat, lon, .. }) if (lat, lon) == (55.68, 12.59)),
+        "{:?}",
+        copenhagen.answer
+    );
+    until(|| count_of(&tools) == (2, 4), "the row counts what the answers give");
     window.show_view("dashboard");
 }
 
@@ -478,13 +594,13 @@ fn surveys_what_is_missing(window: &Window, opened: &Rc<Library>) {
     assert_eq!(dashboard.field(), Gap::Gps);
     assert_eq!(
         dashboard.listed_places(),
-        ["China", "Greece", "Denmark", "Germany", "Ireland"],
+        ["China", "Germany", "Greece", "Denmark", "Ireland"],
         "the most photos without GPS first"
     );
     dashboard.set_field(Gap::People);
     assert_eq!(
         dashboard.listed_places(),
-        ["Greece", "China", "Denmark", "Germany", "Ireland"],
+        ["Germany", "China", "Greece", "Denmark", "Ireland"],
         "another field, another order"
     );
     dashboard.set_field(Gap::Gps);
@@ -506,10 +622,10 @@ fn surveys_what_is_missing(window: &Window, opened: &Rc<Library>) {
     assert_eq!(window.visible_view(), "gallery", "the click went to the gallery");
     let (filter, count) = window.shown().expect("the gallery was handed a set of photos");
     assert_eq!(filter.to_string(), "no-gps");
-    assert_eq!(count, Some(survey.photos - 1), "the number clicked is the number shown");
+    assert_eq!(count, Some(survey.photos - 6), "the number clicked is the number shown");
 
     WidgetExt::activate_action(window, "win.show-photos", Some(&"no-gps@Germany".to_variant())).unwrap();
-    assert_eq!(window.shown().unwrap().1, Some(2));
+    assert_eq!(window.shown().unwrap().1, Some(4));
     WidgetExt::activate_action(window, "win.show-photos", Some(&"nonsense".to_variant())).unwrap();
     assert_eq!(
         window.shown().unwrap().0.to_string(),
@@ -532,8 +648,8 @@ fn browses_the_gallery(window: &Window, opened: &Rc<Library>) {
 
     act("win.show-photos", "no-gps@Germany");
     assert_eq!(gallery.page(), "grid");
-    assert_eq!(listed().len(), 2, "the grid holds exactly the photos counted");
-    assert_eq!(window.shown().unwrap().1, Some(2));
+    assert_eq!(listed().len(), 4, "the grid holds exactly the photos counted");
+    assert_eq!(window.shown().unwrap().1, Some(4));
 
     act("win.show-photos", "all");
     act("win.gallery-place", "Germany/2019-07-13 Sommerfest");
@@ -575,7 +691,7 @@ fn browses_the_gallery(window: &Window, opened: &Rc<Library>) {
         window.shown().unwrap().0,
         "the dropdown and the dashboard set the same part"
     );
-    assert_eq!(listed().len(), all - 1);
+    assert_eq!(listed().len(), all - 6);
     act("win.gallery-gap", "none");
     assert_eq!(filter(), "all");
     assert_eq!(gap.selected(), 0, "the dropdown follows the filter");

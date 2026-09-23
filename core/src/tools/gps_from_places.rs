@@ -7,19 +7,14 @@
 
 use std::collections::BTreeMap;
 
-use super::{Answer, Answers, Offer, Question, Tool};
+use super::{Answer, Answers, Offer, Question, Tool, Wording};
 use crate::cache::{self, Cache};
 use crate::changeset::Wanted;
 use crate::geo::Geo;
 use crate::scope::Scope;
-use crate::tools::Located;
-use crate::write::change::Derived;
-use crate::write::{Change, Field, Gps};
 
 /// What the file is told about where its position came from.
 pub const METHOD: &str = "photoManager: places tag";
-/// A city centre: a position given by one may be this many metres off.
-pub const METRES: f64 = 5000.0;
 
 pub struct GpsFromPlacesTag;
 
@@ -50,6 +45,17 @@ impl Tool for GpsFromPlacesTag {
         match open {
             1 => "1 tag waits for an answer".to_string(),
             open => format!("{open} tags wait for an answer"),
+        }
+    }
+
+    fn wording(&self) -> Wording {
+        Wording {
+            asked: "Tags",
+            one: "tag",
+            many: "tags",
+            confirm: "Confirm Exact Matches",
+            sure_one: "matches a place by its exact name",
+            sure_many: "match a place by its exact name",
         }
     }
 
@@ -87,6 +93,7 @@ impl Tool for GpsFromPlacesTag {
                 offers,
                 answer,
                 apart,
+                note: None,
             });
         }
         questions.sort_by(|one, other| {
@@ -105,49 +112,30 @@ impl Tool for GpsFromPlacesTag {
             match decide(&tags, answers) {
                 Decision::Nothing => {}
                 Decision::Refused(why) => wanted.push(Wanted::refused(rel_path, why)),
-                Decision::Place(place) => placed.push((rel_path, place)),
+                Decision::Place(answer) => placed.push((rel_path, answer)),
             }
         }
-
-        let paths: Vec<String> = placed.iter().map(|(rel_path, _)| rel_path.clone()).collect();
-        let with_text = cache.with_place_text(&paths)?;
-        for (rel_path, place) in placed {
-            let mut fields = vec![Field::Gps(Some(Gps {
-                lat: place.lat,
-                lon: place.lon,
-                altitude: None,
-                derived: Some(Derived {
-                    method: METHOD,
-                    metres: METRES,
-                }),
-            }))];
-            // Writing the place takes away every part it does not set, so text a photo already
-            // has is never replaced by a city centre's.
-            if !with_text.contains(&rel_path) {
-                fields.push(Field::Place(Some(place.place())));
-            }
-            wanted.push(Wanted::new(rel_path, Change::of(fields)));
-        }
+        wanted.extend(super::place_photos(cache, &placed, METHOD)?);
         wanted.sort_by(|one, other| one.rel_path.cmp(&other.rel_path));
         Ok(wanted)
     }
 }
 
-enum Decision {
+enum Decision<'a> {
     Nothing,
     Refused(String),
-    Place(Located),
+    Place(&'a Answer),
 }
 
 /// What one photo gets from the answers to its tags. A tag still waiting holds back a photo that
 /// has another, so a later answer cannot find it already placed by the first.
-fn decide(tags: &[String], answers: &Answers) -> Decision {
-    let mut places: Vec<(&str, &Located)> = Vec::new();
+fn decide<'a>(tags: &[String], answers: &'a Answers) -> Decision<'a> {
+    let mut places: Vec<(&str, &Answer)> = Vec::new();
     let mut waiting = false;
     for tag in tags {
         match answers.get(tag) {
-            Some(Answer::Place(place)) => places.push((tag, place)),
             Some(Answer::Leave) => {}
+            Some(answer) => places.push((tag, answer)),
             None if names_a_country(tag) => {}
             None => waiting = true,
         }
@@ -158,12 +146,13 @@ fn decide(tags: &[String], answers: &Answers) -> Decision {
     if waiting {
         return Decision::Nothing;
     }
-    match places.iter().find(|(_, place)| place.id != first.id) {
+    match places.iter().find(|(_, answer)| !answer.same(first)) {
         Some((other_tag, other)) => Decision::Refused(format!(
             "{first_tag} says {} and {other_tag} says {}",
-            first.name, other.name
+            first.names(),
+            other.names()
         )),
-        None => Decision::Place(first.clone()),
+        None => Decision::Place(first),
     }
 }
 
@@ -186,7 +175,7 @@ fn without_gps(cache: &Cache, scope: &Scope) -> cache::Result<Vec<(String, Vec<S
 
 /// The places tags that no other places tag of the photo goes below: `places/inChina/Beijing`,
 /// not `places/inChina` beside it. The bare root says nothing.
-fn deepest(tags: &[String]) -> Vec<String> {
+pub(super) fn deepest(tags: &[String]) -> Vec<String> {
     let places: Vec<&String> = tags
         .iter()
         .filter(|tag| {
@@ -205,7 +194,7 @@ fn deepest(tags: &[String]) -> Vec<String> {
 }
 
 /// `places/inChina`: a country and no place in it.
-fn names_a_country(tag: &str) -> bool {
+pub(super) fn names_a_country(tag: &str) -> bool {
     tag.split('/').count() == 2
 }
 
@@ -236,6 +225,8 @@ mod tests {
     use crate::filter::Filter;
     use crate::filter::tests::scanned;
     use crate::tools::{self, AnyTool, EXACT, Settings};
+    use crate::write::Field;
+    use crate::write::change::Derived;
 
     const BEIJING: &str = "places/inChina/Beijing";
     const ATHENS: &str = "places/inGreece/athens";
@@ -304,8 +295,8 @@ mod tests {
                 ("places/inGreece/AthensSeaSide", 1),
                 ("places/inIreland/Galway", 1),
                 (AMSTERDAM, 1),
-                ("places/inChina", 1),
-                ("places/inGermany", 1),
+                ("places/inChina", 2),
+                ("places/inGermany", 2),
             ],
             "most photos first, the countries apart at the end, and the Hamburg photo with GPS not at all"
         );
@@ -321,10 +312,10 @@ mod tests {
         let beijing = question(&questions, BEIJING);
         assert_eq!(beijing.offers[0].place.name, "Beijing");
         assert_eq!(beijing.offers[0].place.code, "CN");
-        assert!(beijing.exact().is_some(), "{:?}", beijing.offers[0]);
+        assert!(beijing.sure().is_some(), "{:?}", beijing.offers[0]);
         let typo = question(&questions, ATENS);
         assert_eq!(typo.offers[0].place.name, "Athens");
-        assert!(typo.exact().is_none(), "a typo is offered, never confirmed in bulk");
+        assert!(typo.sure().is_none(), "a typo is offered, never confirmed in bulk");
         let pseudo = question(&questions, "places/inGreece/AthensSeaSide");
         assert!(pseudo.offers.first().is_none_or(|offer| offer.confidence < EXACT));
 
@@ -344,7 +335,7 @@ mod tests {
         assert_eq!(china.answer, Some(Answer::Leave));
         assert!(!china.waits());
 
-        let confirmed = tools::confirm_exact(tool(), &questions, None).unwrap();
+        let confirmed = tools::confirm_sure(tool(), &questions, None).unwrap();
         assert!(
             !confirmed.contains("\"places/inChina\""),
             "never confirmed in bulk: {confirmed}"
@@ -354,7 +345,13 @@ mod tests {
         let by_hand = answered(None, "places/inChina", beijing);
         let set = tool().change_set(&cache, &whole(), Some(&by_hand)).unwrap();
         let rows: Vec<&str> = set.rows.iter().map(|row| row.rel_path.as_str()).collect();
-        assert_eq!(rows, ["China/2008-01-00 Holiday SOUTHTOUR/IMG_0001.JPG"]);
+        assert_eq!(
+            rows,
+            [
+                "China/2008-01-00 Holiday SOUTHTOUR/IMG_0001.JPG",
+                "China/2012-04-00 Rail Trip/IMG_5003.JPG"
+            ]
+        );
     }
 
     #[test]
@@ -380,7 +377,7 @@ mod tests {
                 gps.derived,
                 Some(Derived {
                     method: METHOD,
-                    metres: METRES
+                    metres: tools::PLACE_METRES
                 })
             );
             let Field::Place(Some(place)) = &row.change.fields[1] else {
@@ -421,7 +418,7 @@ mod tests {
             )
             .unwrap();
         assert_eq!(question(&hamburg, "places/inGermany/Hamburg").photos, 1);
-        let mut settings = tools::confirm_exact(tool(), &questions, None).unwrap();
+        let mut settings = tools::confirm_sure(tool(), &questions, None).unwrap();
         for key in ["places/inChina", "places/inGermany"] {
             settings = answered(Some(&settings), key, best(&questions, BEIJING));
         }
@@ -479,12 +476,12 @@ mod tests {
     fn confirm_exact_matches_confirms_exactly_the_exact_ones() {
         let cache = scanned("gps-exact");
         let questions = asked(&cache, None);
-        let settings = tools::confirm_exact(tool(), &questions, None).unwrap();
+        let settings = tools::confirm_sure(tool(), &questions, None).unwrap();
         let answers = Answers::read(&settings).unwrap();
         let confirmed: Vec<&str> = answers.0.keys().map(String::as_str).collect();
         let expected: Vec<&str> = questions
             .iter()
-            .filter(|question| question.exact().is_some() && !question.apart)
+            .filter(|question| question.sure().is_some() && !question.apart)
             .map(|question| question.key.as_str())
             .collect();
         let mut expected = expected;
@@ -494,7 +491,7 @@ mod tests {
         assert!(!confirmed.contains(&ATENS));
 
         let kept = answered(Some(&settings), ATENS, Answer::Leave);
-        let again = tools::confirm_exact(tool(), &asked(&cache, Some(&kept)), Some(&kept)).unwrap();
+        let again = tools::confirm_sure(tool(), &asked(&cache, Some(&kept)), Some(&kept)).unwrap();
         assert_eq!(
             Answers::read(&again).unwrap(),
             Answers::read(&kept).unwrap(),
@@ -550,6 +547,77 @@ mod tests {
         assert!(
             Answer::read(r#"{"id": 1, "name": "Nowhere"}"#).is_err(),
             "a place says where it is"
+        );
+    }
+
+    fn pin(lat: f64, lon: f64) -> Answer {
+        Answer::pin(lat, lon, &geo().at(lat, lon).unwrap()).expect("a place near the point")
+    }
+
+    #[test]
+    fn a_pin_round_trips_through_text() {
+        let pinned = pin(37.9500, 23.7000);
+        let Answer::Pin { near, .. } = &pinned else {
+            panic!("not a pin: {pinned:?}");
+        };
+        assert_eq!((near.name.as_str(), near.code.as_str()), ("Athens", "GR"));
+        assert_eq!(Answer::read(&pinned.written()).unwrap(), pinned);
+        assert!(pinned.written().starts_with(r#"{"near":"#), "{}", pinned.written());
+        assert!(pinned.tells().starts_with("A point near Athens"), "{}", pinned.tells());
+        let settings = answered(None, ATENS, pinned.clone());
+        assert_eq!(Answers::read(&settings).unwrap().get(ATENS), Some(&pinned));
+        assert!(Answer::read(r#"{"pin": [95, 0], "near": {}}"#).is_err());
+        assert!(Answer::read(r#"{"pin": [37.9]}"#).is_err());
+    }
+
+    #[test]
+    fn a_pin_gives_its_photos_the_point_the_mark_and_the_words() {
+        let cache = scanned("gps-pin");
+        let settings = answered(None, BEIJING, pin(39.9300, 116.4200));
+        let set = tool().change_set(&cache, &whole(), Some(&settings)).unwrap();
+        assert_eq!(set.rows.len(), 2);
+        for row in &set.rows {
+            let Field::Gps(Some(gps)) = &row.change.fields[0] else {
+                panic!("no position: {:?}", row.change);
+            };
+            assert_eq!((gps.lat, gps.lon), (39.93, 116.42));
+            assert_eq!(
+                gps.derived,
+                Some(Derived {
+                    method: METHOD,
+                    metres: tools::PIN_METRES
+                })
+            );
+            let Field::Place(Some(place)) = &row.change.fields[1] else {
+                panic!("no words: {:?}", row.change);
+            };
+            assert_eq!(place.city.as_deref(), Some("Beijing"));
+            assert_eq!(place.country_code.as_deref(), Some("CN"));
+        }
+    }
+
+    #[test]
+    fn two_tags_pinned_to_one_point_agree_and_to_two_points_refuse() {
+        let cache = scanned("gps-two-pins");
+        let row_of = |settings: &str| {
+            let set = tool().change_set(&cache, &whole(), Some(settings)).unwrap();
+            set.rows.into_iter().find(|row| row.rel_path == TWO_TAGS).unwrap()
+        };
+        let here = pin(37.9500, 23.7000);
+        let one = answered(Some(&answered(None, ATHENS, here.clone())), ATENS, here);
+        assert_eq!(row_of(&one).verdict, Verdict::Change);
+
+        let two = answered(Some(&one), ATENS, pin(37.9600, 23.7100));
+        let Verdict::Refused(why) = row_of(&two).verdict else {
+            panic!("two points were written");
+        };
+        assert!(why.contains("a point near Athens"), "{why}");
+
+        let questions = asked(&cache, None);
+        let place = answered(Some(&one), ATENS, best(&questions, ATHENS));
+        assert!(
+            matches!(row_of(&place).verdict, Verdict::Refused(_)),
+            "a pin is not the place, even beside it"
         );
     }
 

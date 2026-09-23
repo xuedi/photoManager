@@ -2,7 +2,9 @@
 //! loose file in a country folder, sub-folders, photos without GPS but with a place tag, a
 //! photo without any date, XMP dates that disagree with EXIF, and one without tags at all. The
 //! tags are as untidy as real ones: a second spelling of a root, case twins, a typo, a city
-//! misspelled, a place that is no place, and one photo with two places tags. One photo
+//! misspelled, a place that is no place, and one photo with two places tags. Some events are
+//! partly placed: one whose located photos all stand in one city and one photo does not, one
+//! whose photos were placed in two cities, and one named `Wedding` in another city's folder. One photo
 //! carries the small picture cameras embed, the rest do not. The one turned by its orientation is
 //! stored wider than tall, so the right way up it stands taller than wide.
 //!
@@ -13,7 +15,7 @@ use std::path::Path;
 use std::process::Command;
 
 /// One distinct image per photo, so every photo has its own content id.
-const IMAGES: [&[u8]; 15] = [
+const IMAGES: [&[u8]; 23] = [
     include_bytes!("p01.jpg"),
     include_bytes!("p02.jpg"),
     include_bytes!("p03.jpg"),
@@ -29,6 +31,14 @@ const IMAGES: [&[u8]; 15] = [
     include_bytes!("p13.jpg"),
     include_bytes!("p14.jpg"),
     include_bytes!("p15.jpg"),
+    include_bytes!("p16.jpg"),
+    include_bytes!("p17.jpg"),
+    include_bytes!("p18.jpg"),
+    include_bytes!("p19.jpg"),
+    include_bytes!("p20.jpg"),
+    include_bytes!("p21.jpg"),
+    include_bytes!("p22.jpg"),
+    include_bytes!("p23.jpg"),
 ];
 
 struct Photo {
@@ -159,6 +169,74 @@ const PHOTOS: &[Photo] = &[
             "-TagsList=places/inGreece/athens",
             "-TagsList=places/inGreece/Atens",
         ],
+    },
+    Photo {
+        path: "Germany/2016-06-00 Harbour Walk/DSC_0101.JPG",
+        metadata: &[
+            "-DateTimeOriginal=2016:06:11 10:02:00",
+            "-GPSLatitude=53.5445",
+            "-GPSLatitudeRef=N",
+            "-GPSLongitude=9.9660",
+            "-GPSLongitudeRef=E",
+        ],
+    },
+    Photo {
+        path: "Germany/2016-06-00 Harbour Walk/DSC_0102.JPG",
+        metadata: &[
+            "-DateTimeOriginal=2016:06:11 10:40:00",
+            "-GPSLatitude=53.5412",
+            "-GPSLatitudeRef=N",
+            "-GPSLongitude=9.9840",
+            "-GPSLongitudeRef=E",
+        ],
+    },
+    Photo {
+        path: "Germany/2016-06-00 Harbour Walk/DSC_0103.JPG",
+        metadata: &[
+            "-DateTimeOriginal=2016:06:11 11:15:00",
+            "-GPSLatitude=53.5500",
+            "-GPSLatitudeRef=N",
+            "-GPSLongitude=9.9930",
+            "-GPSLongitudeRef=E",
+        ],
+    },
+    Photo {
+        path: "Germany/2016-06-00 Harbour Walk/DSC_0104.JPG",
+        metadata: &["-DateTimeOriginal=2016:06:11 12:30:00"],
+    },
+    Photo {
+        path: "China/2012-04-00 Rail Trip/IMG_5001.JPG",
+        metadata: &[
+            "-DateTimeOriginal=2012:04:03 09:00:00",
+            "-GPSLatitude=39.9075",
+            "-GPSLatitudeRef=N",
+            "-GPSLongitude=116.39723",
+            "-GPSLongitudeRef=E",
+            "-GPSProcessingMethod=photoManager: places tag",
+            "-GPSHPositioningError=5000",
+            PLACES_CHINA,
+        ],
+    },
+    Photo {
+        path: "China/2012-04-00 Rail Trip/IMG_5002.JPG",
+        metadata: &[
+            "-DateTimeOriginal=2012:04:06 15:20:00",
+            "-GPSLatitude=38.91222",
+            "-GPSLatitudeRef=N",
+            "-GPSLongitude=121.60222",
+            "-GPSLongitudeRef=E",
+            "-GPSProcessingMethod=photoManager: places tag",
+            "-GPSHPositioningError=5000",
+            "-TagsList=places/inChina/Dalian",
+        ],
+    },
+    Photo {
+        path: "China/2012-04-00 Rail Trip/IMG_5003.JPG",
+        metadata: &["-DateTimeOriginal=2012:04:05 12:00:00", "-TagsList=places/inChina"],
+    },
+    Photo {
+        path: "Germany/Hamburg/2014-08-00 Wedding/IMG_2001.JPG",
+        metadata: &["-DateTimeOriginal=2014:08:16 14:00:00", "-TagsList=places/inGermany"],
     },
 ];
 

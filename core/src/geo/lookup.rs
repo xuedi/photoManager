@@ -325,6 +325,16 @@ impl Geo {
         Ok(())
     }
 
+    /// The country a name means, as code and name: `Germany`, `DE`, `inNetherland`. `None` when
+    /// the place data knows no country by it.
+    pub fn country(&self, text: &str) -> Result<Option<(String, String)>> {
+        let countries = self.countries()?;
+        Ok(match_country(&countries, &fold(text)).or_else(|| {
+            let words = tokenise(text).join(" ");
+            match_country(&countries, &words)
+        }))
+    }
+
     fn countries(&self) -> Result<Vec<Known>> {
         let mut statement = self.connection.prepare_cached("SELECT code, name FROM country")?;
         let rows = statement.query_map([], |row| {
