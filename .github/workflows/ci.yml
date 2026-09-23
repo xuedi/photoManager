@@ -1,0 +1,32 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    # Arch, because the application is built against a current GNOME: GTK 4.20 and libadwaita 1.9
+    # are newer than any ubuntu-latest image ships.
+    container: archlinux:latest
+    steps:
+      - name: Install the GNOME stack and the toolchain
+        run: |
+          pacman -Syu --noconfirm --needed \
+            base-devel git rustup \
+            gtk4 libadwaita libgexiv2 libjpeg-turbo libwebp \
+            blueprint-compiler just perl-image-exiftool
+          rustup default stable
+          rustup component add rustfmt clippy
+
+      - uses: actions/checkout@v5
+
+      - uses: Swatinem/rust-cache@v2
+
+      # Format, clippy and the tests that need no display, exactly as a person runs them.
+      - run: just check

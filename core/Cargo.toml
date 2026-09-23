@@ -3,6 +3,9 @@ name = "photomanager-core"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "The library behind photoManager: scanning, metadata, identity, thumbnails, places and the write engine."
 
 [dependencies]
 fast_image_resize = "6.1"

@@ -6,6 +6,8 @@ resolver = "3"
 version = "0.1.0"
 edition = "2024"
 rust-version = "1.92"
+license = "EUPL-1.2"
+repository = "https://github.com/xuedi/photoManager"
 
 [workspace.dependencies]
 photomanager-core = { path = "core" }

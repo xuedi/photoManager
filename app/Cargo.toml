@@ -3,6 +3,9 @@ name = "photomanager"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "A GNOME application for managing the data of a personal photo library."
 
 [lib]
 name = "photomanager"
