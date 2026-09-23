@@ -14,6 +14,7 @@ flowchart LR
         paths
         settings[(settings)]
         changeset[change set] --> cache
+        details[details<br/>one photo, and an edit of it] --> cache
         survey --> filter --> cache
         browse[browse<br/>places and tags] --> cache
         scope --> filter
@@ -34,6 +35,10 @@ flowchart LR
     gallery --> filter
     gallery --> browse
     gallery --> thumbs
+    gallery --> photo[photo page<br/>one photo, its panel, an edit]
+    photo --> details
+    photo --> changeset
+    photo -. read at full size by glycin, sandboxed .-> photos
     window --> preview[preview<br/>what a tool would change]
     window --> library[library<br/>work off the main thread]
     preview --> changeset
@@ -44,6 +49,7 @@ flowchart LR
     photos[(photo library)] -. read .-> scan
     write -. the only writer .-> photos
     geonames[GeoNames dumps] -. downloaded on request .-> geo
+    osm[OpenStreetMap tiles] -. on request, through libshumate .-> photo
 ```
 
 `core` holds everything that does not need a display: where things live on disk, reading a
@@ -53,12 +59,16 @@ no GTK dependency, so it can be tested without a session. What the cache holds a
 works: [cache.md](cache.md); the small pictures: [thumbnails.md](thumbnails.md); names and
 coordinates: [places.md](places.md); changing what a photo says: [writing.md](writing.md); what
 the library is missing, counted: [dashboard.md](dashboard.md); the places and tags a gallery
-browses by, and the scope a tool is handed: [gallery.md](gallery.md).
+browses by, and the scope a tool is handed: [gallery.md](gallery.md); everything about one photo,
+and the form one photo is edited in: [photo.md](photo.md).
 
 The window reaches the write engine through one thing only: a change set, previewed and confirmed
 before anything is written. How that works: [preview.md](preview.md).
 
-`app` holds the GTK application: the window, its views, and the actions they expose. The user
+`app` holds the GTK application: the window, its views, and the actions they expose. Two more
+GNOME libraries serve the photo page: glycin decodes a photo at full size in its sandbox, and
+libshumate draws a map, the only thing besides getting the place data that uses the network, and
+only when asked. The user
 interface is written in Blueprint, compiled to GtkBuilder XML by the build script and bundled
 as a GResource, so the binary carries its own interface.
 
@@ -103,12 +113,18 @@ shortcuts and tests all use:
 | `win.apply-change-set` | write the selected rows, after the first-write confirmation |
 | `win.cancel-apply` | stop a running apply between photos |
 | `win.undo-last` | take the last applied change set back, after confirmation |
+| `win.show-photo` | open one of the gallery's photos on its own page |
+| `win.photo-next`, `win.photo-previous`, `win.photo-first`, `win.photo-last` | step through the gallery's list |
+| `win.photo-close`, `win.photo-panel`, `win.photo-open-with` | back to the grid, the panel, the system's image viewer |
+| `win.photo-show-map` | the map around the photo, from OpenStreetMap |
+| `win.photo-edit`, `win.photo-review`, `win.photo-apply` | edit one photo, review its exact change, write it |
 | `app.rebuild-cache` | throw the cache away and read everything again, after confirmation |
 | `app.about` | the about dialog |
 | `app.quit` | quit |
 | `app.dump-state` | write the current state as JSON (only with `devtools`) |
 | `app.snapshot` | write the window as a PNG (only with `devtools`) |
 | `win.preview-demo` | a change set without a tool behind it, over the scope if there is one, to drive the preview (only with `devtools`) |
+| `win.photo-form-rating` | pick a rating in the photo form, which a test cannot click (only with `devtools`) |
 
 ## Running and testing
 

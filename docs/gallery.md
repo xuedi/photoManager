@@ -2,8 +2,8 @@
 
 Where the photos a tool should work on are found. Pick a country or an event, a tag, a field that
 is missing, or any combination, and the grid shows exactly those photos. Select some or all of
-them and hand them on as the **scope** of the next tool. Viewing is here to support finding: there
-is no full-size view and nothing here writes.
+them and hand them on as the **scope** of the next tool. Viewing is here to support finding, and
+nothing on the grid writes. One photo opens on a [page of its own](photo.md).
 
 ## One filter, three controls
 
@@ -93,6 +93,14 @@ Measured over a copy of a real library of thousands of photos, the whole library
 put into the grid in a few tens of milliseconds, the first screen of pictures follows in about as
 long again, and scrolling from end to end keeps pace with the screen.
 
+## Opening a photo
+
+Enter or a double-click on a cell opens the photo on a page pushed over the grid, in the same tab.
+The page steps through this grid's list in this grid's order, and Back returns to the grid
+scrolled to the photo that was open, with the filter, the order and the selection untouched. A
+single click still only selects. What the page shows and how a photo is edited there:
+[photo.md](photo.md).
+
 ## Selection and scope
 
 Cells are selected with a click, Ctrl and Shift, a rubber band or Ctrl+A. While anything is
@@ -122,3 +130,4 @@ tools pick it up. A scope only describes photos: a tool still goes through the c
 | `win.gallery-sort` | `date` or `name` |
 | `win.gallery-select-all`, `win.gallery-select-none` | select every photo, or none |
 | `win.use-as-scope` | make what is shown or selected the scope |
+| `win.show-photo` | open one of the photos shown, by its path |

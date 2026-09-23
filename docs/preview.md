@@ -100,6 +100,15 @@ has been undone there is nothing left to take back, and the rows it touched are 
 again - deselected, because taking a change back and putting it straight back on is never
 accidental. The full history with per-batch undo comes with the tools view.
 
+## One photo
+
+A photo edited by hand on its [page](photo.md) is a change set of one row, built the same way from
+the cache. It needs no table, so it is reviewed in a dialog instead: the exact assignments of that
+one photo, from the same dry run a row's detail uses, and the size of the file that goes up again.
+Apply writes it through the same backup question, engine, journal and undo; the two share the
+questions, so a person is asked the same thing in the same words wherever the write comes from.
+While a photo is open, the toast's Undo takes back the last applied change there.
+
 ## On screen
 
 The tools view is a navigation stack. Its root is the list of tools; a tool that produces a change
