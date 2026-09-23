@@ -70,7 +70,7 @@ pub struct Edited {
 }
 
 /// Where each part of the place is read from: XMP, then IPTC.
-const PLACE_FIELDS: [[&str; 2]; 5] = [
+pub(crate) const PLACE_FIELDS: [[&str; 2]; 5] = [
     ["Xmp.photoshop.City", "Iptc.Application2.City"],
     ["Xmp.photoshop.State", "Iptc.Application2.ProvinceState"],
     ["Xmp.photoshop.Country", "Iptc.Application2.CountryName"],

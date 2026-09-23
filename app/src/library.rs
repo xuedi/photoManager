@@ -238,7 +238,7 @@ impl Library {
                     photos: scope.paths(cache)?.len(),
                     tools: tools::ALL
                         .iter()
-                        .map(|tool| (tool.key().to_string(), tools::count(*tool, cache, &scope)))
+                        .map(|tool| (tool.key().to_string(), tools::count(*tool, cache, &scope, None)))
                         .collect(),
                 })
             },

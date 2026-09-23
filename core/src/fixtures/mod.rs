@@ -1,7 +1,8 @@
 //! A small stand-in library with the shapes the real one has: events without a full date, a
 //! loose file in a country folder, sub-folders, photos without GPS but with a place tag, a
 //! photo without any date, XMP dates that disagree with EXIF, and one without tags at all. The
-//! tags are as untidy as real ones: a second spelling of a root, case twins, a typo. One photo
+//! tags are as untidy as real ones: a second spelling of a root, case twins, a typo, a city
+//! misspelled, a place that is no place, and one photo with two places tags. One photo
 //! carries the small picture cameras embed, the rest do not. The one turned by its orientation is
 //! stored wider than tall, so the right way up it stands taller than wide.
 //!
@@ -12,7 +13,7 @@ use std::path::Path;
 use std::process::Command;
 
 /// One distinct image per photo, so every photo has its own content id.
-const IMAGES: [&[u8]; 12] = [
+const IMAGES: [&[u8]; 15] = [
     include_bytes!("p01.jpg"),
     include_bytes!("p02.jpg"),
     include_bytes!("p03.jpg"),
@@ -25,6 +26,9 @@ const IMAGES: [&[u8]; 12] = [
     include_bytes!("p10.jpg"),
     include_bytes!("p11.jpg"),
     include_bytes!("p12.jpg"),
+    include_bytes!("p13.jpg"),
+    include_bytes!("p14.jpg"),
+    include_bytes!("p15.jpg"),
 ];
 
 struct Photo {
@@ -133,6 +137,28 @@ const PHOTOS: &[Photo] = &[
     Photo {
         path: "Greece/0000-00-00 Aeron ilands/IMG_0004.JPG",
         metadata: &["-TagsList=places/inGreece/athens", "-TagsList=mixed/discusting"],
+    },
+    Photo {
+        path: "Greece/0000-00-00 Aeron ilands/IMG_0005.JPG",
+        metadata: &[
+            "-DateTimeOriginal=2011:05:02 10:04:00",
+            "-TagsList=places/inGreece/Atens",
+        ],
+    },
+    Photo {
+        path: "Greece/0000-00-00 Aeron ilands/IMG_0006.JPG",
+        metadata: &[
+            "-DateTimeOriginal=2011:05:03 17:30:00",
+            "-TagsList=places/inGreece/AthensSeaSide",
+        ],
+    },
+    Photo {
+        path: "Greece/0000-00-00 Aeron ilands/IMG_0007.JPG",
+        metadata: &[
+            "-DateTimeOriginal=2011:05:04 09:12:00",
+            "-TagsList=places/inGreece/athens",
+            "-TagsList=places/inGreece/Atens",
+        ],
     },
 ];
 

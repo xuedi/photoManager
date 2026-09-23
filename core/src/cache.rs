@@ -380,6 +380,29 @@ impl Cache {
         Ok(found)
     }
 
+    /// The photos among these whose location text says anything, in any part and either spelling.
+    pub fn with_place_text(&self, rel_paths: &[String]) -> Result<std::collections::HashSet<String>> {
+        let said: Vec<String> = crate::details::PLACE_FIELDS
+            .iter()
+            .flatten()
+            .map(|name| format!("coalesce(trim(json_extract(raw, '$.\"{name}\"')), '') != ''"))
+            .collect();
+        let mut found = std::collections::HashSet::new();
+        for chunk in rel_paths.chunks(CHUNK) {
+            let sql = format!(
+                "SELECT rel_path FROM photo WHERE rel_path IN ({}) AND ({})",
+                holes(chunk.len()),
+                said.join(" OR ")
+            );
+            let mut statement = self.connection.prepare(&sql)?;
+            let rows = statement.query_map(rusqlite::params_from_iter(chunk), |row| row.get::<_, String>(0))?;
+            for row in rows {
+                found.insert(row?);
+            }
+        }
+        Ok(found)
+    }
+
     pub fn transaction(&mut self) -> Result<Writer<'_>> {
         Ok(Writer {
             transaction: self.connection.transaction()?,

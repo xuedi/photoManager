@@ -347,7 +347,7 @@ mod fixture_tests {
         assert_eq!(survey.last.as_deref(), Some("2019-07-13"));
         assert_eq!(survey.cameras[0], (None, all - 5), "most fixture photos name no camera");
         assert_eq!(survey.camera_count(), 3);
-        assert_eq!(survey.file_types, [("JPG".to_string(), 9), ("jpg".to_string(), 3)]);
+        assert_eq!(survey.file_types, [("JPG".to_string(), 12), ("jpg".to_string(), 3)]);
 
         let coverage: BTreeMap<&str, Measure> = survey
             .coverage
@@ -411,6 +411,7 @@ mod fixture_tests {
                 ("mixed/Funny and mixed/funny", 2),
                 ("People and people", 3),
                 ("mixed/discusting and mixed/disgusting", 2),
+                ("places/inGreece/Atens and places/inGreece/athens", 3),
                 ("Loose files", 1),
                 ("In event sub-folders", 2),
             ]

@@ -30,6 +30,8 @@ pub const UNKNOWN: &str = "unknown";
 pub struct Wanted {
     pub rel_path: String,
     pub change: Change,
+    /// The tool will not decide for this photo, and says why: it is listed, and never written.
+    pub refused: Option<String>,
 }
 
 impl Wanted {
@@ -37,6 +39,15 @@ impl Wanted {
         Wanted {
             rel_path: rel_path.into(),
             change,
+            refused: None,
+        }
+    }
+
+    pub fn refused(rel_path: impl Into<String>, why: impl Into<String>) -> Wanted {
+        Wanted {
+            rel_path: rel_path.into(),
+            change: Change::default(),
+            refused: Some(why.into()),
         }
     }
 }
@@ -356,6 +367,9 @@ fn verdict(wanted: &Wanted, known: Option<&Stated>, differences: &[Difference]) 
     };
     if known.content_id.is_none() {
         return Verdict::Refused("the scan could not read its image data".to_string());
+    }
+    if let Some(why) = &wanted.refused {
+        return Verdict::Refused(why.clone());
     }
     if let Err(why) = wanted.change.assigns() {
         return Verdict::Refused(why);

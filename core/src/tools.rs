@@ -7,10 +7,24 @@
 //!
 //! A tool's settings are a plain value that can be written as text and read back, so what a
 //! suggestion hands over later is a key, a scope and a line of text, not a form.
+//!
+//! A tool may also ask: which place a group of photos means. It hands over [`Question`]s, the
+//! application draws them without knowing which tool asked, and the [`Answer`]s go back into the
+//! tool's settings. So a question is answered once, and the next run over any scope finds it
+//! answered.
+
+use std::collections::BTreeMap;
+
+use serde_json::{Map, Value};
 
 use crate::cache::{self, Cache};
 use crate::changeset::{ChangeSet, Wanted};
+use crate::geo::Geo;
+use crate::geo::lookup::{self, How};
 use crate::scope::Scope;
+use crate::write;
+
+pub mod gps_from_places;
 
 /// What a tool can be told. A tool that needs nothing uses `()`.
 pub trait Settings: Default + Sized {
@@ -31,6 +45,202 @@ impl Settings for () {
     }
 }
 
+/// How sure the place data has to be before Confirm Exact Matches takes its word.
+pub const EXACT: f64 = 0.9;
+
+/// A place as an answer keeps it: everything a write needs, so an answer does not depend on the
+/// place data it was chosen from, and survives that data being imported again.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Located {
+    /// The GeoNames id, to tell two answers apart.
+    pub id: i64,
+    pub name: String,
+    pub region: Option<String>,
+    pub country: String,
+    pub code: String,
+    pub lat: f64,
+    pub lon: f64,
+}
+
+impl Located {
+    pub fn of(place: &lookup::Place) -> Located {
+        Located {
+            id: place.id,
+            name: place.name.clone(),
+            region: place.area.clone(),
+            country: place.country_name.clone(),
+            code: place.country.clone(),
+            lat: place.lat,
+            lon: place.lon,
+        }
+    }
+
+    /// The place in words, the way a photo says it.
+    pub fn place(&self) -> write::Place {
+        write::Place {
+            city: Some(self.name.clone()),
+            state: self.region.clone(),
+            country: Some(self.country.clone()),
+            country_code: Some(self.code.clone()),
+            location: None,
+        }
+    }
+
+    /// `Beijing, Beijing, China`.
+    pub fn tells(&self) -> String {
+        [Some(&self.name), self.region.as_ref(), Some(&self.country)]
+            .into_iter()
+            .flatten()
+            .map(String::as_str)
+            .collect::<Vec<&str>>()
+            .join(", ")
+    }
+
+    fn written(&self) -> Value {
+        let mut fields = Map::new();
+        fields.insert("id".to_string(), Value::from(self.id));
+        fields.insert("name".to_string(), Value::from(self.name.as_str()));
+        if let Some(region) = &self.region {
+            fields.insert("region".to_string(), Value::from(region.as_str()));
+        }
+        fields.insert("country".to_string(), Value::from(self.country.as_str()));
+        fields.insert("code".to_string(), Value::from(self.code.as_str()));
+        fields.insert("lat".to_string(), Value::from(self.lat));
+        fields.insert("lon".to_string(), Value::from(self.lon));
+        Value::Object(fields)
+    }
+
+    fn read(value: &Value) -> Result<Located, String> {
+        let text = |name: &str| value.get(name).and_then(Value::as_str).map(String::from);
+        let number = |name: &str| value.get(name).and_then(Value::as_f64);
+        let wrong = || format!("{value} is not a place");
+        let located = Located {
+            id: value.get("id").and_then(Value::as_i64).ok_or_else(wrong)?,
+            name: text("name").ok_or_else(wrong)?,
+            region: text("region"),
+            country: text("country").ok_or_else(wrong)?,
+            code: text("code").ok_or_else(wrong)?,
+            lat: number("lat").ok_or_else(wrong)?,
+            lon: number("lon").ok_or_else(wrong)?,
+        };
+        if !(-90.0..=90.0).contains(&located.lat) || !(-180.0..=180.0).contains(&located.lon) {
+            return Err(format!("{} is not on earth", located.name));
+        }
+        Ok(located)
+    }
+}
+
+/// What a question was answered with.
+#[derive(Debug, Clone, PartialEq)]
+pub enum Answer {
+    Place(Located),
+    /// Its photos are not given a place by this tool.
+    Leave,
+}
+
+const LEAVE: &str = "leave";
+
+/// Every answer given so far, by question. Written as one JSON object, sorted by question, so
+/// the same answers are always the same text.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct Answers(pub BTreeMap<String, Answer>);
+
+impl Answers {
+    pub fn get(&self, key: &str) -> Option<&Answer> {
+        self.0.get(key)
+    }
+
+    /// `None` forgets the answer, so the question is asked again.
+    pub fn set(&mut self, key: &str, answer: Option<Answer>) {
+        match answer {
+            Some(answer) => self.0.insert(key.to_string(), answer),
+            None => self.0.remove(key),
+        };
+    }
+}
+
+impl Settings for Answers {
+    fn read(text: &str) -> Result<Answers, String> {
+        if text.trim().is_empty() {
+            return Ok(Answers::default());
+        }
+        let Ok(Value::Object(fields)) = serde_json::from_str::<Value>(text) else {
+            return Err(format!("{text} is not a list of answers"));
+        };
+        let mut answers = Answers::default();
+        for (key, value) in fields {
+            let answer = match value {
+                Value::String(word) if word == LEAVE => Answer::Leave,
+                Value::Object(_) => Answer::Place(Located::read(&value)?),
+                other => return Err(format!("{other} is not an answer to {key}")),
+            };
+            answers.0.insert(key, answer);
+        }
+        Ok(answers)
+    }
+
+    fn written(&self) -> String {
+        let fields: Map<String, Value> = self
+            .0
+            .iter()
+            .map(|(key, answer)| {
+                let value = match answer {
+                    Answer::Leave => Value::from(LEAVE),
+                    Answer::Place(place) => place.written(),
+                };
+                (key.clone(), value)
+            })
+            .collect();
+        Value::Object(fields).to_string()
+    }
+}
+
+/// A place the place data offers for a question, and how sure it is of it.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Offer {
+    pub place: Located,
+    pub confidence: f64,
+    /// A name of the place, spelled the same once folded.
+    pub exact: bool,
+}
+
+impl Offer {
+    pub fn of(candidate: &lookup::Candidate) -> Offer {
+        Offer {
+            place: Located::of(&candidate.place),
+            confidence: candidate.confidence,
+            exact: candidate.how == How::Exact,
+        }
+    }
+}
+
+/// Which place a group of photos means.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Question {
+    /// What the answer is kept under.
+    pub key: String,
+    pub title: String,
+    pub photos: usize,
+    /// Best first. Empty when there is no place data to ask.
+    pub offers: Vec<Offer>,
+    pub answer: Option<Answer>,
+    /// Listed apart and left alone until someone answers it by hand.
+    pub apart: bool,
+}
+
+impl Question {
+    pub fn waits(&self) -> bool {
+        self.answer.is_none()
+    }
+
+    /// The best offer, when it is sure enough to be confirmed in one click with the others.
+    pub fn exact(&self) -> Option<&Offer> {
+        self.offers
+            .first()
+            .filter(|offer| offer.exact && offer.confidence >= EXACT)
+    }
+}
+
 pub trait Tool: Sync {
     type Settings: Settings;
 
@@ -47,6 +257,31 @@ pub trait Tool: Sync {
 
     /// What each photo of the scope should say. Reads the cache, never a photo.
     fn wanted(&self, cache: &Cache, scope: &Scope, settings: &Self::Settings) -> cache::Result<Vec<Wanted>>;
+
+    /// The answers inside the settings, for a tool that asks. A tool that asks nothing has none.
+    fn answers<'a>(&self, _settings: &'a mut Self::Settings) -> Option<&'a mut Answers> {
+        None
+    }
+
+    /// What it asks about the scope, with the answers so far. Without place data the questions
+    /// come without offers.
+    fn questions(
+        &self,
+        _cache: &Cache,
+        _geo: Option<&Geo>,
+        _scope: &Scope,
+        _settings: &Self::Settings,
+    ) -> Result<Vec<Question>, String> {
+        Ok(Vec::new())
+    }
+
+    /// What its row says while questions wait for an answer.
+    fn waiting(&self, open: usize) -> String {
+        match open {
+            1 => "1 question waits for an answer".to_string(),
+            open => format!("{open} questions wait for an answer"),
+        }
+    }
 }
 
 /// A tool as the list holds it, its settings as text.
@@ -56,6 +291,25 @@ pub trait AnyTool: Sync {
     fn fixes(&self) -> &'static str;
     /// `None` is the tool's own defaults.
     fn change_set(&self, cache: &Cache, scope: &Scope, settings: Option<&str>) -> Result<ChangeSet, String>;
+    /// Whether it asks before it can change anything.
+    fn asks(&self) -> bool;
+    fn questions(
+        &self,
+        cache: &Cache,
+        geo: Option<&Geo>,
+        scope: &Scope,
+        settings: Option<&str>,
+    ) -> Result<Vec<Question>, String>;
+    /// The settings with one answer given, or forgotten with `None`, as text.
+    fn answer(&self, settings: Option<&str>, question: &str, answer: Option<Answer>) -> Result<String, String>;
+    fn waiting(&self, open: usize) -> String;
+}
+
+fn settings_of<S: Settings>(text: Option<&str>) -> Result<S, String> {
+    match text {
+        Some(text) => S::read(text),
+        None => Ok(S::default()),
+    }
 }
 
 impl<T: Tool> AnyTool for T {
@@ -72,10 +326,7 @@ impl<T: Tool> AnyTool for T {
     }
 
     fn change_set(&self, cache: &Cache, scope: &Scope, settings: Option<&str>) -> Result<ChangeSet, String> {
-        let settings = match settings {
-            Some(text) => T::Settings::read(text)?,
-            None => T::Settings::default(),
-        };
+        let settings = settings_of::<T::Settings>(settings)?;
         let wanted = self
             .wanted(cache, scope, &settings)
             .map_err(|error| error.to_string())?;
@@ -83,10 +334,36 @@ impl<T: Tool> AnyTool for T {
         set.tool = Some(Tool::key(self).to_string());
         Ok(set)
     }
+
+    fn asks(&self) -> bool {
+        Tool::answers(self, &mut T::Settings::default()).is_some()
+    }
+
+    fn questions(
+        &self,
+        cache: &Cache,
+        geo: Option<&Geo>,
+        scope: &Scope,
+        settings: Option<&str>,
+    ) -> Result<Vec<Question>, String> {
+        Tool::questions(self, cache, geo, scope, &settings_of::<T::Settings>(settings)?)
+    }
+
+    fn answer(&self, settings: Option<&str>, question: &str, answer: Option<Answer>) -> Result<String, String> {
+        let mut settings = settings_of::<T::Settings>(settings)?;
+        let answers = Tool::answers(self, &mut settings).ok_or_else(|| format!("{} asks nothing", self.title()))?;
+        answers.set(question, answer);
+        Ok(settings.written())
+    }
+
+    fn waiting(&self, open: usize) -> String {
+        Tool::waiting(self, open)
+    }
 }
 
 /// Every tool there is, in the order they are listed.
 pub const ALL: &[&dyn AnyTool] = &[
+    &gps_from_places::GpsFromPlacesTag,
     #[cfg(feature = "demo")]
     &demo::Rating,
 ];
@@ -95,10 +372,41 @@ pub fn find(key: &str) -> Option<&'static dyn AnyTool> {
     ALL.iter().copied().find(|tool| tool.key() == key)
 }
 
-/// How many photos of the scope the tool would change right now, with its own defaults: the
-/// same change set the preview shows, so the two numbers cannot differ.
-pub fn count(tool: &dyn AnyTool, cache: &Cache, scope: &Scope) -> Result<usize, String> {
-    Ok(tool.change_set(cache, scope, None)?.counts().change)
+/// How many photos of the scope the tool would change right now, with these settings or its
+/// own defaults: the same change set the preview shows, so the two numbers cannot differ.
+pub fn count(tool: &dyn AnyTool, cache: &Cache, scope: &Scope, settings: Option<&str>) -> Result<usize, String> {
+    Ok(tool.change_set(cache, scope, settings)?.counts().change)
+}
+
+/// How many of its questions about the scope wait for an answer. Asked without the place data,
+/// which only the offers need.
+pub fn waiting(tool: &dyn AnyTool, cache: &Cache, scope: &Scope, settings: Option<&str>) -> Result<usize, String> {
+    if !tool.asks() {
+        return Ok(0);
+    }
+    Ok(tool
+        .questions(cache, None, scope, settings)?
+        .iter()
+        .filter(|question| question.waits())
+        .count())
+}
+
+/// Confirm Exact Matches: every question still waiting whose best offer is an exact name the
+/// place data is sure of is answered with it. A question listed apart is never among them.
+pub fn confirm_exact(tool: &dyn AnyTool, questions: &[Question], settings: Option<&str>) -> Result<String, String> {
+    let mut text = settings.map(String::from);
+    for question in questions {
+        if question.apart || !question.waits() {
+            continue;
+        }
+        if let Some(offer) = question.exact() {
+            text = Some(tool.answer(text.as_deref(), &question.key, Some(Answer::Place(offer.place.clone())))?);
+        }
+    }
+    match text {
+        Some(text) => Ok(text),
+        None => tool.answer(None, "", None),
+    }
 }
 
 /// A rating over the whole scope, so that the way from a tool to a photo can be driven before
@@ -180,8 +488,11 @@ mod tests {
         assert_eq!(set.tool.as_deref(), Some("demo-rating"));
 
         let whole = Scope::Filter(Filter::all());
-        assert_eq!(count(demo, &cache, &whole).unwrap(), crate::fixtures::photo_count());
-        assert!(count(demo, &cache, &scope).unwrap() < crate::fixtures::photo_count());
+        assert_eq!(
+            count(demo, &cache, &whole, None).unwrap(),
+            crate::fixtures::photo_count()
+        );
+        assert!(count(demo, &cache, &scope, None).unwrap() < crate::fixtures::photo_count());
         assert!(demo.change_set(&cache, &scope, Some("nine")).is_err());
     }
 
