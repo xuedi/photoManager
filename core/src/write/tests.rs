@@ -586,6 +586,29 @@ fn the_same_change_twice_touches_the_file_once() {
 }
 
 #[test]
+fn a_date_without_an_offset_is_written_without_a_zone_made_up() {
+    let mut setup = Setup::new("no-offset");
+    let change = Change::of([Field::Taken(Some(Taken {
+        at: "2019-07-13 21:00:00".to_string(),
+        offset: None,
+    }))]);
+    assert_eq!(setup.write(BARE, change), Outcome::Written);
+
+    let fields = setup.look(BARE);
+    assert_eq!(
+        fields.get("ExifIFD:DateTimeOriginal"),
+        Some(&Value::from("2019:07:13 21:00:00"))
+    );
+    assert_eq!(fields.get("ExifIFD:OffsetTimeOriginal"), None);
+    assert_eq!(fields.get("IPTC:DateCreated"), Some(&Value::from("2019:07:13")));
+    assert_eq!(
+        fields.get("IPTC:TimeCreated"),
+        None,
+        "IPTC's time needs a zone, and this photo has none to give"
+    );
+}
+
+#[test]
 fn a_position_a_date_and_a_region_each_round_trip() {
     let mut setup = Setup::new("round-trip");
     let change = Change::of([

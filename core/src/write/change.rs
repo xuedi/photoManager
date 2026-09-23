@@ -392,11 +392,16 @@ fn taken_assigns(taken: Option<&Taken>) -> Result<Vec<Assign>, String> {
             "IPTC:DateCreated",
             Value::from(date.replace('-', ":")),
         ),
-        set(
-            "IPTC:TimeCreated",
-            "IPTC:TimeCreated",
-            Value::from(format!("{time}{suffix}")),
-        ),
+        // IPTC's time always carries a zone, and ExifTool fills in the computer's own when it is
+        // given none: without an offset the field is left out rather than made up.
+        match &offset {
+            Some(offset) => set(
+                "IPTC:TimeCreated",
+                "IPTC:TimeCreated",
+                Value::from(format!("{time}{offset}")),
+            ),
+            None => gone("IPTC:TimeCreated", "IPTC:TimeCreated"),
+        },
     ]);
     Ok(assigns)
 }
