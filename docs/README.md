@@ -9,3 +9,4 @@ How the parts of photoManager work. One file per subsystem, added when the subsy
 | [thumbnails.md](thumbnails.md) | the small pictures a grid draws, keyed by the image rather than the path |
 | [places.md](places.md) | turning place names into coordinates and back, without the network |
 | [writing.md](writing.md) | the only part that changes a photo: how one write works, what is proved, how it is taken back |
+| [preview.md](preview.md) | what a tool would change, on screen: the change set, the estimate, the confirmation, the undo |

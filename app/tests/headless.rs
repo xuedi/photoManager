@@ -157,7 +157,13 @@ fn previews_applies_and_takes_it_back(ui: &Ui, library: &Path) {
     assert_eq!(state(ui, library)["page"], "preview");
     assert_eq!(rating_of(&first), None, "nothing has been written yet");
 
-    // The first write of all is gated on the user saying their photos are backed up.
+    // The first write of all is gated on the user saying their photos are backed up, and saying
+    // no to that leaves every photo exactly as it was.
+    ui.run(&["click", "Apply", "--role", "button"], library);
+    ui.run(&["click", "Cancel", "--role", "button"], library);
+    assert!(state(ui, library)["applied"].is_null(), "declining wrote something");
+    assert_eq!(rating_of(&first), None, "declining changed a photo");
+
     ui.run(&["click", "Apply", "--role", "button"], library);
     ui.run(&["click", "My Photos Are Backed Up", "--role", "button"], library);
     let applied = written(ui, library, "write", 0);

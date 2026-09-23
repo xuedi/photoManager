@@ -17,6 +17,10 @@ It lives in `$XDG_CACHE_HOME/org.beijingcode.PhotoManager/cache.db` (SQLite, wri
 
 The raw JSON is there so a field we have not modelled yet is not lost between scans.
 
+Because it holds what every photo says, the cache is also what answers "what would this change do
+to these photos" without opening a single file, which is what a [preview](preview.md) is built
+from.
+
 ## Two ids
 
 A photo is found by its **path**, which is what the filesystem hands out cheaply. It is

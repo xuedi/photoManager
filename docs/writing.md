@@ -5,7 +5,9 @@ an intent - these tags, this position, this date, this rating, these faces - and
 file on disk that carries exactly that and nothing else changed. Every change is written down
 before it happens, proved afterwards, and can be taken back.
 
-Nothing writes on its own. A write happens because someone confirmed a preview.
+Nothing writes on its own. A write happens because someone confirmed a preview: a tool produces a
+change set, the window shows it, and only the rows the user kept are handed to the engine. That is
+the only way from the window to a photo - [preview.md](preview.md).
 
 ## One write
 
@@ -44,6 +46,11 @@ Every photo ends as one of four things, and only the first one touched the file:
 | failed | we tried, it did not work out, and the photo is exactly as it was |
 
 A refusal or a failure on one photo never stops the rest of a pass.
+
+The same intent can be asked about without doing any of it: a **dry run** goes down this path as
+far as the journal and then stops, and answers with every tag the write would set and the value
+that tag has now. It is what the preview shows when one photo is asked about in detail, so the
+exact detail a person checks is never a guess about what the write would do.
 
 ## What is proved
 
