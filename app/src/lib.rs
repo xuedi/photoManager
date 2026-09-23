@@ -5,6 +5,7 @@ pub mod dashboard;
 pub mod devtools;
 pub mod edit;
 pub mod gallery;
+pub mod history;
 pub mod library;
 pub mod panel;
 pub mod photo;

@@ -206,6 +206,10 @@ impl Preview {
         self.show_summary();
     }
 
+    pub fn title(&self) -> Option<String> {
+        self.imp().set.borrow().as_ref().map(|set| set.title.clone())
+    }
+
     pub fn counts(&self) -> Option<Counts> {
         self.imp().set.borrow().as_ref().map(ChangeSet::counts)
     }

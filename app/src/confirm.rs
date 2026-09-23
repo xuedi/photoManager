@@ -7,6 +7,7 @@ use std::rc::Rc;
 use adw::prelude::*;
 use gtk::glib;
 
+use photomanager_core::history;
 use photomanager_core::journal::Pass;
 use photomanager_core::settings;
 
@@ -95,6 +96,44 @@ pub fn before_undo(parent: &impl IsA<gtk::Widget>, pass: &Pass, undo: impl Fn() 
         }
     });
     dialog.present(Some(parent));
+}
+
+/// Asks before any pass from the history is taken back, and says up front how many of its
+/// photos were changed again since and so will be left as they are.
+pub fn before_take_back(parent: &impl IsA<gtk::Widget>, pass: &history::Pass, undo: impl Fn() + 'static) {
+    let mut body = format!(
+        "\u{201c}{}\u{201d} changed {} on {}. Each gets back what it said before.",
+        pass.title,
+        photos(pass.written),
+        pass.started_at
+    );
+    if pass.changed_since > 0 {
+        let (was, left) = match pass.changed_since {
+            1 => ("was", "It is left as it is"),
+            _ => ("were", "They are left as they are"),
+        };
+        body.push_str(&format!(
+            "\n\n{} of these {} {was} changed again since. {left}.",
+            pass.changed_since,
+            photos(pass.written)
+        ));
+    }
+    let dialog = adw::AlertDialog::new(Some("Take This Change Back?"), Some(&body));
+    dialog.add_responses(&[("cancel", "Cancel"), ("undo", "Take It Back")]);
+    dialog.set_default_response(Some("cancel"));
+    dialog.connect_response(None, move |_: &adw::AlertDialog, response: &str| {
+        if response == "undo" {
+            undo();
+        }
+    });
+    dialog.present(Some(parent));
+}
+
+fn photos(count: i64) -> String {
+    match count {
+        1 => "1 photo".to_string(),
+        count => format!("{count} photos"),
+    }
 }
 
 /// What can be said about a named backup location, and what cannot.

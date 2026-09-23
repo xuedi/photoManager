@@ -7,7 +7,8 @@
 
 use rusqlite::params;
 
-use crate::journal::{self, Journal, Kind, Recorded, Result, WRITTEN};
+use crate::journal::{self, Journal, Kind, Recorded, Result, Swap, WRITTEN};
+use crate::write::change::shown;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Pass {
@@ -50,6 +51,29 @@ pub fn pass(journal: &Journal, batch: i64) -> Result<Pass> {
 /// Every photo of one pass and what it got, in the order they were done.
 pub fn photos(journal: &Journal, batch: i64) -> Result<Vec<Recorded>> {
     journal.entries(batch)
+}
+
+/// What one photo of a pass got, the way a person reads it: every tag with its two sides, or why
+/// it was left alone.
+pub fn told(photo: &Recorded) -> String {
+    match photo.outcome.as_deref() {
+        Some(WRITTEN) => photo.swaps.iter().map(swapped).collect::<Vec<String>>().join("; "),
+        Some(outcome) => match &photo.detail {
+            Some(detail) => format!("{outcome}: {detail}"),
+            None => outcome.to_string(),
+        },
+        None => "never finished: the pass was interrupted".to_string(),
+    }
+}
+
+fn swapped(swap: &Swap) -> String {
+    let value = |text: Option<&str>| text.and_then(|text| serde_json::from_str(text).ok());
+    format!(
+        "{}: {} -> {}",
+        swap.tag,
+        shown(value(swap.old.as_deref()).as_ref()),
+        shown(value(swap.new.as_deref()).as_ref())
+    )
 }
 
 fn read(journal: &Journal, pass: journal::Pass) -> Result<Pass> {

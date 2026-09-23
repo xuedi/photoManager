@@ -597,6 +597,7 @@ fn an_older_pass_is_taken_back_and_leaves_a_photo_changed_since_alone() {
     let photos = crate::history::photos(&setup.journal, first).unwrap();
     assert_eq!(photos.len(), 3);
     assert!(photos.iter().all(|photo| photo.outcome.as_deref() == Some("written")));
+    assert_eq!(crate::history::told(&photos[0]), "XMP-xmp:Rating: none -> 3");
     assert_eq!(
         crate::history::photos(&setup.journal, undo.id).unwrap().len(),
         2,

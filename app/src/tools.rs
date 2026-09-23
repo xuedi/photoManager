@@ -15,6 +15,7 @@ use photomanager_core::filter::Filter;
 use photomanager_core::scope::Scope;
 use photomanager_core::tools;
 
+use crate::history::History;
 use crate::library::{Counted, Event, Library};
 use crate::preview::Preview;
 
@@ -43,6 +44,8 @@ mod imp {
         pub empty: TemplateChild<adw::StatusPage>,
         #[template_child]
         pub preview: TemplateChild<Preview>,
+        #[template_child]
+        pub history: TemplateChild<History>,
         pub library: RefCell<Option<Rc<Library>>>,
         /// What the tools work on. The whole library until something else is chosen.
         pub scope: RefCell<Option<Scope>>,
@@ -63,6 +66,7 @@ mod imp {
 
         fn class_init(klass: &mut Self::Class) {
             Preview::ensure_type();
+            History::ensure_type();
             klass.bind_template();
         }
 
@@ -104,6 +108,7 @@ impl Default for Tools {
 impl Tools {
     pub fn set_library(&self, library: Option<Rc<Library>>) {
         self.imp().preview.set_library(library.clone());
+        self.imp().history.set_library(library.clone());
         if let Some(library) = &library {
             let tools = self.downgrade();
             library.connect_changed(move || {
@@ -207,6 +212,48 @@ impl Tools {
         let nav = &self.imp().nav;
         if nav.visible_page_tag().as_deref() != Some("preview") {
             nav.push_by_tag("preview");
+        }
+    }
+
+    pub fn history(&self) -> History {
+        self.imp().history.clone()
+    }
+
+    pub fn show_history(&self) {
+        self.imp().history.refresh();
+        let nav = &self.imp().nav;
+        match self.showing().as_str() {
+            "history" => {}
+            "pass" => {
+                nav.pop_to_tag("history");
+            }
+            _ => {
+                nav.pop_to_tag("tools");
+                nav.push_by_tag("history");
+            }
+        }
+    }
+
+    /// Opens one pass of the history on a page of its own.
+    pub fn show_pass(&self, batch: i64) {
+        let Some(page) = self.imp().history.details(batch) else {
+            tracing::warn!(batch, "no such pass");
+            return;
+        };
+        if self.showing() != "history" {
+            self.show_history();
+        }
+        self.imp().nav.push(&page);
+    }
+
+    pub fn take_back(&self, batch: i64) {
+        self.imp().history.take_back(batch);
+    }
+
+    /// Leaves a pass's page for the list, where what a take-back came to is shown.
+    pub fn back_to_history(&self) {
+        if self.showing() == "pass" {
+            self.imp().nav.pop_to_tag("history");
         }
     }
 

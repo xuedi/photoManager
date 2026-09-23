@@ -256,6 +256,25 @@ impl Window {
                 }
             })
             .build();
+        let show_history = gtk::gio::ActionEntry::builder("show-history")
+            .activate(|window: &Window, _, _| window.imp().tools.show_history())
+            .build();
+        let history_details = gtk::gio::ActionEntry::builder("history-details")
+            .parameter_type(Some(glib::VariantTy::INT64))
+            .activate(|window: &Window, _, parameter| {
+                if let Some(batch) = parameter.and_then(|value| value.get::<i64>()) {
+                    window.imp().tools.show_pass(batch);
+                }
+            })
+            .build();
+        let undo_pass = gtk::gio::ActionEntry::builder("undo-pass")
+            .parameter_type(Some(glib::VariantTy::INT64))
+            .activate(|window: &Window, _, parameter| {
+                if let Some(batch) = parameter.and_then(|value| value.get::<i64>()) {
+                    window.imp().tools.take_back(batch);
+                }
+            })
+            .build();
         let scan = gtk::gio::ActionEntry::builder("scan")
             .activate(|window: &Window, _, _| window.imp().dashboard.scan(Mode::Reconcile))
             .build();
@@ -345,6 +364,9 @@ impl Window {
             use_as_scope,
             tools_scope,
             run_tool,
+            show_history,
+            history_details,
+            undo_pass,
             scan,
             fill,
             places,

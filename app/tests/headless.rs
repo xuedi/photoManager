@@ -150,6 +150,7 @@ fn the_app_can_be_clicked_through_headless() {
     previews_applies_and_takes_it_back(&ui, lib);
     edits_one_photo_and_takes_it_back(&ui, lib);
     a_scope_is_what_the_demo_works_on(&ui, lib);
+    takes_back_an_older_pass(&ui, lib);
 
     ui.run(&["act", "win.show-view", "'suggestions'"], lib);
     let state = state(&ui, lib);
@@ -378,6 +379,80 @@ fn a_scope_is_what_the_demo_works_on(ui: &Ui, library: &Path) {
         std::thread::sleep(std::time::Duration::from_millis(500));
     }
     panic!("the demo never previewed the scope");
+}
+
+/// Two passes that overlap, and the older one taken back from the history: the photos only it
+/// touched get back what they said, the ones the newer pass changed again keep the newer value,
+/// and the history says so.
+fn takes_back_an_older_pass(ui: &Ui, library: &Path) {
+    const COUNTRY: &str = "China";
+    const EVENT: &str = "China/2006-09-00 Besuch Ben";
+    let apply = |scope: &str, photos: u64, tool: &str, title: &str| {
+        let before = state(ui, library)["applied"]["batch"].as_i64().unwrap_or(0);
+        ui.run(&["act", "win.tools-scope", &format!("'{scope}'")], library);
+        counted(ui, library, photos);
+        ui.run(&["act", "win.run-tool", &format!("'{tool}'")], library);
+        let mut previewed = Value::Null;
+        for _ in 0..60 {
+            previewed = state(ui, library)["preview"].clone();
+            if previewed["title"] == title {
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(500));
+        }
+        assert_eq!(previewed["change"].as_u64(), Some(photos), "{previewed}");
+        ui.run(&["click", "Apply", "--role", "button"], library);
+        written(ui, library, "write", before)["batch"].as_i64().unwrap()
+    };
+    ui.run(&["act", "win.show-view", "'tools'"], library);
+    let first = apply(COUNTRY, 4, "demo-rating", "Set a rating of 3");
+    let second = apply(EVENT, 2, "demo-rating:4", "Set a rating of 4");
+
+    ui.run(&["act", "win.show-history"], library);
+    let history = state(ui, library)["history"].clone();
+    assert_eq!(history["passes"][0]["batch"].as_i64(), Some(second), "newest first");
+    assert_eq!(history["passes"][1]["batch"].as_i64(), Some(first));
+    assert_eq!(history["passes"][1]["title"], "Set a rating of 3");
+    assert_eq!(history["passes"][1]["changed_since"].as_u64(), Some(2));
+
+    ui.run(&["act", "win.undo-pass", &format!("int64 {first}")], library);
+    ui.run(&["click", "Take It Back", "--role", "button"], library);
+    let mut taken = Value::Null;
+    for _ in 0..120 {
+        let now = state(ui, library);
+        if now["history"]["taken"].is_object() && now["writing"] == false && now["scanning"] == false {
+            taken = now["history"].clone();
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(500));
+    }
+    assert_eq!(taken["taken"]["written"].as_u64(), Some(2), "{taken}");
+    assert_eq!(
+        taken["taken"]["refused"].as_u64(),
+        Some(2),
+        "the newer ones were left alone"
+    );
+    assert!(
+        taken["toast"].as_str().unwrap().contains("2 left as they are"),
+        "{taken}"
+    );
+
+    for (photo, rating) in [
+        ("China/2008-01-00 Holiday SOUTHTOUR/IMG_0001.JPG", None),
+        ("China/IMG_3140.JPG", None),
+        ("China/2006-09-00 Besuch Ben/P1000001.JPG", Some(4)),
+        ("China/2006-09-00 Besuch Ben/2006-08-21/P1000002.JPG", Some(4)),
+    ] {
+        assert_eq!(rating_of(&library.join(photo)), rating, "{photo}");
+    }
+
+    let passes = state(ui, library)["history"]["passes"].clone();
+    assert_eq!(passes[0]["kind"], "undo");
+    assert_eq!(passes[0]["title"], "Take back: Set a rating of 3");
+    assert_eq!(passes[2]["batch"].as_i64(), Some(first));
+    assert!(passes[2]["undone_by"].is_i64(), "the first pass shows as taken back");
+    assert_eq!(passes[2]["can_take_back"], false, "and offers nothing more");
+    assert_eq!(passes[1]["can_take_back"], true);
 }
 
 /// A photo opens from the gallery and the arrow keys walk the grid's list, in its order.

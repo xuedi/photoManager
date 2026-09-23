@@ -63,6 +63,7 @@ fn state(window: &Window, paths: &Paths, library: Option<&Library>) -> String {
     let preview = window.preview();
     let previewed = preview.counts().map(|counts| {
         serde_json::json!({
+            "title": preview.title(),
             "photos": counts.photos,
             "change": counts.change,
             "nothing": counts.nothing,
@@ -184,8 +185,38 @@ fn state(window: &Window, paths: &Paths, library: Option<&Library>) -> String {
             .collect();
         serde_json::json!({ "photos": counted.photos, "counts": tools })
     });
+    let history = window.tools().history();
+    let passes: Vec<serde_json::Value> = history
+        .passes()
+        .iter()
+        .map(|pass| {
+            serde_json::json!({
+                "batch": pass.id,
+                "kind": pass.kind.as_str(),
+                "title": pass.title,
+                "tool": pass.tool,
+                "written": pass.written,
+                "undoes": pass.undoes,
+                "undone_by": pass.undone_by,
+                "can_take_back": pass.can_take_back(),
+                "changed_since": pass.changed_since,
+            })
+        })
+        .collect();
+    let history = serde_json::json!({
+        "passes": passes,
+        "detail": history.detail().map(|(batch, photos)| serde_json::json!({ "batch": batch, "photos": photos })),
+        "taken": history.taken().map(|summary| serde_json::json!({
+            "batch": summary.batch,
+            "written": summary.written,
+            "refused": summary.refused,
+            "failed": summary.failed,
+        })),
+        "toast": history.toast(),
+    });
     serde_json::json!({
         "survey": survey,
+        "history": history,
         "field": dashboard.field().key(),
         "listed": dashboard.listed_places(),
         "gallery": gallery,

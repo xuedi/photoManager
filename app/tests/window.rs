@@ -157,6 +157,7 @@ fn scans_into_its_cache() {
 
     previews_what_a_tool_would_change(&window, &opened);
     lists_the_tools_for_a_scope(&window, &opened, &library);
+    reads_the_history(&window, &opened);
 }
 
 /// The preview knows only a change set: it counts it, it lets rows be dropped from it, and it
@@ -282,6 +283,56 @@ fn lists_the_tools_for_a_scope(window: &Window, opened: &Rc<Library>, library: &
         "the scan finished",
     );
     assert_eq!(demo(), (3, 2), "the count after a scan is fresh");
+    window.show_view("dashboard");
+}
+
+/// The history lists every pass newest first, by the name of what ran it, and a pass opens to
+/// its photos. The passes are written into the journal by hand: no photo is touched here.
+fn reads_the_history(window: &Window, opened: &Rc<Library>) {
+    use photomanager_core::journal::{Entry, Journal, Kind, Swap, WRITTEN};
+    let mut journal = Journal::open(&opened.paths().app_db()).unwrap();
+    let mut pass = |title: &str, paths: &[&str]| {
+        let batch = journal.start(Kind::Write, None, title, Some("demo-rating")).unwrap();
+        for path in paths {
+            let entry = Entry {
+                rel_path: path.to_string(),
+                content_id: "0123456789abcdef0123456789abcdef".to_string(),
+                before: "{}".to_string(),
+                image_hash: None,
+                swaps: vec![Swap {
+                    tag: "XMP-xmp:Rating".to_string(),
+                    key: "XMP-xmp:Rating".to_string(),
+                    old: None,
+                    new: Some("3".to_string()),
+                }],
+            };
+            let id = journal.record(batch, &entry).unwrap();
+            journal.settle(id, WRITTEN, None).unwrap();
+        }
+        journal.finish(batch).unwrap();
+        batch
+    };
+    let first = pass("First pass", &["a.jpg", "b.jpg"]);
+    let second = pass("Second pass", &["b.jpg"]);
+
+    window.show_view("tools");
+    WidgetExt::activate_action(window, "win.show-history", None).unwrap();
+    let tools = window.tools();
+    assert_eq!(tools.showing(), "history");
+    let passes = tools.history().passes();
+    let titles: Vec<&str> = passes.iter().take(2).map(|pass| pass.title.as_str()).collect();
+    assert_eq!(titles, ["Second pass", "First pass"], "newest first");
+    assert_eq!(passes[0].id, second);
+    assert_eq!(passes[1].changed_since, 1, "b.jpg was written again by the second pass");
+    assert!(labels(tools.upcast_ref()).iter().any(|label| label == "First pass"));
+
+    WidgetExt::activate_action(window, "win.history-details", Some(&first.to_variant())).unwrap();
+    assert_eq!(tools.showing(), "pass");
+    let (batch, photos) = tools.history().detail().expect("the pass was opened");
+    assert_eq!(batch, first);
+    assert_eq!(photos, ["XMP-xmp:Rating: none -> 3", "XMP-xmp:Rating: none -> 3"]);
+    WidgetExt::activate_action(window, "win.show-history", None).unwrap();
+    assert_eq!(tools.showing(), "history", "back from a pass to the list");
     window.show_view("dashboard");
 }
 

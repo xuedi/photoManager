@@ -15,7 +15,8 @@ use photomanager_core::geo::Geo;
 use photomanager_core::geo::import::Imported;
 use photomanager_core::geo::lookup::Candidate;
 use photomanager_core::geo::reverse::At;
-use photomanager_core::journal::{Journal, Kind, Pass};
+use photomanager_core::history;
+use photomanager_core::journal::{Journal, Kind, Pass, Recorded};
 use photomanager_core::metadata::Exiv2;
 use photomanager_core::paths::Paths;
 use photomanager_core::scan::{self, Mode, Progress, Summary, Thumbnails};
@@ -482,6 +483,24 @@ impl Library {
             .flatten()
     }
 
+    /// Passes from the journal, newest first. `None` while a pass is being written, which has the
+    /// journal out.
+    pub fn history(&self, skip: i64, limit: i64) -> Option<Vec<history::Pass>> {
+        let journal = self.journal.borrow();
+        history::passes(journal.as_ref()?, skip, limit)
+            .map_err(|error| tracing::error!(%error, "the history could not be read"))
+            .ok()
+    }
+
+    pub fn pass(&self, batch: i64) -> Option<(history::Pass, Vec<Recorded>)> {
+        let journal = self.journal.borrow();
+        let journal = journal.as_ref()?;
+        history::pass(journal, batch)
+            .and_then(|pass| Ok((pass, history::photos(journal, batch)?)))
+            .map_err(|error| tracing::error!(%error, batch, "the pass could not be read"))
+            .ok()
+    }
+
     /// An engine of its own, for the one photo a preview row is asked about.
     pub fn engine(&self) -> Result<Engine, String> {
         Engine::new(self.paths.library()).map_err(|error| error.to_string())
@@ -552,15 +571,20 @@ impl Library {
 
     /// Writes the selected rows, as one journal batch.
     pub fn apply<F: Fn(Event) + 'static>(self: &Rc<Self>, set: &ChangeSet, report: F) {
-        self.write(Kind::Write, Some(set.clone()), report);
+        self.write(Job::Apply(set.clone()), report);
     }
 
     /// Puts the last applied change set back.
     pub fn undo_last<F: Fn(Event) + 'static>(self: &Rc<Self>, report: F) {
-        self.write(Kind::Undo, None, report);
+        self.write(Job::UndoLast, report);
     }
 
-    fn write<F: Fn(Event) + 'static>(self: &Rc<Self>, kind: Kind, set: Option<ChangeSet>, report: F) {
+    /// Puts any pass back that can still be taken back.
+    pub fn take_back<F: Fn(Event) + 'static>(self: &Rc<Self>, batch: i64, report: F) {
+        self.write(Job::TakeBack(batch), report);
+    }
+
+    fn write<F: Fn(Event) + 'static>(self: &Rc<Self>, job: Job, report: F) {
         if self.is_busy() {
             return;
         }
@@ -588,11 +612,18 @@ impl Library {
                 let _ = progress.send_blocking(Message::Done(done, total));
             };
             let outcome = match Engine::new(&library) {
-                Ok(mut engine) => match &set {
-                    Some(set) => changeset::apply(set, &mut engine, &mut journal, &mut cache, &told, &cancel),
-                    None => changeset::undo_last(&mut engine, &mut journal, &mut cache, &told, &cancel),
+                Ok(mut engine) => match &job {
+                    Job::Apply(set) => changeset::apply(set, &mut engine, &mut journal, &mut cache, &told, &cancel),
+                    Job::UndoLast => changeset::undo_last(&mut engine, &mut journal, &mut cache, &told, &cancel),
+                    Job::TakeBack(batch) => {
+                        changeset::take_back(&mut engine, &mut journal, &mut cache, *batch, &told, &cancel)
+                    }
                 },
                 Err(error) => Err(error),
+            };
+            let kind = match job {
+                Job::Apply(_) => Kind::Write,
+                Job::UndoLast | Job::TakeBack(_) => Kind::Undo,
             };
             let _ = sender.send_blocking(Message::Applied(
                 kind,
@@ -771,6 +802,13 @@ impl Library {
         self.scanning.set(false);
         self.moved_on();
     }
+}
+
+/// What a write pass is asked to do.
+enum Job {
+    Apply(ChangeSet),
+    UndoLast,
+    TakeBack(i64),
 }
 
 /// What the scanning thread sends back; the cache travels with the last message.
