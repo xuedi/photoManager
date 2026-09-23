@@ -184,7 +184,7 @@ impl Geo {
         };
         let prefix: String = phrase.chars().take(3).collect();
         let length = phrase.chars().count();
-        let rough = self.by_name(
+        let rough = self.unnamed(
             "SELECT p.id, p.name, p.country, p.area, p.feature, p.population, p.lat, p.lon, n.own, n.folded
              FROM name n JOIN place p ON p.id = n.place_id
              WHERE n.folded GLOB ?1 AND length(n.folded) BETWEEN ?2 AND ?3 LIMIT 500",
@@ -197,12 +197,26 @@ impl Geo {
             9,
         )?;
 
-        let mut found = Vec::new();
+        // One place comes back once per name that looked close; it is measured once, and only
+        // the ones within a typo are named, which is what costs.
+        let mut seen: std::collections::HashMap<i64, bool> = std::collections::HashMap::new();
+        let mut unique = Vec::new();
         for (place, how, own, _) in rough {
+            match seen.get_mut(&place.id) {
+                Some(any_own) => *any_own |= own,
+                None => {
+                    seen.insert(place.id, own);
+                    unique.push((place, how));
+                }
+            }
+        }
+        let mut found = Vec::new();
+        for (mut place, how) in unique {
             let spelling = self.spelling_of(place.id, phrase)?;
             let distance = spelling.map(|name| distance(phrase, &name)).unwrap_or(usize::MAX);
             if distance <= allowed {
-                found.push((place, how, own, distance));
+                self.name_the_place(&mut place)?;
+                found.push((place.clone(), how, seen[&place.id], distance));
             }
         }
         Ok(found)
@@ -255,6 +269,21 @@ impl Geo {
         how: How,
         distance: usize,
     ) -> Result<Vec<(Place, How, bool, usize)>> {
+        let mut found = self.unnamed(sql, parameters, how, distance)?;
+        for (place, ..) in &mut found {
+            self.name_the_place(place)?;
+        }
+        Ok(found)
+    }
+
+    /// The places as their rows have them, with codes where a person reads names.
+    fn unnamed(
+        &self,
+        sql: &str,
+        parameters: impl rusqlite::Params,
+        how: How,
+        distance: usize,
+    ) -> Result<Vec<(Place, How, bool, usize)>> {
         let mut statement = self.connection.prepare_cached(sql)?;
         let rows = statement.query_map(parameters, |row| {
             Ok((
@@ -274,11 +303,7 @@ impl Geo {
                 distance,
             ))
         })?;
-        let mut found: Vec<(Place, How, bool, usize)> = rows.collect::<rusqlite::Result<_>>()?;
-        for (place, ..) in &mut found {
-            self.name_the_place(place)?;
-        }
-        Ok(found)
+        Ok(rows.collect::<rusqlite::Result<_>>()?)
     }
 
     /// The codes a row carries are not what a person reads.

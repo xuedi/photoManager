@@ -51,6 +51,7 @@ CREATE TABLE name (
     own      INTEGER NOT NULL
 );
 CREATE INDEX name_folded ON name (folded);
+CREATE INDEX name_place ON name (place_id);
 
 -- The search index keeps no copy of the names: it reads them back from `name`.
 CREATE VIRTUAL TABLE name_search USING fts5(
@@ -150,6 +151,9 @@ impl Geo {
             return Ok(None);
         }
         connection.query_row("SELECT count(*) FROM place", [], |row| row.get::<_, i64>(0))?;
+        // Place data imported before the index existed gains it here, in a moment, instead of
+        // being thrown away: a typo search measures every name of a place by it.
+        connection.execute_batch("CREATE INDEX IF NOT EXISTS name_place ON name (place_id)")?;
         Ok(Some(Geo {
             connection,
             file: file.to_path_buf(),
@@ -324,6 +328,29 @@ mod tests {
 
         let geo = Geo::open(&file).unwrap();
         assert_eq!(geo.dump_date(), None, "a foreign schema is discarded");
+    }
+
+    #[test]
+    fn place_data_from_before_the_place_index_gains_it_on_open() {
+        let file = temp("index");
+        let geo = Geo::open(&file).unwrap();
+        geo.connection.execute_batch("DROP INDEX name_place").unwrap();
+        geo.connection
+            .execute("INSERT INTO meta (key, value) VALUES ('kept', 'yes')", [])
+            .unwrap();
+        drop(geo);
+
+        let geo = Geo::open(&file).unwrap();
+        let indexed: i64 = geo
+            .connection
+            .query_row(
+                "SELECT count(*) FROM sqlite_master WHERE type = 'index' AND name = 'name_place'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(indexed, 1);
+        assert_eq!(geo.meta("kept").as_deref(), Some("yes"), "nothing was thrown away");
     }
 
     #[test]
