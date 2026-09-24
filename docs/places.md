@@ -24,7 +24,9 @@ Nothing is downloaded on its own. **Get Place Data** on the dashboard fetches fo
 
 That is about 12 MB over the wire and about 93 MB on disk: 171,000 places, 920,000 names and
 37,000 outline rings. The import takes a couple of seconds and replaces whatever was there
-before; the date of the dumps is kept and shown next to the count.
+before; the date of the dumps is kept and shown next to the count. The dumps stay in the cache
+directory, so place data a new version of the application throws away is imported again from
+them, without the network.
 
 `PHOTOMANAGER_GEONAMES` points at a directory that already holds the dumps, and then nothing is
 downloaded at all. That is how the tests run offline, against a checked-in excerpt of a few
@@ -35,7 +37,7 @@ hundred rows.
 | Table | Holds |
 |-------|-------|
 | `country`, `area` | countries and their first-level regions |
-| `place` | one row per populated place: where it is, how big it is, what kind it is |
+| `place` | one row per populated place: where it is, how big it is, what kind it is, its time zone |
 | `name` | every spelling of every place, folded to one comparable form, indexed by the spelling and by the place |
 | `name_search` | the same names in a full-text index |
 | `place_at` | the coordinates of every place, in an R\*Tree |
@@ -104,3 +106,19 @@ The outlines are the simplified ones, which is worth knowing: within a couple of
 border they are approximate, and around Basel they put a German town in Switzerland. In the
 middle of a country they are right. A tool that asks for the country near a border should ask
 the person too.
+
+## Time zones
+
+Every place in `cities1000` carries its IANA time zone, `Europe/Berlin` or `Asia/Shanghai`, and
+the import keeps it. That is all the place data knows about time; what a zone's offset was on a
+given day comes from the IANA rules the system ships (`/usr/share/zoneinfo`, which a Flatpak has
+too), through `jiff`, never from a table of our own.
+
+- **A point** is in the zone of the nearest place, found through the same R\*Tree, widened in
+  steps.
+- **A country** is in the zone most of its places are in. A country where another zone holds a
+  tenth of its places or more - the United States, Russia, Australia - has **several**, and a
+  photo there without a position cannot be given one: the tool that needs a zone asks.
+
+How a date tool uses a zone is in [tools.md](tools.md#the-offset-of-a-date).
+

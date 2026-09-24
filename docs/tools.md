@@ -7,8 +7,8 @@ each would change right now, and every pass that was ever written, any of which 
 ## What a tool is
 
 A tool is a type in `core` with a key, a title, one line on what it fixes, and one question to
-answer: given the cache, a scope and its settings, what should each photo say? The answer is a list
-of wanted changes, and that is all a tool ever produces. Turning it into a
+answer: given the cache, the place data, a scope and its settings, what should each photo say? The
+answer is a list of wanted changes, and that is all a tool ever produces. Turning it into a
 [change set](preview.md), counting it, showing it, applying it, writing it down and taking it back
 are shared, so a tool never writes and never draws anything itself. What it may do is ask, in
 one shape `core` defines: see [Questions and answers](#questions-and-answers).
@@ -64,13 +64,28 @@ the list. A tool that asks shows its questions first, and its row says what wait
 ## Questions and answers
 
 Some things a tool cannot decide from the cache: which place a tag like `places/inGreece/Atens`
-means is the person's answer, not a guess. So a tool may hand over **questions**, each about a
-group of photos: a key, a title, how many photos wait on it, what the place data offers for it
-best first with a confidence, and the answer so far, and sometimes a note on the offers. The
-window draws them on one page without knowing which tool asked or what the groups are; the words
+means, or whether a camera's clock was off, is the person's answer, not a guess. So a tool may hand
+over **questions**, each about a group of photos: a key, a title, what kind of answer it wants, how
+many photos wait on it, what is offered for it best first, and the answer so far, and sometimes a
+note or the evidence it is decided on. Every offer carries the answer it would give and the words
+for it, so **Confirm** puts in whatever the best offer is: a place, a shift, a date. The window
+draws the questions on one page without knowing which tool asked or what the groups are; the words
 on it - what a question is called, the heading, the bulk button - are the tool's.
 
-A question is answered with a place, a **pin** or **Leave Alone**. A pin is a point the person
+The kind of a question decides what its row offers beside Confirm, Leave Alone and Ask Again:
+
+| Kind | Answered with | The row's menu adds |
+|------|---------------|---------------------|
+| a place | a place or a pin | Choose Another, Pick on Map |
+| a camera's clock | a shift per camera | the other offers, Enter a Shift |
+| a date | a date, or between the neighbours | the other offers, Enter a Date |
+| a time zone | one of the country's zones | the other offers |
+
+**Enter a Shift** shows the event's cameras, each with its evidence and an entry, and a camera
+left empty is right: `-640d`, `+1y 2d 03:00`. **Enter a Date** takes the one date format. What is
+typed is checked before it is kept, and the dialog says what is wrong with it.
+
+A place question is answered with a place, a **pin** or **Leave Alone**. A pin is a point the person
 chose on a map, **Pick on Map** in each row's menu: OpenStreetMap tiles, fetched only while the
 dialog is open, a click drops the pin and names the town it is in underneath, and **Use This
 Point** answers with it. The pin keeps the point and that town, whose name gives the words. Two
@@ -80,9 +95,9 @@ to the metre.
 
 The answer carries the place itself -
 its GeoNames id, name, region, country, code and coordinates - so it does not depend on the place
-data it was chosen from, and building the change set afterwards needs the cache alone, like every
-other tool. The answers are the tool's settings: one JSON object, sorted by question, so the same
-answers are always the same text, and a suggestion can hand them over like any other settings.
+data it was chosen from, and placing its photos afterwards needs the cache alone. The answers are
+the tool's settings: one JSON object, sorted by question, so the same answers are always the same
+text, and a suggestion can hand them over like any other settings.
 
 ```mermaid
 flowchart TD
@@ -91,7 +106,7 @@ flowchart TD
     geo[(place data, read only)] --> offers[what the place data offers]
     offers --> ask
     ask --> page[the question page]
-    page -- Confirm, Choose Another, Pick on Map, Leave Alone --> answers[the tool's settings]
+    page -- Confirm, Choose Another, Pick on Map,<br/>Enter a Shift, Enter a Date, Leave Alone --> answers[the tool's settings]
     page -- the tool's bulk button --> answers
     answers --> kept[(app.db)]
     answers --> page
@@ -100,7 +115,7 @@ flowchart TD
 
 An offer may be **sure**. The page's bulk button - worded by the tool, Confirm Exact Matches or
 Confirm Where the Rest Is - answers, in one click, every waiting question whose best offer is
-sure, and nothing else. What counts as sure is the tool's: see each tool below. Everything else is
+sure, and nothing else. The date tools have none: no shift is sure. What counts as sure is the tool's: see each tool below. Everything else is
 one click per question, and the preview afterwards still lists every photo. An answer changes the page at once, without
 asking the library again; the row on the list is counted again behind it.
 
@@ -167,6 +182,94 @@ place, a pin or Leave Alone for an event that was nowhere in particular.
 - **What a photo gets** is what the places tag gives, with this tool's mark in the file: the
   position, `photoManager: event` and how far off it may be, and the words only where the photo
   has none. A pin is written at its point.
+
+## The offset of a date
+
+A date without an offset is a time on a clock nobody knows. Every date tool writes the offset
+along with the date, by one rule, so a photo is written once whichever of them reaches it first.
+
+Where a photo was is its position's nearest place, else the country its folder names
+([places.md](places.md#time-zones)). The offset is that zone's at the photo's local time, from the
+IANA rules, so a winter photo in Hamburg gets `+01:00` and a summer one `+02:00`, and Beijing is
+`+08:00` all year. A position wins over the folder: a photo in a German folder with a position in
+Copenhagen is in Copenhagen's zone. The hour summer time skips does not exist and the hour it
+repeats happens twice, so a local time in either is refused with that reason and left for the
+photo page, never guessed. So is a photo with no position and no country the place data knows, and
+every photo when there is no place data at all.
+
+```mermaid
+flowchart TD
+    photo[a photo with a date] --> pos{position?}
+    pos -- yes --> nearest[nearest place's zone]
+    pos -- no --> country[folder country's zone]
+    country -- several zones --> ask[asked per event]
+    nearest --> rules[IANA rules at the local time]
+    country --> rules
+    ask --> rules
+    rules --> offset[offset, or refused<br/>in the summer-time gap or overlap]
+    offset --> folder[Dates against the Folder:<br/>shifted date + offset]
+    offset --> undated[Photos without a Date:<br/>new date + offset]
+    offset --> zones[Time Zones and XMP Dates:<br/>same date + offset]
+    folder --> write[one write per photo:<br/>EXIF, offsets, XMP and IPTC agree]
+    undated --> write
+    zones --> write
+```
+
+A photo that has an offset reads as settled to Time Zones and XMP Dates, so a photo the other two
+reached is not written again; the list puts them in the order that writes each photo once.
+
+## Dates against the folder
+
+For events whose photos disagree with the date the folder names. One question per event, and the
+evidence per camera: how many photos, the first and the last date, and how many days from the
+folder. A day either side of a folder's day agrees, as on the [dashboard](dashboard.md); a month or
+a year folder agrees with any day inside it.
+
+- **A camera is off** when not one of its photos agrees. A camera with some photos on the folder's
+  date and some around it was on a trip longer than the folder says, not wrong, and is offered no
+  shift. Photos without a camera name are one "no camera" group.
+- **Shift to agree with the others**, where another camera agrees with the folder: the difference
+  between the medians of their photos, to the minute.
+- **Shift onto the folder day**, where the folder names a whole day: whole days, so the first photo
+  lands on it and the time of day stays.
+- **The photos are right** is Leave Alone: it writes nothing and is remembered, and fixing the
+  folder name is another tool's. It comes first when no camera agrees with the folder.
+- **Enter a Shift** for anything else. A shift of more than a year says so on the row.
+
+A shift is per event and camera, never across events: a camera's clock drifts, and the same camera
+a year later may be right. It remembers the camera's first date when it was given, so once written
+it is never written again, and if the event still disagrees afterwards it is asked about afresh.
+The shifted date is written with the offset of where the photo was, or the one it states.
+
+## Photos without a date
+
+One question per event that holds photos without any date.
+
+- **Between its neighbours**: the dated photos of the same folder and the same camera before and
+  after it by file name. The photo gets the earlier one's time plus a second per step, so the
+  order stays. Offered only between two dated neighbours less than a day apart; a photo at the end
+  of its folder, or between two far apart, is refused and left.
+- **12:00:00 from the folder**, where the folder names a whole day. A month or a year is no date.
+- **Enter a Date** for the rest. A date given to an event goes to its first photo by file name and
+  a second more to each one after.
+
+What none of these reach stays for the photo page.
+
+## Time zones and XMP dates
+
+Every photo of the scope with a date and no offset gets the offset of where it was taken, and with
+it XMP and IPTC dates that agree with EXIF; the EXIF-shaped XMP dates old writers left, often in
+UTC as some other computer saw it, are taken away ([writing.md](writing.md#the-canonical-field-set)).
+A photo that states an offset keeps it, so a second run finds nothing to do.
+
+It asks nothing, except where a photo without a position is in a country of several zones: then
+one question per event, offered that country's zones. With nothing to ask, its page says so and
+Preview still opens.
+
+Over a whole library this is the largest pass there is: nearly every photo, each uploaded once
+more, and the preview says how much. Measured over a folder of real photos a write takes around
+40 ms, so thousands of photos take minutes; the scope can make it one country or one event at a
+time.
 
 ## The history
 

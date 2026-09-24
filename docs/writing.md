@@ -45,7 +45,10 @@ Every photo ends as one of four things, and only the first one touched the file:
 | refused | we would not try: not in the library, not a JPEG, image data moved under us, an intent that cannot be written |
 | failed | we tried, it did not work out, and the photo is exactly as it was |
 
-A refusal or a failure on one photo never stops the rest of a pass.
+A refusal or a failure on one photo never stops the rest of a pass. A failure says ExifTool's own
+reason, its error before any warning printed ahead of it. A file ExifTool will only write when told
+to ignore a minor error - camera MakerNotes whose offsets it doubts - fails with that reason and is
+never forced.
 
 The same intent can be asked about without doing any of it: a **dry run** goes down this path as
 far as the journal and then stops, and answers with every tag the write would set and the value
@@ -96,7 +99,7 @@ visited as few times as possible, and it is never left half written.
 | tags | `XMP-digiKam:TagsList` and `XMP-microsoft:LastKeywordXMP` (`/`), `XMP-lr:HierarchicalSubject` (`\|`), flat `XMP-dc:Subject` and `IPTC:Keywords` |
 | position | `EXIF:GPSLatitude`/`Ref`, `GPSLongitude`/`Ref`, optional `GPSAltitude`/`Ref`, `GPSMapDatum`; for a derived position also `GPSProcessingMethod` (`photoManager: ` and from what) and `GPSHPositioningError` (how many metres off it may be), which a measured position takes away |
 | place in words | `XMP-photoshop:City`/`State`/`Country`, `XMP-iptcCore:CountryCode`/`Location`, and the five IPTC spellings |
-| date | `EXIF:DateTimeOriginal` and `CreateDate` with `OffsetTimeOriginal`/`Digitized`/`OffsetTime`, `XMP-xmp:CreateDate`, `XMP-photoshop:DateCreated`, `IPTC:DateCreated`/`TimeCreated` |
+| date | `EXIF:DateTimeOriginal` and `CreateDate` with `OffsetTimeOriginal`/`Digitized`/`OffsetTime`, `XMP-xmp:CreateDate`, `XMP-photoshop:DateCreated`, `IPTC:DateCreated`/`TimeCreated`; takes away `XMP-exif:DateTimeOriginal` and `DateTimeDigitized` |
 | rating | `XMP-xmp:Rating`, and nowhere else |
 | faces | `XMP-mwg-rs:RegionInfo` and `XMP-iptcExt:PersonInImage` |
 
@@ -111,7 +114,9 @@ shows and none uses to place the pin. So the file, not the database, is what rem
 back and the photo's panel shows it, and the preview writes "(derived)" after such a position.
 
 EXIF leads on dates because every reader believes it; the XMP and IPTC dates are made to agree with
-it, and the EXIF-shaped XMP date some old writers left behind is taken away. `XMP-xmp:Label` is
+it, and the EXIF-shaped XMP dates some old writers left behind, often in UTC worked out on another
+computer, are taken away. Without an offset `IPTC:TimeCreated` is left out, because ExifTool would
+fill in the computer's own zone. `XMP-xmp:Label` is
 never written, only cleared, because in this library it was misused as a keyword.
 
 The modification time is deliberately **not** preserved. Nextcloud and Immich both notice a changed
