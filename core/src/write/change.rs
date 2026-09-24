@@ -385,7 +385,7 @@ fn place_assigns(place: Option<&Place>) -> Vec<Assign> {
 }
 
 /// EXIF is what every reader believes, so it leads; the XMP and IPTC dates are made to agree with
-/// it, and the EXIF-shaped XMP date old Shotwell wrote is taken away.
+/// it, and the EXIF-shaped XMP dates old Shotwell wrote are taken away.
 fn taken_assigns(taken: Option<&Taken>) -> Result<Vec<Assign>, String> {
     let bare = || {
         DATE_TAGS
@@ -395,6 +395,7 @@ fn taken_assigns(taken: Option<&Taken>) -> Result<Vec<Assign>, String> {
                 gone("XMP-xmp:CreateDate", "XMP-xmp:CreateDate"),
                 gone("XMP-photoshop:DateCreated", "XMP-photoshop:DateCreated"),
                 gone("XMP-exif:DateTimeOriginal", "XMP-exif:DateTimeOriginal"),
+                gone("XMP-exif:DateTimeDigitized", "XMP-exif:DateTimeDigitized"),
                 gone("IPTC:DateCreated", "IPTC:DateCreated"),
                 gone("IPTC:TimeCreated", "IPTC:TimeCreated"),
             ])
@@ -432,6 +433,7 @@ fn taken_assigns(taken: Option<&Taken>) -> Result<Vec<Assign>, String> {
             Value::from(format!("{exif_date}{suffix}")),
         ),
         gone("XMP-exif:DateTimeOriginal", "XMP-exif:DateTimeOriginal"),
+        gone("XMP-exif:DateTimeDigitized", "XMP-exif:DateTimeDigitized"),
         set(
             "IPTC:DateCreated",
             "IPTC:DateCreated",
