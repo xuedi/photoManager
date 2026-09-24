@@ -33,13 +33,13 @@ impl Reply {
         })
     }
 
-    /// The first line worth showing a person.
+    /// The line worth showing a person: the error that stopped it, before any warning that came
+    /// first.
     pub fn complaint(&self) -> String {
-        self.err
-            .lines()
-            .chain(self.out.lines())
-            .map(str::trim)
-            .find(|line| line.starts_with("Error:") || line.starts_with("Warning:") || *line == "Nothing to do.")
+        let lines = || self.err.lines().chain(self.out.lines()).map(str::trim);
+        lines()
+            .find(|line| line.starts_with("Error:"))
+            .or_else(|| lines().find(|line| line.starts_with("Warning:") || *line == "Nothing to do."))
             .unwrap_or("exiftool changed nothing and gave no reason")
             .trim_start_matches("Error:")
             .trim()
@@ -215,6 +215,26 @@ pub fn as_argument(path: &Path) -> Result<String> {
     path.to_str()
         .map(str::to_string)
         .ok_or_else(|| Error::Refusing(format!("{} is not a name we can pass on", path.display())))
+}
+
+#[cfg(test)]
+mod reply_tests {
+    use super::*;
+
+    #[test]
+    fn the_error_is_told_before_a_warning_that_came_first() {
+        let reply = Reply {
+            out: "    0 image files updated\n    1 files weren't updated due to errors".to_string(),
+            err: "Warning: [minor] Fixed incorrect URI for xmlns:MicrosoftPhoto - a.jpg\n\
+                  Error: [minor] MakerNotes offsets may be incorrect (fix or ignore?) - a.jpg"
+                .to_string(),
+        };
+        assert!(!reply.updated());
+        assert_eq!(
+            reply.complaint(),
+            "[minor] MakerNotes offsets may be incorrect (fix or ignore?) - a.jpg"
+        );
+    }
 }
 
 #[cfg(all(test, feature = "fixtures"))]
