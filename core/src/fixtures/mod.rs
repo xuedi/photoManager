@@ -4,8 +4,12 @@
 //! tags are as untidy as real ones: a second spelling of a root, case twins, a typo, a city
 //! misspelled, a place that is no place, and one photo with two places tags. Some events are
 //! partly placed: one whose located photos all stand in one city and one photo does not, one
-//! whose photos were placed in two cities, and one named `Wedding` in another city's folder. One photo
-//! carries the small picture cameras embed, the rest do not. The one turned by its orientation is
+//! whose photos were placed in two cities, and one named `Wedding` in another city's folder. The
+//! dates have the real shapes too: a winter and a summer photo of one event, an XMP date two hours
+//! off, a photo that states its offset, a second camera years off in one event, a folder a month
+//! off, an event without camera names, and photos without a date between dated ones, at the end of
+//! their folder and in a month folder. One photo carries the small picture cameras embed, the rest
+//! do not. The one turned by its orientation is
 //! stored wider than tall, so the right way up it stands taller than wide.
 //!
 //! Only for tests and for looking at the application without touching real photos.
@@ -15,7 +19,7 @@ use std::path::Path;
 use std::process::Command;
 
 /// One distinct image per photo, so every photo has its own content id.
-const IMAGES: [&[u8]; 23] = [
+const IMAGES: [&[u8]; 39] = [
     include_bytes!("p01.jpg"),
     include_bytes!("p02.jpg"),
     include_bytes!("p03.jpg"),
@@ -39,6 +43,22 @@ const IMAGES: [&[u8]; 23] = [
     include_bytes!("p21.jpg"),
     include_bytes!("p22.jpg"),
     include_bytes!("p23.jpg"),
+    include_bytes!("p24.jpg"),
+    include_bytes!("p25.jpg"),
+    include_bytes!("p26.jpg"),
+    include_bytes!("p27.jpg"),
+    include_bytes!("p28.jpg"),
+    include_bytes!("p29.jpg"),
+    include_bytes!("p30.jpg"),
+    include_bytes!("p31.jpg"),
+    include_bytes!("p32.jpg"),
+    include_bytes!("p33.jpg"),
+    include_bytes!("p34.jpg"),
+    include_bytes!("p35.jpg"),
+    include_bytes!("p36.jpg"),
+    include_bytes!("p37.jpg"),
+    include_bytes!("p38.jpg"),
+    include_bytes!("p39.jpg"),
 ];
 
 struct Photo {
@@ -237,6 +257,182 @@ const PHOTOS: &[Photo] = &[
     Photo {
         path: "Germany/Hamburg/2014-08-00 Wedding/IMG_2001.JPG",
         metadata: &["-DateTimeOriginal=2014:08:16 14:00:00", "-TagsList=places/inGermany"],
+    },
+    Photo {
+        path: "Germany/2015-00-00 Seasons/IMG_8001.JPG",
+        metadata: &[
+            "-DateTimeOriginal=2015:01:20 11:00:00",
+            "-Model=Canon EOS 5D",
+            "-GPSLatitude=53.5500",
+            "-GPSLatitudeRef=N",
+            "-GPSLongitude=9.9930",
+            "-GPSLongitudeRef=E",
+        ],
+    },
+    Photo {
+        path: "Germany/2015-00-00 Seasons/IMG_8002.JPG",
+        metadata: &[
+            "-DateTimeOriginal=2015:07:20 11:00:00",
+            "-Model=Canon EOS 5D",
+            "-XMP-xmp:CreateDate=2015:07:20 09:00:00Z",
+            "-XMP-exif:DateTimeOriginal=2015:07:20 09:00:00Z",
+            "-XMP-exif:DateTimeDigitized=2015:07:20 09:00:00Z",
+            "-GPSLatitude=53.5500",
+            "-GPSLatitudeRef=N",
+            "-GPSLongitude=9.9930",
+            "-GPSLongitudeRef=E",
+        ],
+    },
+    Photo {
+        path: "Germany/2015-00-00 Seasons/IMG_8003.JPG",
+        metadata: &[
+            "-DateTimeOriginal=2015:07:21 12:00:00",
+            "-OffsetTimeOriginal=+02:00",
+            "-Model=Canon EOS 5D",
+            "-GPSLatitude=53.5500",
+            "-GPSLatitudeRef=N",
+            "-GPSLongitude=9.9930",
+            "-GPSLongitudeRef=E",
+        ],
+    },
+    Photo {
+        path: "Germany/2013-05-18 Garden Party/IMG_6001.JPG",
+        metadata: &[
+            "-DateTimeOriginal=2013:05:18 14:00:00",
+            "-Model=Canon EOS 5D",
+            "-GPSLatitude=53.5500",
+            "-GPSLatitudeRef=N",
+            "-GPSLongitude=9.9930",
+            "-GPSLongitudeRef=E",
+        ],
+    },
+    Photo {
+        path: "Germany/2013-05-18 Garden Party/IMG_6002.JPG",
+        metadata: &[
+            "-DateTimeOriginal=2013:05:18 15:00:00",
+            "-Model=Canon EOS 5D",
+            "-GPSLatitude=53.5500",
+            "-GPSLatitudeRef=N",
+            "-GPSLongitude=9.9930",
+            "-GPSLongitudeRef=E",
+        ],
+    },
+    Photo {
+        path: "Germany/2013-05-18 Garden Party/IMG_6003.JPG",
+        metadata: &[
+            "-DateTimeOriginal=2013:05:18 16:00:00",
+            "-Model=Canon EOS 5D",
+            "-GPSLatitude=53.5500",
+            "-GPSLatitudeRef=N",
+            "-GPSLongitude=9.9930",
+            "-GPSLongitudeRef=E",
+        ],
+    },
+    Photo {
+        path: "Germany/2013-05-18 Garden Party/P1060001.JPG",
+        metadata: &[
+            "-DateTimeOriginal=2011:09:02 15:00:00",
+            "-Model=DMC-TZ7",
+            "-GPSLatitude=53.5500",
+            "-GPSLatitudeRef=N",
+            "-GPSLongitude=9.9930",
+            "-GPSLongitudeRef=E",
+        ],
+    },
+    Photo {
+        path: "Germany/2013-05-18 Garden Party/P1060002.JPG",
+        metadata: &[
+            "-DateTimeOriginal=2011:09:02 15:30:00",
+            "-Model=DMC-TZ7",
+            "-GPSLatitude=53.5500",
+            "-GPSLatitudeRef=N",
+            "-GPSLongitude=9.9930",
+            "-GPSLongitudeRef=E",
+        ],
+    },
+    Photo {
+        path: "Denmark/2017-09-00 Autumn Walk/DSCF0101.JPG",
+        metadata: &[
+            "-DateTimeOriginal=2017:08:26 10:00:00",
+            "-Model=X100S",
+            "-GPSLatitude=55.6761",
+            "-GPSLatitudeRef=N",
+            "-GPSLongitude=12.5683",
+            "-GPSLongitudeRef=E",
+        ],
+    },
+    Photo {
+        path: "Denmark/2017-09-00 Autumn Walk/DSCF0102.JPG",
+        metadata: &[
+            "-DateTimeOriginal=2017:08:26 11:30:00",
+            "-Model=X100S",
+            "-GPSLatitude=55.6761",
+            "-GPSLatitudeRef=N",
+            "-GPSLongitude=12.5683",
+            "-GPSLongitudeRef=E",
+        ],
+    },
+    Photo {
+        path: "Greece/2010-04-10 Beach/scan0001.jpg",
+        metadata: &[
+            "-DateTimeOriginal=2009:04:10 10:00:00",
+            "-GPSLatitude=37.9838",
+            "-GPSLatitudeRef=N",
+            "-GPSLongitude=23.7275",
+            "-GPSLongitudeRef=E",
+        ],
+    },
+    Photo {
+        path: "Greece/2010-04-10 Beach/scan0002.jpg",
+        metadata: &[
+            "-DateTimeOriginal=2009:04:10 11:00:00",
+            "-GPSLatitude=37.9838",
+            "-GPSLatitudeRef=N",
+            "-GPSLongitude=23.7275",
+            "-GPSLongitudeRef=E",
+        ],
+    },
+    Photo {
+        path: "Germany/2014-03-22 Museum/IMG_9001.JPG",
+        metadata: &[
+            "-DateTimeOriginal=2014:03:22 10:00:00",
+            "-Model=Canon EOS 5D",
+            "-GPSLatitude=53.5500",
+            "-GPSLatitudeRef=N",
+            "-GPSLongitude=9.9930",
+            "-GPSLongitudeRef=E",
+        ],
+    },
+    Photo {
+        path: "Germany/2014-03-22 Museum/IMG_9002.JPG",
+        metadata: &[
+            "-Model=Canon EOS 5D",
+            "-GPSLatitude=53.5500",
+            "-GPSLatitudeRef=N",
+            "-GPSLongitude=9.9930",
+            "-GPSLongitudeRef=E",
+        ],
+    },
+    Photo {
+        path: "Germany/2014-03-22 Museum/IMG_9003.JPG",
+        metadata: &[
+            "-DateTimeOriginal=2014:03:22 10:20:00",
+            "-Model=Canon EOS 5D",
+            "-GPSLatitude=53.5500",
+            "-GPSLatitudeRef=N",
+            "-GPSLongitude=9.9930",
+            "-GPSLongitudeRef=E",
+        ],
+    },
+    Photo {
+        path: "Germany/2014-03-22 Museum/IMG_9004.JPG",
+        metadata: &[
+            "-Model=Canon EOS 5D",
+            "-GPSLatitude=53.5500",
+            "-GPSLatitudeRef=N",
+            "-GPSLongitude=9.9930",
+            "-GPSLongitudeRef=E",
+        ],
     },
 ];
 

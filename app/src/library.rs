@@ -235,19 +235,24 @@ impl Library {
     pub fn count_tools<F: FnOnce(Result<Counted, String>) + 'static>(&self, scope: &Scope, done: F) {
         let scope = scope.clone();
         let remembered: Vec<Option<String>> = tools::ALL.iter().map(|tool| self.tool_settings(tool.key())).collect();
+        let geo_db = self.paths.geo_db();
         self.read_off_thread(
             move |cache| {
+                let geo = Geo::read_only(&geo_db).ok().flatten();
+                let geo = geo.as_ref();
                 let mut counted = Counted {
                     photos: scope.paths(cache)?.len(),
                     ..Counted::default()
                 };
                 for (tool, settings) in tools::ALL.iter().zip(&remembered) {
                     let key = tool.key().to_string();
-                    counted
-                        .tools
-                        .push((key.clone(), tools::count(*tool, cache, &scope, settings.as_deref())));
+                    counted.tools.push((
+                        key.clone(),
+                        tools::count(*tool, cache, geo, &scope, settings.as_deref()),
+                    ));
                     if tool.asks() {
-                        let waiting = tools::waiting(*tool, cache, &scope, settings.as_deref()).unwrap_or_default();
+                        let waiting =
+                            tools::waiting(*tool, cache, geo, &scope, settings.as_deref()).unwrap_or_default();
                         counted.waiting.push((key, waiting));
                     }
                 }
@@ -426,7 +431,14 @@ impl Library {
         self.cancel.store(false, Ordering::Relaxed);
 
         let (sender, receiver) = async_channel::unbounded();
-        let local = self.paths.local_dumps().map(Path::to_path_buf);
+        // Place data thrown away for a new version is imported again from the dumps it was made
+        // from, without going to the network.
+        let kept = self.paths.dumps_dir();
+        let local = self
+            .paths
+            .local_dumps()
+            .map(Path::to_path_buf)
+            .or_else(|| (!geo.is_filled() && photomanager_core::geo::import::present(&kept)).then_some(kept));
         let dumps = local.clone().unwrap_or_else(|| self.paths.dumps_dir());
         let cancel = self.cancel.clone();
         let progress = sender.clone();
@@ -582,7 +594,14 @@ impl Library {
             return;
         };
         let scope = scope.clone();
-        self.build(move |cache| tool.change_set(cache, &scope, settings.as_deref()), report);
+        let geo_db = self.paths.geo_db();
+        self.build(
+            move |cache| {
+                let geo = Geo::read_only(&geo_db).ok().flatten();
+                tool.change_set(cache, geo.as_ref(), &scope, settings.as_deref())
+            },
+            report,
+        );
     }
 
     fn build<F: Fn(Event) + 'static>(

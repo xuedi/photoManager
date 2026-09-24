@@ -104,7 +104,7 @@ fn the_app_can_be_clicked_through_headless() {
     let scanned = scanned(&ui, lib);
     let photos = photomanager_core::fixtures::photo_count() as u64;
     assert_eq!(scanned["photos"].as_u64(), Some(photos), "the scan found every photo");
-    assert_eq!(scanned["events"].as_u64(), Some(9));
+    assert_eq!(scanned["events"].as_u64(), Some(14));
     assert!(
         scanned["issues"].as_u64().unwrap() > 0,
         "the stand-in library has issues to report"
@@ -117,8 +117,8 @@ fn the_app_can_be_clicked_through_headless() {
     );
 
     let survey = surveyed(&ui, lib);
-    assert_eq!(survey["coverage"]["no-gps"]["missing"].as_u64(), Some(photos - 6));
-    assert_eq!(survey["coverage"]["no-date"]["missing"].as_u64(), Some(2));
+    assert_eq!(survey["coverage"]["no-gps"]["missing"].as_u64(), Some(photos - 22));
+    assert_eq!(survey["coverage"]["no-date"]["missing"].as_u64(), Some(4));
     assert!(
         survey["tidy"]
             .as_array()
@@ -134,11 +134,11 @@ fn the_app_can_be_clicked_through_headless() {
     assert_eq!(shown["gallery"]["filter"], "no-date");
     assert_eq!(
         shown["gallery"]["count"].as_u64(),
-        Some(2),
+        Some(4),
         "with exactly the photos it counted"
     );
-    let gallery = pictured(&ui, lib, 2);
-    assert_eq!(gallery["listed"].as_u64(), Some(2), "the grid holds them");
+    let gallery = pictured(&ui, lib, 4);
+    assert_eq!(gallery["listed"].as_u64(), Some(4), "the grid holds them");
     assert_eq!(gallery["page"], "grid");
     steps_through_one_photo_at_a_time(&ui, lib);
     ui.run(&["act", "win.show-view", "'dashboard'"], lib);
@@ -153,6 +153,7 @@ fn the_app_can_be_clicked_through_headless() {
     takes_back_an_older_pass(&ui, lib);
     gives_places_from_their_tag_and_takes_them_back(&ui, lib);
     gives_places_from_the_event_and_takes_them_back(&ui, lib);
+    writes_time_zones_and_takes_them_back(&ui, lib);
 
     ui.run(&["act", "win.show-view", "'suggestions'"], lib);
     let state = state(&ui, lib);
@@ -654,6 +655,66 @@ fn gives_places_from_the_event_and_takes_them_back(ui: &Ui, library: &Path) {
     assert_eq!(read_place(&bare), None, "the position, the mark and the words are gone");
     assert_eq!(read_place(&pinned), None);
     assert_eq!(city_of(&bare), None);
+}
+
+/// The zones tool asks nothing where no country has several zones: its page is empty, Preview
+/// still opens, and what is written is the offset of where each photo was, taken back after.
+fn writes_time_zones_and_takes_them_back(ui: &Ui, library: &Path) {
+    const TOOL: &str = "time-zones";
+    const SEASONS: &str = "Germany/2015-00-00 Seasons";
+    let summer = library.join(SEASONS).join("IMG_8002.JPG");
+
+    ui.run(&["act", "win.show-view", "'tools'"], library);
+    ui.run(&["act", "win.tools-scope", &format!("'{SEASONS}'")], library);
+    let tools = counted(ui, library, 3);
+    assert_eq!(tools["counts"][TOOL].as_u64(), Some(2), "{tools}");
+    assert_eq!(tools["waiting"][TOOL].as_u64(), Some(0), "{tools}");
+    ui.run(&["act", "win.run-tool", &format!("'{TOOL}'")], library);
+    questions(ui, library, |questions| {
+        questions["tool"] == TOOL && questions["questions"].as_array().unwrap().is_empty()
+    });
+
+    let before = state(ui, library)["applied"]["batch"].as_i64().unwrap_or(0);
+    ui.run(&["act", "win.preview-answers"], library);
+    let mut previewed = Value::Null;
+    for _ in 0..60 {
+        previewed = state(ui, library)["preview"].clone();
+        if previewed["title"] == "Write time zones and XMP dates" {
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(500));
+    }
+    assert_eq!(previewed["change"].as_u64(), Some(2), "{previewed}");
+    ui.run(&["click", "Apply", "--role", "button"], library);
+    let written = written(ui, library, "write", before);
+    assert_eq!(written["written"].as_u64(), Some(2), "{written}");
+    let batch = written["batch"].as_i64().unwrap();
+    assert_eq!(offset_of(&summer).as_deref(), Some("+02:00"));
+
+    let taken_before = state(ui, library)["history"]["taken"]["batch"].as_i64().unwrap_or(0);
+    ui.run(&["act", "win.undo-pass", &format!("int64 {batch}")], library);
+    ui.run(&["click", "Take It Back", "--role", "button"], library);
+    for _ in 0..120 {
+        let now = state(ui, library);
+        if now["history"]["taken"]["batch"].as_i64().unwrap_or(0) > taken_before
+            && now["writing"] == false
+            && now["scanning"] == false
+        {
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(500));
+    }
+    assert_eq!(offset_of(&summer), None, "the offset is gone again");
+}
+
+fn offset_of(photo: &Path) -> Option<String> {
+    let out = Command::new("exiftool")
+        .args(["-s3", "-ExifIFD:OffsetTimeOriginal"])
+        .arg(photo)
+        .output()
+        .expect("run exiftool");
+    let offset = String::from_utf8_lossy(&out.stdout).trim().to_string();
+    (!offset.is_empty()).then_some(offset)
 }
 
 /// The questions on the page once they are asked and match what is waited for.

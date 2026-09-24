@@ -61,6 +61,7 @@ impl Tool for GpsFromEvent {
             confirm: "Confirm Where the Rest Is",
             sure_one: "has all its located photos in one place",
             sure_many: "have all their located photos in one place",
+            ..Wording::default()
         }
     }
 
@@ -93,21 +94,24 @@ impl Tool for GpsFromEvent {
                 .map_err(|error| error.to_string())?,
                 None => (Vec::new(), None),
             };
+            let title = event_dir.rsplit('/').next().unwrap_or(event_dir);
             questions.push(Question {
-                key: event_dir.clone(),
-                title: event_dir.rsplit('/').next().unwrap_or(event_dir).to_string(),
-                photos: photos.len(),
-                offers,
                 answer: answers.get(event_dir).cloned(),
-                apart: false,
                 note,
+                ..Question::place(event_dir.clone(), title, photos.len(), offers)
             });
         }
         questions.sort_by(|one, other| other.photos.cmp(&one.photos).then(one.key.cmp(&other.key)));
         Ok(questions)
     }
 
-    fn wanted(&self, cache: &Cache, scope: &Scope, answers: &Answers) -> cache::Result<Vec<Wanted>> {
+    fn wanted(
+        &self,
+        cache: &Cache,
+        _geo: Option<&Geo>,
+        scope: &Scope,
+        answers: &Answers,
+    ) -> cache::Result<Vec<Wanted>> {
         let mut placed: Vec<(String, &Answer)> = Vec::new();
         for (event_dir, photos) in asked(cache, scope)? {
             if let Some(answer) = answers.get(&event_dir) {
@@ -192,11 +196,8 @@ fn offers(
         .into_iter()
         .filter(|(place, _)| inside(place))
         .map(|(place, count)| Offer {
-            place,
-            confidence: count as f64 / located as f64,
-            exact: false,
-            sure,
             located: Some(count),
+            ..Offer::of_place(place, count as f64 / located as f64, false).with_sure(sure)
         })
         .collect();
 
@@ -207,7 +208,12 @@ fn offers(
     {
         for candidate in geo.find(text, hint)?.candidates {
             let offer = Offer::of(&candidate);
-            if !inside(&offer.place) || offers.iter().any(|known| known.place.id == offer.place.id) {
+            let Some(place) = offer.place() else { continue };
+            if !inside(place)
+                || offers
+                    .iter()
+                    .any(|known| known.place().is_some_and(|known| known.id == place.id))
+            {
                 continue;
             }
             offers.push(Offer { sure: false, ..offer });
@@ -280,7 +286,12 @@ mod tests {
         question
             .offers
             .iter()
-            .map(|offer| (offer.place.name.as_str(), offer.place.code.as_str()))
+            .map(|offer| {
+                (
+                    offer.place().unwrap().name.as_str(),
+                    offer.place().unwrap().code.as_str(),
+                )
+            })
             .collect()
     }
 
@@ -305,9 +316,9 @@ mod tests {
             "the loose file, the located photos and the city-tagged ones are not asked about"
         );
         assert_eq!(question(&questions, HARBOUR).title, "2016-06-00 Harbour Walk");
-        assert_eq!(tools::waiting(tool(), &cache, &whole(), None).unwrap(), 6);
+        assert_eq!(tools::waiting(tool(), &cache, None, &whole(), None).unwrap(), 6);
         assert_eq!(tool().waiting(6), "6 events wait for an answer");
-        assert_eq!(tools::count(tool(), &cache, &whole(), None).unwrap(), 0);
+        assert_eq!(tools::count(tool(), &cache, None, &whole(), None).unwrap(), 0);
         assert!(
             tool()
                 .questions(&cache, None, &whole(), None)
@@ -335,7 +346,10 @@ mod tests {
 
         let harbour = question(&questions, HARBOUR);
         let best = harbour.sure().expect("three photos in one city");
-        assert_eq!((best.place.name.as_str(), best.located), ("Hamburg", Some(3)));
+        assert_eq!(
+            (best.place().unwrap().name.as_str(), best.located),
+            ("Hamburg", Some(3))
+        );
         assert_eq!(harbour.offers.iter().filter(|offer| offer.sure).count(), 1);
 
         let rail = question(&questions, RAIL);
@@ -343,7 +357,7 @@ mod tests {
             .offers
             .iter()
             .filter(|offer| offer.located.is_some())
-            .map(|offer| (offer.place.name.as_str(), offer.located))
+            .map(|offer| (offer.place().unwrap().name.as_str(), offer.located))
             .collect();
         assert_eq!(
             rest,
@@ -353,7 +367,7 @@ mod tests {
         assert!(rail.offers.iter().all(|offer| !offer.sure));
 
         let sommerfest = question(&questions, SOMMERFEST);
-        assert_eq!(sommerfest.offers[0].place.name, "Hamburg");
+        assert_eq!(sommerfest.offers[0].place().unwrap().name, "Hamburg");
         assert_eq!(sommerfest.offers[0].located, Some(1));
         assert!(sommerfest.sure().is_none(), "one photo is not enough");
         assert!(
@@ -374,7 +388,7 @@ mod tests {
         let district = wedding
             .offers
             .iter()
-            .find(|offer| offer.place.name == "Wedding")
+            .find(|offer| offer.place().unwrap().name == "Wedding")
             .expect("the district is offered, it is in the country");
         assert!(district.exact && district.confidence >= tools::EXACT);
         assert!(wedding.offers.iter().all(|offer| !offer.sure), "{:?}", wedding.offers);
@@ -409,12 +423,12 @@ mod tests {
     fn a_place_and_a_pin_give_position_mark_and_words() {
         let cache = scanned("event-answers");
         let questions = asked_all(&cache, None);
-        let hamburg = Answer::Place(question(&questions, HARBOUR).offers[0].place.clone());
+        let hamburg = Answer::Place(question(&questions, HARBOUR).offers[0].place().unwrap().clone());
         let at = geo().at(55.6800, 12.5900).unwrap();
         let pin = Answer::pin(55.6800, 12.5900, &at).expect("a place near the point");
         let settings = answered(Some(&answered(None, HARBOUR, hamburg)), COPENHAGEN, pin);
 
-        let set = tool().change_set(&cache, &whole(), Some(&settings)).unwrap();
+        let set = tool().change_set(&cache, None, &whole(), Some(&settings)).unwrap();
         assert_eq!(set.title, "Set GPS from the event");
         let rows: Vec<&str> = set.rows.iter().map(|row| row.rel_path.as_str()).collect();
         assert_eq!(
@@ -453,7 +467,10 @@ mod tests {
                 assert_eq!(words.country_code.as_deref(), Some("DK"));
             }
         }
-        assert_eq!(tools::waiting(tool(), &cache, &whole(), Some(&settings)).unwrap(), 4);
+        assert_eq!(
+            tools::waiting(tool(), &cache, None, &whole(), Some(&settings)).unwrap(),
+            4
+        );
     }
 
     #[test]
@@ -468,9 +485,9 @@ mod tests {
             assert!(status.success());
         });
         let questions = asked_all(&cache, None);
-        let beijing = question(&questions, RAIL).offers[0].place.clone();
+        let beijing = question(&questions, RAIL).offers[0].place().unwrap().clone();
         let settings = answered(None, RAIL, Answer::Place(beijing));
-        let set = tool().change_set(&cache, &whole(), Some(&settings)).unwrap();
+        let set = tool().change_set(&cache, None, &whole(), Some(&settings)).unwrap();
         assert_eq!(set.rows.len(), 1);
         assert_eq!(set.rows[0].rel_path, RAIL_BARE);
         assert_eq!(set.rows[0].change.fields.len(), 1, "{:?}", set.rows[0].change);
@@ -485,15 +502,27 @@ mod tests {
         for question in &questions {
             settings = answered(Some(&settings), &question.key, Answer::Leave);
         }
-        assert!(tool().change_set(&cache, &whole(), Some(&settings)).unwrap().is_empty());
-        assert_eq!(tools::waiting(tool(), &cache, &whole(), Some(&settings)).unwrap(), 0);
+        assert!(
+            tool()
+                .change_set(&cache, None, &whole(), Some(&settings))
+                .unwrap()
+                .is_empty()
+        );
+        assert_eq!(
+            tools::waiting(tool(), &cache, None, &whole(), Some(&settings)).unwrap(),
+            0
+        );
 
-        let hamburg = Answer::Place(question(&questions, HARBOUR).offers[0].place.clone());
+        let hamburg = Answer::Place(question(&questions, HARBOUR).offers[0].place().unwrap().clone());
         let settings = answered(None, HARBOUR, hamburg.clone());
         let bare = tool().questions(&cache, None, &whole(), Some(&settings)).unwrap();
         assert_eq!(question(&bare, HARBOUR).answer, Some(hamburg));
         assert_eq!(
-            tool().change_set(&cache, &whole(), Some(&settings)).unwrap().rows.len(),
+            tool()
+                .change_set(&cache, None, &whole(), Some(&settings))
+                .unwrap()
+                .rows
+                .len(),
             1
         );
     }

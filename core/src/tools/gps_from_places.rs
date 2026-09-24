@@ -56,6 +56,7 @@ impl Tool for GpsFromPlacesTag {
             confirm: "Confirm Exact Matches",
             sure_one: "matches a place by its exact name",
             sure_many: "match a place by its exact name",
+            ..Wording::default()
         }
     }
 
@@ -86,14 +87,11 @@ impl Tool for GpsFromPlacesTag {
                 None if apart => Some(Answer::Leave),
                 None => None,
             };
+            let title = tag.split_once('/').map(|(_, rest)| rest).unwrap_or(tag);
             questions.push(Question {
-                key: tag.to_string(),
-                title: tag.split_once('/').map(|(_, rest)| rest).unwrap_or(tag).to_string(),
-                photos,
-                offers,
                 answer,
                 apart,
-                note: None,
+                ..Question::place(tag, title, photos, offers)
             });
         }
         questions.sort_by(|one, other| {
@@ -105,7 +103,13 @@ impl Tool for GpsFromPlacesTag {
         Ok(questions)
     }
 
-    fn wanted(&self, cache: &Cache, scope: &Scope, answers: &Answers) -> cache::Result<Vec<Wanted>> {
+    fn wanted(
+        &self,
+        cache: &Cache,
+        _geo: Option<&Geo>,
+        scope: &Scope,
+        answers: &Answers,
+    ) -> cache::Result<Vec<Wanted>> {
         let mut wanted = Vec::new();
         let mut placed = Vec::new();
         for (rel_path, tags) in without_gps(cache, scope)? {
@@ -273,7 +277,7 @@ mod tests {
     }
 
     fn best(questions: &[Question], key: &str) -> Answer {
-        Answer::Place(question(questions, key).offers[0].place.clone())
+        Answer::Place(question(questions, key).offers[0].place().unwrap().clone())
     }
 
     #[test]
@@ -301,20 +305,20 @@ mod tests {
             "most photos first, the countries apart at the end, and the Hamburg photo with GPS not at all"
         );
         assert_eq!(question(&questions, BEIJING).title, "inChina/Beijing");
-        assert_eq!(tools::waiting(tool(), &cache, &whole(), None).unwrap(), 8);
+        assert_eq!(tools::waiting(tool(), &cache, None, &whole(), None).unwrap(), 8);
         assert_eq!(tool().waiting(8), "8 tags wait for an answer");
         assert_eq!(
-            tools::count(tool(), &cache, &whole(), None).unwrap(),
+            tools::count(tool(), &cache, None, &whole(), None).unwrap(),
             0,
             "nothing is answered"
         );
 
         let beijing = question(&questions, BEIJING);
-        assert_eq!(beijing.offers[0].place.name, "Beijing");
-        assert_eq!(beijing.offers[0].place.code, "CN");
+        assert_eq!(beijing.offers[0].place().unwrap().name, "Beijing");
+        assert_eq!(beijing.offers[0].place().unwrap().code, "CN");
         assert!(beijing.sure().is_some(), "{:?}", beijing.offers[0]);
         let typo = question(&questions, ATENS);
-        assert_eq!(typo.offers[0].place.name, "Athens");
+        assert_eq!(typo.offers[0].place().unwrap().name, "Athens");
         assert!(typo.sure().is_none(), "a typo is offered, never confirmed in bulk");
         let pseudo = question(&questions, "places/inGreece/AthensSeaSide");
         assert!(pseudo.offers.first().is_none_or(|offer| offer.confidence < EXACT));
@@ -343,7 +347,7 @@ mod tests {
 
         let beijing = best(&questions, BEIJING);
         let by_hand = answered(None, "places/inChina", beijing);
-        let set = tool().change_set(&cache, &whole(), Some(&by_hand)).unwrap();
+        let set = tool().change_set(&cache, None, &whole(), Some(&by_hand)).unwrap();
         let rows: Vec<&str> = set.rows.iter().map(|row| row.rel_path.as_str()).collect();
         assert_eq!(
             rows,
@@ -359,7 +363,7 @@ mod tests {
         let cache = scanned("gps-confirmed");
         let questions = asked(&cache, None);
         let settings = answered(None, BEIJING, best(&questions, BEIJING));
-        let set = tool().change_set(&cache, &whole(), Some(&settings)).unwrap();
+        let set = tool().change_set(&cache, None, &whole(), Some(&settings)).unwrap();
         assert_eq!(set.title, "Set GPS from the places tag");
         assert_eq!(set.rows.len(), 2);
         for row in &set.rows {
@@ -388,17 +392,23 @@ mod tests {
             assert_eq!(place.country_code.as_deref(), Some("CN"));
             assert!(row.tells().contains("(derived)"), "{}", row.tells());
         }
-        assert_eq!(tools::count(tool(), &cache, &whole(), Some(&settings)).unwrap(), 2);
-        assert_eq!(tools::waiting(tool(), &cache, &whole(), Some(&settings)).unwrap(), 7);
+        assert_eq!(
+            tools::count(tool(), &cache, None, &whole(), Some(&settings)).unwrap(),
+            2
+        );
+        assert_eq!(
+            tools::waiting(tool(), &cache, None, &whole(), Some(&settings)).unwrap(),
+            7
+        );
     }
 
     #[test]
     fn a_photo_with_words_keeps_them_and_gets_the_position() {
         let cache = scanned("gps-words");
         let questions = asked(&cache, None);
-        assert_eq!(question(&questions, AMSTERDAM).offers[0].place.code, "NL");
+        assert_eq!(question(&questions, AMSTERDAM).offers[0].place().unwrap().code, "NL");
         let settings = answered(None, AMSTERDAM, best(&questions, AMSTERDAM));
-        let set = tool().change_set(&cache, &whole(), Some(&settings)).unwrap();
+        let set = tool().change_set(&cache, None, &whole(), Some(&settings)).unwrap();
         assert_eq!(set.rows.len(), 1);
         assert_eq!(set.rows[0].rel_path, WITH_TEXT);
         assert_eq!(set.rows[0].change.fields.len(), 1, "{:?}", set.rows[0].change);
@@ -422,7 +432,7 @@ mod tests {
         for key in ["places/inChina", "places/inGermany"] {
             settings = answered(Some(&settings), key, best(&questions, BEIJING));
         }
-        let set = tool().change_set(&cache, &whole(), Some(&settings)).unwrap();
+        let set = tool().change_set(&cache, None, &whole(), Some(&settings)).unwrap();
         assert!(set.rows.iter().all(|row| row.rel_path != LOCATED));
         assert!(!set.rows.is_empty());
     }
@@ -433,7 +443,7 @@ mod tests {
         let questions = asked(&cache, None);
         let athens = best(&questions, ATHENS);
         let row_of = |settings: &str| {
-            let set = tool().change_set(&cache, &whole(), Some(settings)).unwrap();
+            let set = tool().change_set(&cache, None, &whole(), Some(settings)).unwrap();
             set.rows.into_iter().find(|row| row.rel_path == TWO_TAGS)
         };
 
@@ -467,9 +477,17 @@ mod tests {
         for question in questions.iter().filter(|question| !question.apart) {
             settings = answered(Some(&settings), &question.key, Answer::Leave);
         }
-        assert!(tool().change_set(&cache, &whole(), Some(&settings)).unwrap().is_empty());
-        assert!(tool().change_set(&cache, &whole(), None).unwrap().is_empty());
-        assert_eq!(tools::waiting(tool(), &cache, &whole(), Some(&settings)).unwrap(), 0);
+        assert!(
+            tool()
+                .change_set(&cache, None, &whole(), Some(&settings))
+                .unwrap()
+                .is_empty()
+        );
+        assert!(tool().change_set(&cache, None, &whole(), None).unwrap().is_empty());
+        assert_eq!(
+            tools::waiting(tool(), &cache, None, &whole(), Some(&settings)).unwrap(),
+            0
+        );
     }
 
     #[test]
@@ -519,10 +537,10 @@ mod tests {
         assert!(Answers::read(r#"{"places/inChina/Beijing": 3}"#).is_err());
         assert_eq!(Answers::read("").unwrap(), Answers::default());
 
-        let before = tool().change_set(&cache, &whole(), Some(&settings)).unwrap();
+        let before = tool().change_set(&cache, None, &whole(), Some(&settings)).unwrap();
         let without_data = tool().questions(&cache, None, &whole(), Some(&settings)).unwrap();
         assert_eq!(question(&without_data, BEIJING).answer, Some(best(&questions, BEIJING)));
-        let after = tool().change_set(&cache, &whole(), Some(&settings)).unwrap();
+        let after = tool().change_set(&cache, None, &whole(), Some(&settings)).unwrap();
         assert_eq!(
             before.rows.iter().map(|row| &row.change).collect::<Vec<_>>(),
             after.rows.iter().map(|row| &row.change).collect::<Vec<_>>(),
@@ -574,7 +592,7 @@ mod tests {
     fn a_pin_gives_its_photos_the_point_the_mark_and_the_words() {
         let cache = scanned("gps-pin");
         let settings = answered(None, BEIJING, pin(39.9300, 116.4200));
-        let set = tool().change_set(&cache, &whole(), Some(&settings)).unwrap();
+        let set = tool().change_set(&cache, None, &whole(), Some(&settings)).unwrap();
         assert_eq!(set.rows.len(), 2);
         for row in &set.rows {
             let Field::Gps(Some(gps)) = &row.change.fields[0] else {
@@ -600,7 +618,7 @@ mod tests {
     fn two_tags_pinned_to_one_point_agree_and_to_two_points_refuse() {
         let cache = scanned("gps-two-pins");
         let row_of = |settings: &str| {
-            let set = tool().change_set(&cache, &whole(), Some(settings)).unwrap();
+            let set = tool().change_set(&cache, None, &whole(), Some(settings)).unwrap();
             set.rows.into_iter().find(|row| row.rel_path == TWO_TAGS).unwrap()
         };
         let here = pin(37.9500, 23.7000);

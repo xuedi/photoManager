@@ -8,13 +8,14 @@ pub mod download;
 pub mod import;
 pub mod lookup;
 pub mod reverse;
+pub mod zones;
 
 use std::path::{Path, PathBuf};
 
 use rusqlite::{Connection, OptionalExtension};
 use unicode_normalization::UnicodeNormalization;
 
-const SCHEMA_VERSION: i64 = 1;
+const SCHEMA_VERSION: i64 = 2;
 
 const SCHEMA: &str = "
 CREATE TABLE meta (key TEXT PRIMARY KEY, value TEXT NOT NULL);
@@ -40,7 +41,9 @@ CREATE TABLE place (
     feature    TEXT NOT NULL,
     population INTEGER NOT NULL,
     lat        REAL NOT NULL,
-    lon        REAL NOT NULL
+    lon        REAL NOT NULL,
+    -- The IANA time zone, such as Europe/Berlin.
+    zone       TEXT
 );
 CREATE INDEX place_country ON place (country);
 

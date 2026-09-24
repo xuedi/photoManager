@@ -9,6 +9,7 @@ description = "The library behind photoManager: scanning, metadata, identity, th
 
 [dependencies]
 fast_image_resize = "6.1"
+jiff = "0.2.37"
 rayon = "1.12.0"
 rexiv2 = "0.10.0"
 rusqlite = { version = "0.40.2", features = ["bundled"] }

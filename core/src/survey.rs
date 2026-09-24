@@ -341,13 +341,17 @@ mod fixture_tests {
         let all = crate::fixtures::photo_count() as i64;
 
         assert_eq!(survey.photos, all);
-        assert_eq!(survey.events, 9);
+        assert_eq!(survey.events, 14);
         assert!(survey.bytes > 0);
         assert_eq!(survey.first.as_deref(), Some("2006-08-21"));
         assert_eq!(survey.last.as_deref(), Some("2019-07-13"));
-        assert_eq!(survey.cameras[0], (None, all - 5), "most fixture photos name no camera");
-        assert_eq!(survey.camera_count(), 3);
-        assert_eq!(survey.file_types, [("JPG".to_string(), 20), ("jpg".to_string(), 3)]);
+        assert_eq!(
+            survey.cameras[0],
+            (None, all - 19),
+            "most fixture photos name no camera"
+        );
+        assert_eq!(survey.camera_count(), 5);
+        assert_eq!(survey.file_types, [("JPG".to_string(), 34), ("jpg".to_string(), 5)]);
 
         let coverage: BTreeMap<&str, Measure> = survey
             .coverage
@@ -358,12 +362,12 @@ mod fixture_tests {
             coverage["no-gps"],
             Measure {
                 of: all,
-                missing: all - 6
+                missing: all - 22
             }
         );
-        assert_eq!(coverage["no-date"], Measure { of: all, missing: 2 });
-        assert_eq!(coverage["date-off-folder"], Measure { of: 17, missing: 2 });
-        assert_eq!(coverage["no-tag"], Measure { of: all, missing: 6 });
+        assert_eq!(coverage["no-date"], Measure { of: all, missing: 4 });
+        assert_eq!(coverage["date-off-folder"], Measure { of: 31, missing: 8 });
+        assert_eq!(coverage["no-tag"], Measure { of: all, missing: 22 });
         assert_eq!(
             coverage["no-people"],
             Measure {

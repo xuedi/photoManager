@@ -204,18 +204,22 @@ fn state(window: &Window, paths: &Paths, library: Option<&Library>) -> String {
                     "apart": question.apart,
                     "sure": question.sure().is_some(),
                     "note": question.note,
+                    "kind": format!("{:?}", question.kind).to_lowercase(),
+                    "offers": question.offers.iter().map(|offer| offer.words.clone()).collect::<Vec<String>>(),
                     "best": question.offers.first().map(|offer| serde_json::json!({
-                        "name": offer.place.name,
-                        "code": offer.place.code,
+                        "words": offer.words,
+                        "name": offer.place().map(|place| place.name.clone()),
+                        "code": offer.place().map(|place| place.code.clone()),
                         "confidence": offer.confidence,
                         "located": offer.located,
                     })),
                     "answer": question.answer.as_ref().map(|answer| match answer {
-                        photomanager_core::tools::Answer::Leave => serde_json::json!("leave"),
                         photomanager_core::tools::Answer::Place(place) => serde_json::json!(place.name),
                         photomanager_core::tools::Answer::Pin { lat, lon, near } => {
                             serde_json::json!({ "pin": [lat, lon], "near": near.name })
                         }
+                        photomanager_core::tools::Answer::Leave => serde_json::json!("leave"),
+                        other => serde_json::json!(other.tells()),
                     }),
                 })
             })

@@ -8,10 +8,10 @@
 //! A tool's settings are a plain value that can be written as text and read back, so what a
 //! suggestion hands over later is a key, a scope and a line of text, not a form.
 //!
-//! A tool may also ask: which place a group of photos means. It hands over [`Question`]s, the
-//! application draws them without knowing which tool asked, and the [`Answer`]s go back into the
-//! tool's settings. So a question is answered once, and the next run over any scope finds it
-//! answered.
+//! A tool may also ask: which place a group of photos means, or how far a camera's clock was off.
+//! It hands over [`Question`]s, each offer carrying the answer it would give, the application draws
+//! them without knowing which tool asked, and the [`Answer`]s go back into the tool's settings. So
+//! a question is answered once, and the next run over any scope finds it answered.
 
 use std::collections::BTreeMap;
 
@@ -19,6 +19,7 @@ use serde_json::{Map, Value};
 
 use crate::cache::{self, Cache};
 use crate::changeset::{ChangeSet, Wanted};
+use crate::dates::Shift;
 use crate::geo::Geo;
 use crate::geo::lookup::{self, How};
 use crate::geo::reverse::At;
@@ -27,8 +28,14 @@ use crate::write;
 use crate::write::change::Derived;
 use crate::write::{Change, Field, Gps};
 
+pub mod dates_folder;
 pub mod gps_from_event;
 pub mod gps_from_places;
+pub mod offsets;
+#[cfg(all(test, feature = "fixtures"))]
+mod testing;
+pub mod time_zones;
+pub mod undated;
 
 /// What a tool can be told. A tool that needs nothing uses `()`.
 pub trait Settings: Default + Sized {
@@ -154,12 +161,34 @@ pub enum Answer {
         lon: f64,
         near: Located,
     },
-    /// Its photos are not given a place by this tool.
+    /// Its photos are left as they are by this tool.
     Leave,
+    /// Each named camera's clock was off by this much.
+    Shift(Vec<Moved>),
+    /// This date, and a second more for each photo after the first.
+    Date(String),
+    /// Each photo the time between the dated photos before and after it.
+    Neighbours,
+    /// Taken in this IANA time zone.
+    Zone(String),
+}
+
+/// One camera of an event, and how far its clock was off.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Moved {
+    pub camera: String,
+    pub by: Shift,
+    /// The camera's first date when the shift was given: once that has moved, the shift has been
+    /// written, and it is never written twice.
+    pub from: String,
 }
 
 const LEAVE: &str = "leave";
 const PIN: &str = "pin";
+const NEIGHBOURS: &str = "neighbours";
+const SHIFT: &str = "shift";
+const DATE: &str = "date";
+const ZONE: &str = "zone";
 
 /// Where an answer puts its photos.
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -195,6 +224,39 @@ impl Answer {
     fn of(value: &Value) -> Result<Answer, String> {
         match value {
             Value::String(word) if word == LEAVE => Ok(Answer::Leave),
+            Value::String(word) if word == NEIGHBOURS => Ok(Answer::Neighbours),
+            Value::Object(fields) if fields.contains_key(SHIFT) => {
+                let wrong = || format!("{value} is not a shift");
+                let cameras = fields.get(SHIFT).and_then(Value::as_array).ok_or_else(wrong)?;
+                let mut moved = Vec::new();
+                for camera in cameras {
+                    let text = |name: &str| camera.get(name).and_then(Value::as_str).ok_or_else(wrong);
+                    moved.push(Moved {
+                        camera: text("camera")?.to_string(),
+                        by: Shift::read(text("by")?)?,
+                        from: crate::dates::format(crate::dates::parse(text("from")?)?),
+                    });
+                }
+                if moved.is_empty() {
+                    return Err(wrong());
+                }
+                Ok(Answer::Shift(moved))
+            }
+            Value::Object(fields) if fields.contains_key(DATE) => {
+                let at = fields
+                    .get(DATE)
+                    .and_then(Value::as_str)
+                    .ok_or_else(|| format!("{value} is not a date"))?;
+                Ok(Answer::Date(crate::dates::format(crate::dates::parse(at)?)))
+            }
+            Value::Object(fields) if fields.contains_key(ZONE) => {
+                let zone = fields
+                    .get(ZONE)
+                    .and_then(Value::as_str)
+                    .ok_or_else(|| format!("{value} is not a zone"))?;
+                crate::dates::offset_in(zone, "2000-01-01 12:00:00")?;
+                Ok(Answer::Zone(zone.to_string()))
+            }
             Value::Object(fields) if fields.contains_key(PIN) => {
                 let wrong = || format!("{value} is not a pin");
                 let point = fields.get(PIN).and_then(Value::as_array).ok_or_else(wrong)?;
@@ -220,6 +282,32 @@ impl Answer {
     fn value(&self) -> Value {
         match self {
             Answer::Leave => Value::from(LEAVE),
+            Answer::Neighbours => Value::from(NEIGHBOURS),
+            Answer::Shift(moved) => {
+                let cameras: Vec<Value> = moved
+                    .iter()
+                    .map(|moved| {
+                        let mut fields = Map::new();
+                        fields.insert("camera".to_string(), Value::from(moved.camera.as_str()));
+                        fields.insert("by".to_string(), Value::from(moved.by.written()));
+                        fields.insert("from".to_string(), Value::from(moved.from.as_str()));
+                        Value::Object(fields)
+                    })
+                    .collect();
+                let mut fields = Map::new();
+                fields.insert(SHIFT.to_string(), Value::from(cameras));
+                Value::Object(fields)
+            }
+            Answer::Date(at) => {
+                let mut fields = Map::new();
+                fields.insert(DATE.to_string(), Value::from(at.as_str()));
+                Value::Object(fields)
+            }
+            Answer::Zone(zone) => {
+                let mut fields = Map::new();
+                fields.insert(ZONE.to_string(), Value::from(zone.as_str()));
+                Value::Object(fields)
+            }
             Answer::Place(place) => place.written(),
             Answer::Pin { lat, lon, near } => {
                 let mut fields = Map::new();
@@ -230,10 +318,22 @@ impl Answer {
         }
     }
 
-    /// `Beijing, Beijing, China`, a point near it, or that it is left alone.
+    /// `Beijing, Beijing, China`, a point near it, a shift, a date, a zone, or that it is left
+    /// alone.
     pub fn tells(&self) -> String {
         match self {
             Answer::Leave => "Left alone".to_string(),
+            Answer::Neighbours => "Between its neighbours".to_string(),
+            Answer::Date(at) => format!("From {at}"),
+            Answer::Zone(zone) => format!("In {zone}"),
+            Answer::Shift(moved) => moved
+                .iter()
+                .map(|moved| match moved.by.over_a_year() {
+                    true => format!("{} shifted {}, more than a year", moved.camera, moved.by.written()),
+                    false => format!("{} shifted {}", moved.camera, moved.by.written()),
+                })
+                .collect::<Vec<String>>()
+                .join("; "),
             Answer::Place(place) => place.tells(),
             Answer::Pin { lat, lon, near } => format!("A point near {} ({lat:.5}, {lon:.5})", near.tells()),
         }
@@ -243,6 +343,7 @@ impl Answer {
     pub fn names(&self) -> String {
         match self {
             Answer::Leave => "nothing".to_string(),
+            Answer::Neighbours | Answer::Date(_) | Answer::Zone(_) | Answer::Shift(_) => self.tells(),
             Answer::Place(place) => place.name.clone(),
             Answer::Pin { near, .. } => format!("a point near {}", near.name),
         }
@@ -251,7 +352,7 @@ impl Answer {
     /// Where its photos go, if anywhere.
     pub fn spot(&self) -> Option<Spot<'_>> {
         match self {
-            Answer::Leave => None,
+            Answer::Leave | Answer::Neighbours | Answer::Date(_) | Answer::Zone(_) | Answer::Shift(_) => None,
             Answer::Place(place) => Some(Spot {
                 lat: place.lat,
                 lon: place.lon,
@@ -278,8 +379,8 @@ impl Answer {
                     lat: lat2, lon: lon2, ..
                 },
             ) => lat == lat2 && lon == lon2,
-            (Answer::Leave, Answer::Leave) => true,
-            _ => false,
+            (Answer::Place(_) | Answer::Pin { .. }, _) => false,
+            (one, other) => one == other,
         }
     }
 }
@@ -357,10 +458,12 @@ impl Settings for Answers {
     }
 }
 
-/// A place offered for a question, and how sure the offer is.
+/// An answer offered for a question, in words, and how sure the offer is.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Offer {
-    pub place: Located,
+    pub answer: Answer,
+    /// What the page says for it.
+    pub words: String,
     pub confidence: f64,
     /// A name of the place, spelled the same once folded.
     pub exact: bool,
@@ -375,22 +478,107 @@ impl Offer {
     /// A candidate of the place data: sure when it matched a name exactly and is sure of it.
     pub fn of(candidate: &lookup::Candidate) -> Offer {
         let exact = candidate.how == How::Exact;
+        Offer::of_place(Located::of(&candidate.place), candidate.confidence, exact)
+            .with_sure(exact && candidate.confidence >= EXACT)
+    }
+
+    /// A place, in its words.
+    pub fn of_place(place: Located, confidence: f64, exact: bool) -> Offer {
         Offer {
-            place: Located::of(&candidate.place),
-            confidence: candidate.confidence,
+            words: place.tells(),
+            answer: Answer::Place(place),
+            confidence,
             exact,
-            sure: exact && candidate.confidence >= EXACT,
+            sure: false,
             located: None,
+        }
+    }
+
+    /// Any other answer, in the words given.
+    pub fn of_answer(answer: Answer, words: impl Into<String>) -> Offer {
+        Offer {
+            answer,
+            words: words.into(),
+            confidence: 1.0,
+            exact: false,
+            sure: false,
+            located: None,
+        }
+    }
+
+    pub fn with_sure(self, sure: bool) -> Offer {
+        Offer { sure, ..self }
+    }
+
+    /// The place it offers, when it offers one.
+    pub fn place(&self) -> Option<&Located> {
+        match &self.answer {
+            Answer::Place(place) => Some(place),
+            _ => None,
         }
     }
 }
 
-/// Which place a group of photos means.
+/// What a question asks for, which decides what the page offers beside the offers.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Kind {
+    /// A place: another one is chosen by name or on the map.
+    Place,
+    /// How far each camera's clock was off: a shift is typed.
+    Shift,
+    /// A date: one is typed.
+    Date,
+    /// A time zone: only the offers.
+    Zone,
+}
+
+/// One camera of an event, as a question about its dates shows it.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Evidence {
+    /// The camera's name, or `no camera`.
+    pub camera: String,
+    pub photos: usize,
+    pub first: String,
+    pub last: String,
+    /// How many days its photos are from the folder date, where they disagree with it.
+    pub days_off: Option<i64>,
+}
+
+impl Evidence {
+    /// `X100S: 49 photos, 2009-12-31 10:00:00 to 2009-12-31 18:00:00, 640 days after the folder`.
+    pub fn tells(&self) -> String {
+        format!("{}: {}", self.camera, self.facts())
+    }
+
+    /// The same without the camera's name.
+    pub fn facts(&self) -> String {
+        let photos = match self.photos {
+            1 => "1 photo".to_string(),
+            count => format!("{count} photos"),
+        };
+        let when = match self.first == self.last {
+            true => self.first.clone(),
+            false => format!("{} to {}", self.first, self.last),
+        };
+        let off = match self.days_off {
+            None => "agrees with the folder".to_string(),
+            Some(1) => "1 day after the folder".to_string(),
+            Some(-1) => "1 day before the folder".to_string(),
+            Some(days) if days > 0 => format!("{days} days after the folder"),
+            Some(days) => format!("{} days before the folder", -days),
+        };
+        format!("{photos}, {when}, {off}")
+    }
+}
+
+/// What a group of photos needs to be told: which place it means, how far a camera was off, or
+/// when it was taken.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Question {
     /// What the answer is kept under.
     pub key: String,
     pub title: String,
+    pub kind: Kind,
     pub photos: usize,
     /// Best first. Empty when there is no place data to ask.
     pub offers: Vec<Offer>,
@@ -399,6 +587,56 @@ pub struct Question {
     pub apart: bool,
     /// Something the person should know about the offers, such as that they were not narrowed.
     pub note: Option<String>,
+    /// What the question is decided on, camera by camera, for a question about dates.
+    pub evidence: Vec<Evidence>,
+}
+
+impl Question {
+    /// A question about a place, as the GPS tools ask it.
+    pub fn place(key: impl Into<String>, title: impl Into<String>, photos: usize, offers: Vec<Offer>) -> Question {
+        Question {
+            key: key.into(),
+            title: title.into(),
+            kind: Kind::Place,
+            photos,
+            offers,
+            answer: None,
+            apart: false,
+            note: None,
+            evidence: Vec::new(),
+        }
+    }
+}
+
+/// A shift typed by hand, one text per camera of the question, empty where that camera is right.
+pub fn shift_answer(question: &Question, typed: &[(String, String)]) -> Result<Answer, String> {
+    let mut moved = Vec::new();
+    for (camera, text) in typed {
+        if text.trim().is_empty() {
+            continue;
+        }
+        let evidence = question
+            .evidence
+            .iter()
+            .find(|evidence| &evidence.camera == camera)
+            .ok_or_else(|| format!("{} has no camera called {camera}", question.title))?;
+        let by = Shift::read(text).map_err(|why| format!("{camera}: {why}"))?;
+        by.apply(&evidence.first).map_err(|why| format!("{camera}: {why}"))?;
+        moved.push(Moved {
+            camera: camera.clone(),
+            by,
+            from: evidence.first.clone(),
+        });
+    }
+    match moved.is_empty() {
+        true => Err("type a shift for at least one camera".to_string()),
+        false => Ok(Answer::Shift(moved)),
+    }
+}
+
+/// A date typed by hand.
+pub fn date_answer(text: &str) -> Result<Answer, String> {
+    Ok(Answer::Date(crate::dates::format(crate::dates::parse(text)?)))
 }
 
 impl Question {
@@ -431,8 +669,14 @@ pub trait Tool: Sync {
         self.title().to_string()
     }
 
-    /// What each photo of the scope should say. Reads the cache, never a photo.
-    fn wanted(&self, cache: &Cache, scope: &Scope, settings: &Self::Settings) -> cache::Result<Vec<Wanted>>;
+    /// What each photo of the scope should say. Reads the cache and the place data, never a photo.
+    fn wanted(
+        &self,
+        cache: &Cache,
+        geo: Option<&Geo>,
+        scope: &Scope,
+        settings: &Self::Settings,
+    ) -> cache::Result<Vec<Wanted>>;
 
     /// The answers inside the settings, for a tool that asks. A tool that asks nothing has none.
     fn answers<'a>(&self, _settings: &'a mut Self::Settings) -> Option<&'a mut Answers> {
@@ -449,6 +693,11 @@ pub trait Tool: Sync {
         _settings: &Self::Settings,
     ) -> Result<Vec<Question>, String> {
         Ok(Vec::new())
+    }
+
+    /// Whether it needs the place data to know what to ask, not only for the offers.
+    fn asks_with_place_data(&self) -> bool {
+        false
     }
 
     /// What its row says while questions wait for an answer.
@@ -474,11 +723,13 @@ pub struct Wording {
     /// What one of them is, and many: `tag`, `tags`.
     pub one: &'static str,
     pub many: &'static str,
-    /// The bulk button that answers the sure ones.
+    /// The bulk button that answers the sure ones. A tool without one leaves it empty.
     pub confirm: &'static str,
     /// What makes a question sure, after "1 tag" or "3 tags": `matches a place by its exact name`.
     pub sure_one: &'static str,
     pub sure_many: &'static str,
+    /// What the page says when there is nothing to ask.
+    pub unasked: &'static str,
 }
 
 impl Default for Wording {
@@ -490,6 +741,7 @@ impl Default for Wording {
             confirm: "Confirm Sure Answers",
             sure_one: "has a sure answer",
             sure_many: "have a sure answer",
+            unasked: "No photo of the scope is waiting for this tool. Choose another scope on the Tools page.",
         }
     }
 }
@@ -512,9 +764,16 @@ pub trait AnyTool: Sync {
     fn title(&self) -> &'static str;
     fn fixes(&self) -> &'static str;
     /// `None` is the tool's own defaults.
-    fn change_set(&self, cache: &Cache, scope: &Scope, settings: Option<&str>) -> Result<ChangeSet, String>;
+    fn change_set(
+        &self,
+        cache: &Cache,
+        geo: Option<&Geo>,
+        scope: &Scope,
+        settings: Option<&str>,
+    ) -> Result<ChangeSet, String>;
     /// Whether it asks before it can change anything.
     fn asks(&self) -> bool;
+    fn asks_with_place_data(&self) -> bool;
     fn questions(
         &self,
         cache: &Cache,
@@ -550,10 +809,16 @@ impl<T: Tool> AnyTool for T {
         Tool::fixes(self)
     }
 
-    fn change_set(&self, cache: &Cache, scope: &Scope, settings: Option<&str>) -> Result<ChangeSet, String> {
+    fn change_set(
+        &self,
+        cache: &Cache,
+        geo: Option<&Geo>,
+        scope: &Scope,
+        settings: Option<&str>,
+    ) -> Result<ChangeSet, String> {
         let settings = settings_of::<T::Settings>(settings)?;
         let wanted = self
-            .wanted(cache, scope, &settings)
+            .wanted(cache, geo, scope, &settings)
             .map_err(|error| error.to_string())?;
         let mut set = ChangeSet::build(cache, &self.named(&settings), &wanted).map_err(|error| error.to_string())?;
         set.tool = Some(Tool::key(self).to_string());
@@ -562,6 +827,10 @@ impl<T: Tool> AnyTool for T {
 
     fn asks(&self) -> bool {
         Tool::answers(self, &mut T::Settings::default()).is_some()
+    }
+
+    fn asks_with_place_data(&self) -> bool {
+        Tool::asks_with_place_data(self)
     }
 
     fn questions(
@@ -595,10 +864,14 @@ impl<T: Tool> AnyTool for T {
     }
 }
 
-/// Every tool there is, in the order they are listed.
+/// Every tool there is, in the order they are listed: the date tools in the order they are best
+/// run, so a photo is written once.
 pub const ALL: &[&dyn AnyTool] = &[
     &gps_from_places::GpsFromPlacesTag,
     &gps_from_event::GpsFromEvent,
+    &dates_folder::DatesAgainstTheFolder,
+    &undated::PhotosWithoutADate,
+    &time_zones::TimeZones,
     #[cfg(feature = "demo")]
     &demo::Rating,
 ];
@@ -609,18 +882,31 @@ pub fn find(key: &str) -> Option<&'static dyn AnyTool> {
 
 /// How many photos of the scope the tool would change right now, with these settings or its
 /// own defaults: the same change set the preview shows, so the two numbers cannot differ.
-pub fn count(tool: &dyn AnyTool, cache: &Cache, scope: &Scope, settings: Option<&str>) -> Result<usize, String> {
-    Ok(tool.change_set(cache, scope, settings)?.counts().change)
+pub fn count(
+    tool: &dyn AnyTool,
+    cache: &Cache,
+    geo: Option<&Geo>,
+    scope: &Scope,
+    settings: Option<&str>,
+) -> Result<usize, String> {
+    Ok(tool.change_set(cache, geo, scope, settings)?.counts().change)
 }
 
 /// How many of its questions about the scope wait for an answer. Asked without the place data,
-/// which only the offers need.
-pub fn waiting(tool: &dyn AnyTool, cache: &Cache, scope: &Scope, settings: Option<&str>) -> Result<usize, String> {
+/// which most tools need only for the offers.
+pub fn waiting(
+    tool: &dyn AnyTool,
+    cache: &Cache,
+    geo: Option<&Geo>,
+    scope: &Scope,
+    settings: Option<&str>,
+) -> Result<usize, String> {
     if !tool.asks() {
         return Ok(0);
     }
+    let geo = geo.filter(|_| tool.asks_with_place_data());
     Ok(tool
-        .questions(cache, None, scope, settings)?
+        .questions(cache, geo, scope, settings)?
         .iter()
         .filter(|question| question.waits())
         .count())
@@ -647,7 +933,7 @@ pub fn confirm_sure(tool: &dyn AnyTool, questions: &[Question], settings: Option
     let mut text = settings.map(String::from);
     for question in questions.iter().filter(|question| question.confirmable()) {
         if let Some(offer) = question.sure() {
-            text = Some(tool.answer(text.as_deref(), &question.key, Some(Answer::Place(offer.place.clone())))?);
+            text = Some(tool.answer(text.as_deref(), &question.key, Some(offer.answer.clone()))?);
         }
     }
     match text {
@@ -706,7 +992,13 @@ pub mod demo {
             format!("Set a rating of {}", stars.0)
         }
 
-        fn wanted(&self, cache: &Cache, scope: &Scope, stars: &Stars) -> cache::Result<Vec<Wanted>> {
+        fn wanted(
+            &self,
+            cache: &Cache,
+            _geo: Option<&Geo>,
+            scope: &Scope,
+            stars: &Stars,
+        ) -> cache::Result<Vec<Wanted>> {
             Ok(scope
                 .paths(cache)?
                 .into_iter()
@@ -728,7 +1020,7 @@ mod tests {
         let demo = find("demo-rating").expect("the demo is listed");
         let scope = Scope::Filter(Filter::all().within("Germany"));
 
-        let set = demo.change_set(&cache, &scope, Some("4")).unwrap();
+        let set = demo.change_set(&cache, None, &scope, Some("4")).unwrap();
         let rows: Vec<String> = set.rows.iter().map(|row| row.rel_path.clone()).collect();
         assert_eq!(rows, scope.paths(&cache).unwrap());
         assert_eq!(set.title, "Set a rating of 4");
@@ -736,11 +1028,11 @@ mod tests {
 
         let whole = Scope::Filter(Filter::all());
         assert_eq!(
-            count(demo, &cache, &whole, None).unwrap(),
+            count(demo, &cache, None, &whole, None).unwrap(),
             crate::fixtures::photo_count()
         );
-        assert!(count(demo, &cache, &scope, None).unwrap() < crate::fixtures::photo_count());
-        assert!(demo.change_set(&cache, &scope, Some("nine")).is_err());
+        assert!(count(demo, &cache, None, &scope, None).unwrap() < crate::fixtures::photo_count());
+        assert!(demo.change_set(&cache, None, &scope, Some("nine")).is_err());
     }
 
     #[test]
@@ -748,5 +1040,46 @@ mod tests {
         assert_eq!(demo::Stars::read(&demo::Stars(2).written()), Ok(demo::Stars(2)));
         assert_eq!(<()>::read(""), Ok(()));
         assert!(<()>::read("anything").is_err());
+    }
+}
+
+#[cfg(test)]
+mod answer_tests {
+    use super::*;
+
+    #[test]
+    fn every_answer_round_trips_through_text() {
+        let answers = [
+            Answer::Leave,
+            Answer::Neighbours,
+            Answer::Date("2014-03-22 12:00:00".to_string()),
+            Answer::Zone("America/Chicago".to_string()),
+            Answer::Shift(vec![Moved {
+                camera: "DMC-TZ7".to_string(),
+                by: Shift::read("-640d 00:07").unwrap(),
+                from: "2011-09-02 15:00:00".to_string(),
+            }]),
+        ];
+        let mut all = Answers::default();
+        for (index, answer) in answers.iter().enumerate() {
+            assert_eq!(
+                Answer::read(&answer.written()).as_ref(),
+                Ok(answer),
+                "{}",
+                answer.written()
+            );
+            all.set(&index.to_string(), Some(answer.clone()));
+        }
+        assert_eq!(Answers::read(&all.written()), Ok(all));
+        assert_eq!(answers[4].tells(), "DMC-TZ7 shifted -640d 00:07, more than a year");
+        assert_eq!(answers[2].tells(), "From 2014-03-22 12:00:00");
+    }
+
+    #[test]
+    fn a_broken_answer_says_why() {
+        assert!(Answer::read(r#"{"date": "yesterday"}"#).is_err());
+        assert!(Answer::read(r#"{"zone": "Nowhere/Atlantis"}"#).is_err());
+        assert!(Answer::read(r#"{"shift": []}"#).is_err());
+        assert!(Answer::read(r#"{"shift": [{"camera": "X", "by": "soon", "from": "2011-09-02 15:00:00"}]}"#).is_err());
     }
 }

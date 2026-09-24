@@ -110,6 +110,22 @@ pub struct Stated {
     pub said: Said,
 }
 
+/// A photo as the date tools need it: its date, where it was, which camera, and what its folder
+/// says.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct Dated {
+    pub rel_path: String,
+    pub taken_at: Option<String>,
+    pub taken_offset: Option<String>,
+    pub gps: Option<(f64, f64)>,
+    pub camera: Option<String>,
+    pub country: Option<String>,
+    pub event_dir: Option<String>,
+    pub event_year: Option<i64>,
+    pub event_month: Option<i64>,
+    pub event_day: Option<i64>,
+}
+
 #[derive(Debug, Clone)]
 pub struct Known {
     pub id: i64,
@@ -442,6 +458,56 @@ impl Cache {
                 found.push(row?);
             }
         }
+        Ok(found)
+    }
+
+    /// The date side of these photos, in path order.
+    pub fn dated(&self, rel_paths: &[String]) -> Result<Vec<Dated>> {
+        self.dated_by("rel_path", rel_paths)
+    }
+
+    /// The date side of every photo of these event folders, in path order: the whole event, not
+    /// only the part of it a scope holds.
+    pub fn dated_in(&self, event_dirs: &[String]) -> Result<Vec<Dated>> {
+        self.dated_by("event_dir", event_dirs)
+    }
+
+    fn dated_by(&self, column: &str, keys: &[String]) -> Result<Vec<Dated>> {
+        let mut found = Vec::new();
+        for chunk in keys.chunks(CHUNK) {
+            let sql = format!(
+                "SELECT rel_path, taken_at, taken_offset, gps_lat, gps_lon, camera_model, country, event_dir,
+                    event_year, event_month, event_day
+                 FROM photo WHERE {column} IN ({})",
+                holes(chunk.len())
+            );
+            let mut statement = self.connection.prepare(&sql)?;
+            let rows = statement.query_map(rusqlite::params_from_iter(chunk), |row| {
+                let lat: Option<f64> = row.get(3)?;
+                let lon: Option<f64> = row.get(4)?;
+                let camera: Option<String> = row.get(5)?;
+                Ok(Dated {
+                    rel_path: row.get(0)?,
+                    taken_at: row.get(1)?,
+                    taken_offset: row
+                        .get::<_, Option<String>>(2)?
+                        .filter(|offset| !offset.trim().is_empty()),
+                    gps: lat.zip(lon),
+                    camera: camera
+                        .map(|camera| camera.trim().to_string())
+                        .filter(|camera| !camera.is_empty()),
+                    country: row.get(6)?,
+                    event_dir: row.get(7)?,
+                    event_year: row.get(8)?,
+                    event_month: row.get(9)?,
+                    event_day: row.get(10)?,
+                })
+            })?;
+            for row in rows {
+                found.push(row?);
+            }
+        }
+        found.sort_by(|one, other| one.rel_path.cmp(&other.rel_path));
         Ok(found)
     }
 

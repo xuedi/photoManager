@@ -85,6 +85,12 @@ pub fn run(geo: &mut Geo, dir: &Path, progress: &dyn Fn(Step)) -> Result<Importe
     })
 }
 
+/// Whether every dump an import needs is already in the directory, so it can be imported again
+/// without a download.
+pub fn present(dir: &Path) -> bool {
+    DUMPS.iter().all(|name| find(dir, name).is_ok())
+}
+
 /// The dump itself, or the zip it arrives in. GeoNames ships `cities1000.txt` as
 /// `cities1000.zip` but `shapes_simplified_low.json` as `shapes_simplified_low.json.zip`, so
 /// both spellings are looked for.
@@ -186,8 +192,8 @@ fn areas(transaction: &rusqlite::Transaction<'_>, text: &str) -> Result<usize> {
 fn places(transaction: &rusqlite::Transaction<'_>, text: &str, progress: &dyn Fn(Step)) -> Result<(usize, usize)> {
     let total = text.lines().count();
     let mut place = transaction.prepare(
-        "INSERT INTO place (id, name, country, area, feature, population, lat, lon)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+        "INSERT INTO place (id, name, country, area, feature, population, lat, lon, zone)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
     )?;
     let mut at = transaction.prepare("INSERT INTO place_at VALUES (?1, ?2, ?3, ?4, ?5)")?;
     let mut name = transaction.prepare("INSERT INTO name (place_id, folded, own) VALUES (?1, ?2, ?3)")?;
@@ -211,7 +217,10 @@ fn places(transaction: &rusqlite::Transaction<'_>, text: &str, progress: &dyn Fn
         };
         let population: i64 = field[14].parse().unwrap_or(0);
         let area = (!field[10].is_empty()).then(|| format!("{}.{}", field[8], field[10]));
-        place.execute(params![id, field[1], field[8], area, field[7], population, lat, lon])?;
+        let zone = field.get(17).filter(|zone| !zone.is_empty());
+        place.execute(params![
+            id, field[1], field[8], area, field[7], population, lat, lon, zone
+        ])?;
         at.execute(params![id, lat, lat, lon, lon])?;
         places += 1;
 

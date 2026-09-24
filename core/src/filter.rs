@@ -697,7 +697,7 @@ pub(crate) mod tests {
 
         let by_date = filter("all").photos(&cache, Order::Date).unwrap();
         let dated = by_date.iter().take_while(|one| one.taken_at.is_some()).count();
-        assert_eq!(dated, by_date.len() - 2, "the two undated photos come last");
+        assert_eq!(dated, by_date.len() - 4, "the four undated photos come last");
         assert!(by_date[dated..].iter().all(|one| one.taken_at.is_none()));
         let dates: Vec<&String> = by_date[..dated]
             .iter()
@@ -722,17 +722,23 @@ pub(crate) mod tests {
         let all = crate::fixtures::photo_count() as i64;
 
         assert_eq!(count("all"), all);
-        assert_eq!(count("no-gps"), all - 6, "six photos carry GPS");
-        assert_eq!(count("no-date"), 2);
+        assert_eq!(count("no-gps"), all - 22, "twenty-two photos carry GPS");
+        assert_eq!(count("no-date"), 4);
         assert_eq!(
             filter("date-off-folder").paths(&cache).unwrap(),
             [
                 "China/2006-09-00 Besuch Ben/2006-08-21/P1000002.JPG",
                 "China/2006-09-00 Besuch Ben/P1000001.JPG",
+                "Denmark/2017-09-00 Autumn Walk/DSCF0101.JPG",
+                "Denmark/2017-09-00 Autumn Walk/DSCF0102.JPG",
+                "Germany/2013-05-18 Garden Party/P1060001.JPG",
+                "Germany/2013-05-18 Garden Party/P1060002.JPG",
+                "Greece/2010-04-10 Beach/scan0001.jpg",
+                "Greece/2010-04-10 Beach/scan0002.jpg",
             ],
-            "the folder says September, the photos August"
+            "a folder a month off, a camera years off, scans a year off"
         );
-        assert_eq!(count("no-tag"), 6);
+        assert_eq!(count("no-tag"), 22);
         assert_eq!(count("no-location"), all - 1, "one photo names its city");
         assert_eq!(count("no-gps@Germany"), 4);
         assert_eq!(count("no-gps@Germany/2019-07-13 Sommerfest"), 2);

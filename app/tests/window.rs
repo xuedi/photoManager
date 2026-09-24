@@ -159,6 +159,7 @@ fn scans_into_its_cache() {
     lists_the_tools_for_a_scope(&window, &opened, &library);
     answers_the_questions_of_a_tool(&window, &opened);
     answers_by_event_and_on_the_map(&window);
+    answers_a_question_about_a_camera(&window);
     reads_the_history(&window, &opened);
 }
 
@@ -403,6 +404,95 @@ fn answers_by_event_and_on_the_map(window: &Window) {
     window.show_view("dashboard");
 }
 
+/// A question about a camera's clock has Enter a Shift where a place has the map, Confirm puts
+/// the offer's own answer in, and a typed shift is checked before it is kept. Nothing is written
+/// here.
+fn answers_a_question_about_a_camera(window: &Window) {
+    use photomanager_core::tools::{Answer, Kind};
+    const TOOL: &str = "dates-against-the-folder";
+    const PARTY: &str = "Germany/2013-05-18 Garden Party";
+    let tools = window.tools();
+    let questions = tools.questions();
+    let act = |name: &str, target: gtk::glib::Variant| WidgetExt::activate_action(window, name, Some(&target)).unwrap();
+    let asked = |key: &str| {
+        questions
+            .questions()
+            .into_iter()
+            .find(|question| question.key == key)
+            .unwrap_or_else(|| panic!("nothing asks about {key}"))
+    };
+    window.show_view("tools");
+    act("win.tools-scope", "all".to_variant());
+    act("win.run-tool", TOOL.to_variant());
+    until(
+        || questions.key().as_deref() == Some(TOOL) && !questions.is_busy(),
+        "the events were asked about",
+    );
+    let party = asked(PARTY);
+    assert_eq!(party.kind, Kind::Shift);
+    let row = rows(questions.upcast_ref())
+        .into_iter()
+        .find(|row| row.title() == "2013-05-18 Garden Party")
+        .expect("a row for the party");
+    let subtitle = row.subtitle().unwrap();
+    assert!(
+        subtitle.contains("Offered: Shift DMC-TZ7 by +623d 23:45 (more than a year)"),
+        "{subtitle}"
+    );
+    assert!(
+        subtitle.contains("DMC-TZ7: 2 photos"),
+        "the evidence per camera: {subtitle}"
+    );
+    let menu = descendants(row.upcast_ref())
+        .into_iter()
+        .find_map(|widget| widget.downcast::<gtk::MenuButton>().ok())
+        .and_then(|button| button.menu_model())
+        .expect("a menu of answers");
+    let items: Vec<String> = (0..menu.n_items())
+        .filter_map(|index| {
+            menu.item_attribute_value(index, "label", None)
+                .and_then(|label| label.get::<String>())
+        })
+        .collect();
+    assert!(items.iter().any(|item| item == "Enter a Shift…"), "{items:?}");
+    assert!(
+        !items
+            .iter()
+            .any(|item| item == "Pick on Map…" || item == "Choose Another…"),
+        "{items:?}"
+    );
+    assert!(
+        !labels(questions.upcast_ref())
+            .iter()
+            .any(|label| label == "Confirm Exact Matches"),
+        "no bulk button for dates"
+    );
+
+    act("win.answer", (TOOL, PARTY, "best").to_variant());
+    assert_eq!(
+        asked(PARTY).answer,
+        Some(party.offers[0].answer.clone()),
+        "Confirm puts the offer in"
+    );
+
+    act("win.answer", (TOOL, PARTY, "shift").to_variant());
+    assert_eq!(questions.typing().as_deref(), Some(PARTY), "the shift dialog is open");
+    let typed = |text: &str| questions.type_shift(PARTY, &[("DMC-TZ7".to_string(), text.to_string())]);
+    assert!(typed("soon").unwrap_err().starts_with("DMC-TZ7: "));
+    assert_eq!(
+        questions.typing().as_deref(),
+        Some(PARTY),
+        "a bad shift keeps the dialog open"
+    );
+    typed("-2d").unwrap();
+    assert_eq!(questions.typing(), None, "the dialog closed");
+    let Some(Answer::Shift(moved)) = asked(PARTY).answer else {
+        panic!("not a shift: {:?}", asked(PARTY).answer);
+    };
+    assert_eq!(moved[0].by.written(), "-2d");
+    window.show_view("dashboard");
+}
+
 /// The preview knows only a change set: it counts it, it lets rows be dropped from it, and it
 /// asks the engine for the exact diff of one photo when that photo is asked about. Nothing here
 /// writes; the apply is the smoke test's.
@@ -622,7 +712,11 @@ fn surveys_what_is_missing(window: &Window, opened: &Rc<Library>) {
     assert_eq!(window.visible_view(), "gallery", "the click went to the gallery");
     let (filter, count) = window.shown().expect("the gallery was handed a set of photos");
     assert_eq!(filter.to_string(), "no-gps");
-    assert_eq!(count, Some(survey.photos - 6), "the number clicked is the number shown");
+    assert_eq!(
+        count,
+        Some(survey.photos - 22),
+        "the number clicked is the number shown"
+    );
 
     WidgetExt::activate_action(window, "win.show-photos", Some(&"no-gps@Germany".to_variant())).unwrap();
     assert_eq!(window.shown().unwrap().1, Some(4));
@@ -691,7 +785,7 @@ fn browses_the_gallery(window: &Window, opened: &Rc<Library>) {
         window.shown().unwrap().0,
         "the dropdown and the dashboard set the same part"
     );
-    assert_eq!(listed().len(), all - 6);
+    assert_eq!(listed().len(), all - 22);
     act("win.gallery-gap", "none");
     assert_eq!(filter(), "all");
     assert_eq!(gap.selected(), 0, "the dropdown follows the filter");
