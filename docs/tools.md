@@ -59,7 +59,10 @@ flowchart TD
 
 Opening a tool builds the same change set again and pushes the [preview](preview.md) on top of
 the list. A tool that asks shows its questions first, and its row says what waits for an answer
-("8 tags wait for an answer") where a count would say nothing is to be done.
+("8 tags wait for an answer") where a count would say nothing is to be done. A tool may instead
+have a page of its own kind: the [tag vocabulary](#tag-vocabulary) opens its tree, and a tool that
+needs one line of text, such as [Add a Tag](#add-a-tag), asks for it first. The window chooses the
+page by its kind, never by which tool it is.
 
 ## Questions and answers
 
@@ -270,6 +273,102 @@ Over a whole library this is the largest pass there is: nearly every photo, each
 more, and the preview says how much. Measured over a folder of real photos a write takes around
 40 ms, so thousands of photos take minutes; the scope can make it one country or one event at a
 time.
+
+## Tag vocabulary
+
+One vocabulary instead of four. The person decides once how the tag tree should look, and every
+photo is written so its five tag fields say the same thing ([cache.md](cache.md#tag-fields)).
+
+The decisions are **rules** over tag paths, applied in order:
+
+- **rename A to B** moves `A` and everything below it to `B`. Renaming a leaf, moving a branch to
+  another parent and merging into a tag that is already there are all this one rule.
+- **delete A** takes `A` and everything below it away.
+
+A photo's deepest tags are followed through every rule, and what comes out is its new tag set. A
+root on its own - a photo tagged only `events` - is dropped, since every level is written anyway
+and a root alone says nothing; a tag without anything below it anywhere is no root of that kind
+and stays. A rule that could never do anything, because an earlier one already moved or deleted its
+tag, is refused when it is entered, and so is one that would take a tag back to where an earlier
+rule moved it from, or into itself, and one with a separator inside a level or an empty level. The
+rules are the tool's settings, so they apply to every later run and every photo imported later:
+the vocabulary is decided once.
+
+**The page** is the tree, not a list of questions:
+
+- **Suggestions** on top, from what the tree already shows: two spellings that differ only in
+  case are offered to merge into the lower-case one, two sibling tags a letter apart into the more
+  used spelling, and each leaf of `mixed` to move to `topics/<leaf>`. Confirm makes it a rule;
+  Leave Alone is remembered and not suggested again. The suggestions come from the tree after the
+  rules, so a merged pair is gone.
+- **The rules** in order, each with how many photos it changes and a button to take it out. A rule
+  that only made sense after it goes too, and the page says so.
+- **Generated Tags**: what becomes of the tags that only say what the data says - see below.
+- **The tree** after the rules, each tag with the photos that carry it or a tag below it, and per
+  tag **Rename or Move**, **Merge Into** (a search over the tree) and **Delete**. Deleting a tag
+  from more than a hundred photos asks first and says how many. A search turns the tree into a flat
+  list of the tags that match.
+- **Preview** builds the change set for the scope.
+
+The tree and its counts are worked out off the main thread from the cache, over the whole library
+whatever the scope, so a count on the page is the count of the tag, not of the scope.
+
+**Generated tags.** Year, place and event tags repeat what the date, the place words and the
+folder already say. By default they are **derived from the data** with every tag write, so they
+can never disagree with it: `timeline/<year>` from the date, `places/in<Country>/<City>` from the
+place words (the folder's country where the words name none), `events/<year> <name>` from the
+event folder. Each replaces the whole branch of its root, so a photo moved to another event gets
+the new event on the next run; a photo the data says nothing about keeps what it has, and a photo
+without any tag gets them for free. They can also be **dropped**, or **left as they are**, only
+mapped by the rules.
+
+```mermaid
+flowchart TD
+    scan[scan: the tags from every field,<br/>and whether the fields are tidy] --> cache[(cache)]
+    rules[the rules, in order<br/>from the tree and the suggestions] --> map
+    cache --> map[each photo's deepest tags, mapped]
+    map --> generated[generated tags derived, dropped or kept]
+    generated --> diff{new set differs,<br/>or the fields are not tidy?}
+    diff -- yes --> change[tags in all five fields, label and catalog sets taken away]
+    diff -- no --> nothing[not in the change set]
+    change --> preview[preview, apply, journal, take back]
+```
+
+**Who is in the change set**: every photo of the scope whose tags the rules or the generated tags
+change, and every photo whose fields are not tidy, even with its tags unchanged. What is written is
+always the whole set: every path with every level in every field, the label and the catalog sets
+taken away. A second run finds nothing to do.
+
+**Immich** reads the tags from the files on its next library scan and replaces a photo's tags with
+what the file says, so a renamed tag moves there too. A tag no photo carries any more is not
+removed by that: it stays in Immich's tag list until its tag cleanup job is started by hand. Tag
+names are compared as they are spelled there, which is why the case twins are worth merging.
+
+## Add a tag
+
+One tag onto every photo of the scope, most often a selection handed over from the gallery. It
+asks for the tag first, with its levels separated by `/`, and checks it before the preview. What a
+photo carries stays; the tag is written with every level into every field, like any tag write. A
+photo that carries it already and whose fields are tidy has nothing to do.
+
+## Running tools together
+
+Nextcloud uploads a whole photo again for every edit, so two tools over the whole library are two
+uploads of it. **Run Together** on the Tools page chooses several tools and previews them as one
+pass, each with the settings and answers it was last given: each photo's changes from every tool
+merged into one row, one write, one entry in the journal, taken back as one.
+
+- **One row per photo.** The counts are of photos, so a photo two tools change is counted once.
+- **A clash is refused.** Two tools that would set the same field of one photo - both the tags,
+  say - refuse that photo with both named.
+- **A refusal is one tool's.** A tool that refuses a photo leaves it to the others; only a photo
+  every chosen tool refuses is refused, with each reason.
+- The pass is named after every tool in it, in the history too.
+
+Time zones and the tag vocabulary are the two passes that reach nearly every photo, and run
+together they are one upload instead of two. Measured over two events of real photos, the two
+together wrote each photo once, in around 40 ms a photo, a second run found nothing left, and
+taking the pass back put every field back exactly.
 
 ## The history
 

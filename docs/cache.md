@@ -11,8 +11,8 @@ It lives in `$XDG_CACHE_HOME/org.beijingcode.PhotoManager/cache.db` (SQLite, wri
 
 | Table | Holds |
 |-------|-------|
-| `photo` | one row per JPEG: where it is, what the filesystem says (size, mtime, inode), its content id, what the folders say (country, city, event date and name, the event's folder, sub-folder), what the metadata says (dates, GPS and how the position was worked out, the city in the location text, camera, orientation, rating, size), and the raw metadata as JSON |
-| `tag` | one row per tag path per photo, plus its leaf |
+| `photo` | one row per JPEG: where it is, what the filesystem says (size, mtime, inode), its content id, what the folders say (country, city, event date and name, the event's folder, sub-folder), what the metadata says (dates, GPS and how the position was worked out, the city in the location text, camera, orientation, rating, size, whether its tag fields are tidy), and the raw metadata as JSON |
+| `tag` | one row per tag path per photo, from every tag field, plus its leaf |
 | `issue` | one row per thing worth looking at, with its kind and a detail |
 
 The raw JSON is there so a field we have not modelled yet is not lost between scans. It also
@@ -27,6 +27,20 @@ Because it holds what every photo says, the cache is also what answers "what wou
 to these photos" without opening a single file, which is what a [preview](preview.md) is built
 from, and what the [dashboard](dashboard.md) counts. The columns the dashboard asks about sit
 together in one covering index, so counting them never reads the rows with their raw JSON.
+
+## Tag fields
+
+A photo keeps its tags in five fields, and older writers filled them differently: whole paths in
+some, only the names in others, a level missing here and there, a tag in one field and not the
+next. The scan reads all five. A photo's tags are every path of the three fields that hold paths,
+and every name in the two flat fields that is no level of any path, so a tag written to one field
+only is never lost.
+
+It also remembers whether the fields are **tidy**, which is what a tag write leaves behind: every
+path with all its levels in the three path fields, every level's name in the two flat ones, and
+nothing in the label or the catalog sets, where older writers left keywords. A photo without any
+tag and without those leftovers is tidy. A photo that is not needs a write even when its tags stay
+the same, and the [tag vocabulary](tools.md#tag-vocabulary) is the tool that writes it.
 
 A second, read-only connection can look at the cache while the application's own connection is
 busy with a scan or an apply; that is how the dashboard is refreshed off the main thread.
