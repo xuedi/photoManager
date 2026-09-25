@@ -21,6 +21,13 @@ is, what would change in words, and a verdict.
 
 Only a row that would change can be selected, and only selected rows are ever handed to the engine.
 
+A change set can instead be one of **moves**: one row per folder or photo that would go somewhere
+else, with where it goes and how many photos go with it, and the same verdicts. Such a set is built
+from the cache like any other, and then the folders it would move are looked at on disk - never a
+photo in them: a target that is there already, or a folder that holds a file the scan does not know
+or lacks one it does, is refused in the preview as the engine would refuse it on apply. A set is
+either moves or writes, never both.
+
 ## Why the preview reads the cache and the apply reads the file
 
 A pass over the whole library is one row per photo, and re-reading every photo with ExifTool to
@@ -67,7 +74,8 @@ the exact detail is for checking, and the second is never a guess.
 Nextcloud re-uploads the whole file for every edit, so the estimate is the sum of the file sizes of
 the selected rows that would actually change - not a guess at the size of the difference. It is
 shown in the summary and next to the apply button, so a pass over the library is a decision and not
-a surprise.
+a surprise. A move uploads nothing: Nextcloud takes a renamed folder for a move on the server, so a
+set of moves costs no traffic.
 
 ## Before the first ever write
 

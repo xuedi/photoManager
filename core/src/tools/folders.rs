@@ -734,8 +734,8 @@ impl Tool for FolderMigration {
         let mut findings = vec![Finding {
             title: "Where the Events Are".to_string(),
             detail: format!(
-                "In the folder of their city already: {}. Not yet: {}, of which {} name one city on every photo, {} \
-                 a city on some photos, {} several cities and {} none.",
+                "In the folder of their city already: {}. Not yet: {} - one city on every photo: {}, a city on some \
+                 photos: {}, several cities: {}, none: {}.",
                 survey.in_cities,
                 survey.events.len(),
                 sure,

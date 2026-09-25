@@ -139,6 +139,48 @@ silence for a minute is reported rather than waited on for ever. A process that 
 again and the command repeated once, which is safe because every command is either a read or a
 write of a temporary copy.
 
+## Moving a folder
+
+The engine has one more thing it does besides writing fields: it takes a folder or a photo to
+another place in the library. Nothing inside a photo changes, not even its modification time; a
+rename keeps them all. It is how an event goes into the folder of its city, or a photo lying loose
+in a country folder into an event.
+
+An event moves by **one rename**. On one filesystem that is atomic: the event is in its old folder
+or in its new one, never half in each, whatever happens in between. Its sub-folders go with it as
+they are.
+
+```mermaid
+flowchart TD
+    move[a folder, where it goes,<br/>and every photo in it with its content id] --> guards{inside the library, target not there,<br/>same filesystem?}
+    guards -- no --> refused[refused, with a reason]
+    guards -- yes --> prove{every file a photo the move<br/>was built with, same image data?}
+    prove -- no --> refused
+    prove -- yes --> record[(journal: the folder before and after,<br/>every photo with its content id)]
+    record --> parents[make the folders it goes into]
+    parents --> rename[one rename]
+    rename --> check{every file arrived,<br/>the same file?}
+    check -- no --> back[renamed back: failed]
+    check -- yes --> prune[take away the folders it left empty]
+    prune --> rows[the cache rows follow it]
+    rows --> moved[moved]
+```
+
+- **Nothing is overwritten.** A target that is there already refuses the move. A target on another
+  filesystem refuses it too, because the rename would become a copy, and a photo is never copied.
+- **Every file is accounted for.** Before the rename every file in the folder must be a photo the
+  move was built with, read again to prove its image data is the one the cache knew. A file the
+  scan did not know, or one gone since, refuses the move: scan first. After the rename every file
+  must be there under the new name as the same file.
+- **Only what it left empty goes.** The folder it moved out of is taken away if the move left it
+  empty, and its parent after it, but never the library itself and never a folder with anything in
+  it. The folders it made for itself go again if the rename fails.
+
+Like a write, a move is written down and committed before it happens. A process stopped between
+the two leaves a move without an outcome, and the next start settles it by looking where the folder
+is: still in the old place is a move that did not happen, in the new place one that did, and
+anything else is reported as failed and left for a person.
+
 ## The journal
 
 Everything that is about to happen is committed to `$XDG_DATA_HOME/…/app.db` before ExifTool is
@@ -153,6 +195,8 @@ to say, and an undo has to outlive a cache rebuild.
 | `batch` | one pass: what kind, what ran it (a title, and a tool's key when a tool did), when it started and finished, and which batch it undoes |
 | `entry` | one photo in a pass: its path, its content id, everything it said before the write in full, ExifTool's hash of its image data, and what became of it |
 | `swap` | one field of one entry: the tag, the name it reads back under, and its old and new value |
+| `relocation` | one move in a pass: the folder or photo before and after, and what became of it |
+| `relocated` | one photo of a move: where it was before it, and its content id |
 
 An entry without an outcome and a batch without a finish are how an interrupted pass makes itself
 known on the next start.
@@ -160,8 +204,9 @@ known on the next start.
 The journal carries its schema version. One it does not know is refused outright and left as it
 is. One it knows how to bring forward is copied first - the whole database as SQLite sees it, the
 write-ahead log included, to a file beside it named after the old version - and then migrated in
-one transaction that only adds: new columns, nothing rewritten, nothing dropped. The first such
-step gave batches their names; a batch from before it has none and reads as "Earlier change".
+one transaction that only adds: new columns and tables, nothing rewritten, nothing dropped. The
+first such step gave batches their names; a batch from before it has none and reads as "Earlier
+change". The second added the moves.
 
 ## Taking it back
 
@@ -174,6 +219,17 @@ which batch it undoes and is named after it: "Take back: " and its title. Any ba
 not only the last - [tools.md](tools.md#taking-back-any-pass). Two things make it refuse: a batch that was already undone, and a photo that
 no longer says what the write left in it - checked field by field against the journal, so an edit
 made by something else in the meantime is never quietly overwritten.
+
+A photo is found where the pass left it. When that path is gone because its folder moved since, it
+is found by its content id, where the cache last saw that image data - so a date written last week
+can be taken back after its event went into its city. If the same image data lies in the library
+more than once, the one with the same file name is taken, and when that does not decide it the
+photo is left alone.
+
+A move is taken back by moving it back, through the same checks the other way round: refused when
+the old place is there again, or when the folder no longer holds exactly the photos it was moved
+with - one added, one gone, one whose image data is another. Its metadata may have been written in
+the meantime; that stays, since only the folder is taken back.
 
 ## Keeping away from the photos
 

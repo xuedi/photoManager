@@ -518,7 +518,7 @@ impl Preview {
         imp.summary.set_visible(true);
 
         imp.traffic.set_label(&match moves {
-            true => "A move uploads nothing again".to_string(),
+            true => "A move uploads nothing".to_string(),
             false => format!("{} would be uploaded again", size(counts.traffic)),
         });
         imp.apply_button.set_sensitive(counts.selected > 0);

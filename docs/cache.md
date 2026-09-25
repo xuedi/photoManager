@@ -92,7 +92,9 @@ flowchart TD
     walk --> strays[sidecars, other files]
     photos --> known{known and unchanged?}
     known -- yes --> skip[leave it alone]
-    known -- no --> read[read the file once]
+    known -- no --> renamed{the same file as a row<br/>that is gone from its path?}
+    renamed -- yes --> follow[the row follows it]
+    renamed -- no --> read[read the file once]
     read --> hash[content id]
     read --> meta[metadata]
     hash --> row[(cache)]
@@ -111,6 +113,12 @@ few hundred rows.
 Unchanged means same size, same modification time and same inode. A second scan of an untouched
 library reads no file at all and takes seconds.
 
+A rename keeps all three, so a file at a new path that matches a row whose path is gone is that
+row, renamed: the row follows it and what its folders say is read again from the new path, without
+reading the file. A folder moved by the [Folder Migration](tools.md#folder-migration) or by hand
+costs a scan nothing. A photo that was moved some other way - copied and deleted - is read again
+and recognised by its content id.
+
 There are two modes plus the rebuild:
 
 - **Scan** looks at what changed and reads only that.
@@ -121,7 +129,8 @@ There are two modes plus the rebuild:
 Nothing scans on its own. A scan happens because someone pressed the button.
 
 A photo the [write engine](writing.md) has changed has its cache row forgotten there and then, so
-the next scan reads the file again rather than trusting a row that is now stale. The journal of
+the next scan reads the file again rather than trusting a row that is now stale. A folder the engine
+moved takes its rows with it at once, the same way a scan would. The journal of
 those writes is a database of its own and is not part of the cache: a rebuild must not lose an
 undo.
 
