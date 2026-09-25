@@ -26,7 +26,7 @@ use photomanager_core::settings::{self, Settings};
 use photomanager_core::survey::Survey;
 use photomanager_core::thumbs::{Size, Thumbs};
 use photomanager_core::tools::tag_vocabulary::{self, Overview, Vocabulary};
-use photomanager_core::tools::{self, Question};
+use photomanager_core::tools::{self, Finding, Question};
 use photomanager_core::write::{Engine, Summary as Applied};
 
 #[derive(Debug)]
@@ -268,7 +268,7 @@ impl Library {
 
     /// What a tool asks about the scope, with the answers these settings give, off the main thread
     /// through read-only looks at the cache and the place data.
-    pub fn questions<F: FnOnce(Result<Vec<Question>, String>) + 'static>(
+    pub fn questions<F: FnOnce(Result<(Vec<Question>, Vec<Finding>), String>) + 'static>(
         &self,
         key: &str,
         settings: Option<String>,
@@ -286,8 +286,13 @@ impl Library {
         std::thread::spawn(move || {
             let geo = Geo::read_only(&geo_db).ok().flatten();
             let asked = match Cache::read_only(&cache_db) {
-                Ok(Some(cache)) => tool.questions(&cache, geo.as_ref(), &scope, settings.as_deref()),
-                Ok(None) => Ok(Vec::new()),
+                Ok(Some(cache)) => tool
+                    .questions(&cache, geo.as_ref(), &scope, settings.as_deref())
+                    .and_then(|questions| {
+                        let report = tool.report(&cache, geo.as_ref(), &scope, settings.as_deref())?;
+                        Ok((questions, report))
+                    }),
+                Ok(None) => Ok((Vec::new(), Vec::new())),
                 Err(error) => Err(error.to_string()),
             };
             let _ = sender.send_blocking(asked);

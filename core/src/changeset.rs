@@ -465,6 +465,12 @@ fn difference(field: &Field, said: Option<&Said>) -> Difference {
     }
 }
 
+/// Whether a photo's regions already say what these faces would, as far as the cache knows.
+pub fn regions_say(said: Option<&Regions>, wanted: &change::Faces) -> bool {
+    let after = shown_faces(&wanted.faces);
+    shown_regions(said, Some(wanted), &after) == after
+}
+
 /// The names of the regions, in the order the file lists them.
 fn shown_faces(faces: &[change::Face]) -> String {
     match faces.is_empty() {

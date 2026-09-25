@@ -238,6 +238,11 @@ fn state(window: &Window, paths: &Paths, library: Option<&Library>) -> String {
             "busy": page.is_busy(),
             "settings": page.settings(),
             "questions": asked,
+            "findings": page.findings().iter().map(|finding| serde_json::json!({
+                "title": finding.title,
+                "detail": finding.detail,
+                "rows": finding.rows.len(),
+            })).collect::<Vec<_>>(),
             "toast": page.toast(),
             "picking": page.picking().map(|(question, _)| question),
         })
@@ -320,6 +325,11 @@ fn state(window: &Window, paths: &Paths, library: Option<&Library>) -> String {
         "issues": counts.issues,
         "thumbnails": counts.thumbnails,
         "places": counts.places,
+        "people": library.and_then(|library| library.people_known()).map(|(named, at)| serde_json::json!({
+            "named": named,
+            "fetched_at": at,
+        })),
+        "dashboard_toast": dashboard.said(),
         "scanning": library.map(|library| library.is_scanning()).unwrap_or(false),
     })
     .to_string()

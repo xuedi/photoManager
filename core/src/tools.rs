@@ -33,6 +33,7 @@ pub mod dates_folder;
 pub mod gps_from_event;
 pub mod gps_from_places;
 pub mod offsets;
+pub mod people;
 pub mod tag_vocabulary;
 #[cfg(all(test, feature = "fixtures"))]
 pub(crate) mod testing;
@@ -173,6 +174,8 @@ pub enum Answer {
     Neighbours,
     /// Taken in this IANA time zone.
     Zone(String),
+    /// This person is this tag.
+    Tag(String),
 }
 
 /// One camera of an event, and how far its clock was off.
@@ -191,6 +194,7 @@ const NEIGHBOURS: &str = "neighbours";
 const SHIFT: &str = "shift";
 const DATE: &str = "date";
 const ZONE: &str = "zone";
+const TAG: &str = "tag";
 
 /// Where an answer puts its photos.
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -259,6 +263,13 @@ impl Answer {
                 crate::dates::offset_in(zone, "2000-01-01 12:00:00")?;
                 Ok(Answer::Zone(zone.to_string()))
             }
+            Value::Object(fields) if fields.contains_key(TAG) => {
+                let path = fields
+                    .get(TAG)
+                    .and_then(Value::as_str)
+                    .ok_or_else(|| format!("{value} is not a tag"))?;
+                Ok(Answer::Tag(crate::tags::path(path)?))
+            }
             Value::Object(fields) if fields.contains_key(PIN) => {
                 let wrong = || format!("{value} is not a pin");
                 let point = fields.get(PIN).and_then(Value::as_array).ok_or_else(wrong)?;
@@ -310,6 +321,11 @@ impl Answer {
                 fields.insert(ZONE.to_string(), Value::from(zone.as_str()));
                 Value::Object(fields)
             }
+            Answer::Tag(path) => {
+                let mut fields = Map::new();
+                fields.insert(TAG.to_string(), Value::from(path.as_str()));
+                Value::Object(fields)
+            }
             Answer::Place(place) => place.written(),
             Answer::Pin { lat, lon, near } => {
                 let mut fields = Map::new();
@@ -328,6 +344,7 @@ impl Answer {
             Answer::Neighbours => "Between its neighbours".to_string(),
             Answer::Date(at) => format!("From {at}"),
             Answer::Zone(zone) => format!("In {zone}"),
+            Answer::Tag(path) => format!("Tagged {path}"),
             Answer::Shift(moved) => moved
                 .iter()
                 .map(|moved| match moved.by.over_a_year() {
@@ -345,7 +362,7 @@ impl Answer {
     pub fn names(&self) -> String {
         match self {
             Answer::Leave => "nothing".to_string(),
-            Answer::Neighbours | Answer::Date(_) | Answer::Zone(_) | Answer::Shift(_) => self.tells(),
+            Answer::Neighbours | Answer::Date(_) | Answer::Zone(_) | Answer::Shift(_) | Answer::Tag(_) => self.tells(),
             Answer::Place(place) => place.name.clone(),
             Answer::Pin { near, .. } => format!("a point near {}", near.name),
         }
@@ -354,7 +371,12 @@ impl Answer {
     /// Where its photos go, if anywhere.
     pub fn spot(&self) -> Option<Spot<'_>> {
         match self {
-            Answer::Leave | Answer::Neighbours | Answer::Date(_) | Answer::Zone(_) | Answer::Shift(_) => None,
+            Answer::Leave
+            | Answer::Neighbours
+            | Answer::Date(_)
+            | Answer::Zone(_)
+            | Answer::Shift(_)
+            | Answer::Tag(_) => None,
             Answer::Place(place) => Some(Spot {
                 lat: place.lat,
                 lon: place.lon,
@@ -532,6 +554,8 @@ pub enum Kind {
     Date,
     /// A time zone: only the offers.
     Zone,
+    /// Which tag a person is: one is typed.
+    Person,
 }
 
 /// One camera of an event, as a question about its dates shows it.
@@ -641,6 +665,21 @@ pub fn date_answer(text: &str) -> Result<Answer, String> {
     Ok(Answer::Date(crate::dates::format(crate::dates::parse(text)?)))
 }
 
+/// A tag typed by hand, its levels separated by `/`.
+pub fn tag_answer(text: &str) -> Result<Answer, String> {
+    Ok(Answer::Tag(crate::tags::path(text)?))
+}
+
+/// Something a tool found out about the scope that is no question: a line above its questions,
+/// with a list below it where there is one.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct Finding {
+    pub title: String,
+    pub detail: String,
+    /// A name and what is said about it.
+    pub rows: Vec<(String, String)>,
+}
+
 impl Question {
     pub fn waits(&self) -> bool {
         self.answer.is_none()
@@ -710,6 +749,17 @@ pub trait Tool: Sync {
         _scope: &Scope,
         _settings: &Self::Settings,
     ) -> Result<Vec<Question>, String> {
+        Ok(Vec::new())
+    }
+
+    /// What it found out about the scope beyond its questions, shown above them.
+    fn report(
+        &self,
+        _cache: &Cache,
+        _geo: Option<&Geo>,
+        _scope: &Scope,
+        _settings: &Self::Settings,
+    ) -> Result<Vec<Finding>, String> {
         Ok(Vec::new())
     }
 
@@ -813,6 +863,13 @@ pub trait AnyTool: Sync {
         scope: &Scope,
         settings: Option<&str>,
     ) -> Result<Vec<Question>, String>;
+    fn report(
+        &self,
+        cache: &Cache,
+        geo: Option<&Geo>,
+        scope: &Scope,
+        settings: Option<&str>,
+    ) -> Result<Vec<Finding>, String>;
     /// The settings with one answer given, or forgotten with `None`, as text.
     fn answer(&self, settings: Option<&str>, question: &str, answer: Option<Answer>) -> Result<String, String>;
     /// What the settings answer a question with, if anything.
@@ -887,6 +944,16 @@ impl<T: Tool> AnyTool for T {
         Tool::questions(self, cache, geo, scope, &settings_of::<T::Settings>(settings)?)
     }
 
+    fn report(
+        &self,
+        cache: &Cache,
+        geo: Option<&Geo>,
+        scope: &Scope,
+        settings: Option<&str>,
+    ) -> Result<Vec<Finding>, String> {
+        Tool::report(self, cache, geo, scope, &settings_of::<T::Settings>(settings)?)
+    }
+
     fn answer(&self, settings: Option<&str>, question: &str, answer: Option<Answer>) -> Result<String, String> {
         let mut settings = settings_of::<T::Settings>(settings)?;
         let answers = Tool::answers(self, &mut settings).ok_or_else(|| format!("{} asks nothing", self.title()))?;
@@ -930,6 +997,7 @@ pub const ALL: &[&dyn AnyTool] = &[
     &time_zones::TimeZones,
     &tag_vocabulary::TagVocabulary,
     &add_tag::AddATag,
+    &people::PeopleFromImmich,
     #[cfg(feature = "demo")]
     &demo::Rating,
 ];
@@ -1221,6 +1289,7 @@ mod answer_tests {
             Answer::Neighbours,
             Answer::Date("2014-03-22 12:00:00".to_string()),
             Answer::Zone("America/Chicago".to_string()),
+            Answer::Tag("people/family/Anna".to_string()),
             Answer::Shift(vec![Moved {
                 camera: "DMC-TZ7".to_string(),
                 by: Shift::read("-640d 00:07").unwrap(),
@@ -1238,7 +1307,8 @@ mod answer_tests {
             all.set(&index.to_string(), Some(answer.clone()));
         }
         assert_eq!(Answers::read(&all.written()), Ok(all));
-        assert_eq!(answers[4].tells(), "DMC-TZ7 shifted -640d 00:07, more than a year");
+        assert_eq!(answers[5].tells(), "DMC-TZ7 shifted -640d 00:07, more than a year");
+        assert_eq!(answers[4].tells(), "Tagged people/family/Anna");
         assert_eq!(answers[2].tells(), "From 2014-03-22 12:00:00");
     }
 
@@ -1247,6 +1317,7 @@ mod answer_tests {
         assert!(Answer::read(r#"{"date": "yesterday"}"#).is_err());
         assert!(Answer::read(r#"{"zone": "Nowhere/Atlantis"}"#).is_err());
         assert!(Answer::read(r#"{"shift": []}"#).is_err());
+        assert!(Answer::read(r#"{"tag": "people//Anna"}"#).is_err());
         assert!(Answer::read(r#"{"shift": [{"camera": "X", "by": "soon", "from": "2011-09-02 15:00:00"}]}"#).is_err());
     }
 }

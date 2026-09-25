@@ -239,7 +239,7 @@ fn alike(one: &str, other: &str) -> bool {
     distance(&one, &other) <= allowed
 }
 
-fn distance(one: &str, other: &str) -> usize {
+pub(crate) fn distance(one: &str, other: &str) -> usize {
     let other: Vec<char> = other.chars().collect();
     let mut previous: Vec<usize> = (0..=other.len()).collect();
     for (i, a) in one.chars().enumerate() {

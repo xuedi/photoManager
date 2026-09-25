@@ -1,9 +1,10 @@
 //! The page a tool that asks shows before it can change anything: one row per question, the
 //! best offer beside it, and Confirm, the other offers and Leave Alone. A question about a place
 //! also has Choose Another and Pick on Map, one about a camera's clock Enter a Shift, one about a
-//! date Enter a Date. It draws the questions `core` hands over and knows neither the tool nor
-//! what its questions are about: the words it uses for them are the tool's, and every offer
-//! carries the answer Confirm puts in.
+//! date Enter a Date, one about a person Enter a Tag. It draws the questions `core` hands over and
+//! knows neither the tool nor what its questions are about: the words it uses for them are the
+//! tool's, and every offer carries the answer Confirm puts in. What the tool found out beyond its
+//! questions is drawn above them.
 //!
 //! Every answer goes into the tool's settings at once and is remembered, so leaving the page loses
 //! nothing and the next run over another scope asks only what is new.
@@ -15,7 +16,7 @@ use adw::prelude::*;
 use adw::subclass::prelude::*;
 use gtk::{gio, glib};
 use photomanager_core::scope::Scope;
-use photomanager_core::tools::{self, Answer, Kind, Located, Offer, Question};
+use photomanager_core::tools::{self, Answer, Finding, Kind, Located, Offer, Question};
 
 use crate::library::Library;
 use crate::panel::map_at;
@@ -43,6 +44,9 @@ mod imp {
         pub loading: adw::StatusPage,
         pub empty: adw::StatusPage,
         pub exact_group: adw::PreferencesGroup,
+        pub report: adw::PreferencesGroup,
+        pub findings: RefCell<Vec<Finding>>,
+        pub report_rows: RefCell<Vec<gtk::Widget>>,
         pub exact: adw::ButtonRow,
         pub asked: adw::PreferencesGroup,
         pub apart: adw::PreferencesGroup,
@@ -109,6 +113,11 @@ impl Questions {
         self.imp().questions.borrow().clone()
     }
 
+    /// What the tool found out beyond its questions.
+    pub fn findings(&self) -> Vec<Finding> {
+        self.imp().findings.borrow().clone()
+    }
+
     /// Whether the questions are still being asked.
     pub fn is_busy(&self) -> bool {
         self.imp().busy.get()
@@ -129,6 +138,7 @@ impl Questions {
         };
         if imp.key.borrow().as_deref() != Some(key) {
             imp.questions.borrow_mut().clear();
+            imp.findings.borrow_mut().clear();
             self.show_rows();
         }
         *imp.key.borrow_mut() = Some(key.to_string());
@@ -161,7 +171,10 @@ impl Questions {
             }
             imp.busy.set(false);
             match asked {
-                Ok(questions) => *imp.questions.borrow_mut() = questions,
+                Ok((questions, findings)) => {
+                    *imp.questions.borrow_mut() = questions;
+                    *imp.findings.borrow_mut() = findings;
+                }
                 Err(why) => {
                     tracing::error!(why, "the questions could not be asked");
                     page.say(&format!("The questions could not be asked: {why}"));
@@ -194,6 +207,10 @@ impl Questions {
             }
             "date" => {
                 self.enter_date(&asked);
+                return true;
+            }
+            "tag" => {
+                self.enter_tag(&asked);
                 return true;
             }
             "forget" => None,
@@ -347,6 +364,7 @@ impl Questions {
         for (group, row) in imp.rows.borrow_mut().drain(..) {
             group.remove(&row);
         }
+        self.show_findings();
         let key = self.key().unwrap_or_default();
         let tool = tools::find(&key);
         let wording = tool.map(|tool| tool.wording()).unwrap_or_default();
@@ -387,6 +405,50 @@ impl Questions {
             (false, _) => "Everything is answered".to_string(),
         });
         imp.preview.set_sensitive(!busy && tool.is_some());
+    }
+
+    /// What the tool found out, each a row, and a list under it where it has one.
+    fn show_findings(&self) {
+        let imp = self.imp();
+        for row in imp.report_rows.borrow_mut().drain(..) {
+            imp.report.remove(&row);
+        }
+        let findings = imp.findings.borrow();
+        imp.report.set_visible(!findings.is_empty());
+        for finding in findings.iter() {
+            let row: gtk::Widget = match finding.rows.is_empty() {
+                true => adw::ActionRow::builder()
+                    .title(glib::markup_escape_text(&finding.title))
+                    .subtitle(glib::markup_escape_text(&finding.detail))
+                    .subtitle_lines(6)
+                    .build()
+                    .upcast(),
+                false => {
+                    let expander = adw::ExpanderRow::builder()
+                        .title(glib::markup_escape_text(&finding.title))
+                        .subtitle(glib::markup_escape_text(&finding.detail))
+                        .subtitle_lines(6)
+                        .build();
+                    let count = gtk::Label::builder()
+                        .label(finding.rows.len().to_string())
+                        .valign(gtk::Align::Center)
+                        .build();
+                    count.add_css_class("dim-label");
+                    expander.add_suffix(&count);
+                    for (name, said) in &finding.rows {
+                        expander.add_row(
+                            &adw::ActionRow::builder()
+                                .title(glib::markup_escape_text(name))
+                                .subtitle(glib::markup_escape_text(said))
+                                .build(),
+                        );
+                    }
+                    expander.upcast()
+                }
+            };
+            imp.report.add(&row);
+            imp.report_rows.borrow_mut().push(row);
+        }
     }
 
     /// The place search for one question, prefilled with what it asks about.
@@ -611,6 +673,12 @@ impl Questions {
         self.give(question, &answer)
     }
 
+    /// A tag typed for a question, answered the way any answer is.
+    pub fn type_tag(&self, question: &str, typed: &str) -> Result<(), String> {
+        let answer = tools::tag_answer(typed)?;
+        self.give(question, &answer)
+    }
+
     /// An answer made on this page goes through `win.answer` like every other, so the tools are
     /// counted again, and the dialog it was typed in closes.
     fn give(&self, question: &str, answer: &Answer) -> Result<(), String> {
@@ -753,6 +821,62 @@ impl Questions {
         );
     }
 
+    /// One entry for the tag a person is, anywhere in the tree.
+    fn enter_tag(&self, question: &Question) {
+        let group = adw::PreferencesGroup::builder()
+            .description("The tag this person is, its levels separated by /, such as people/family/Anna.")
+            .build();
+        let entry = adw::EntryRow::builder().title("Tag").build();
+        let first_tag = question
+            .answer
+            .iter()
+            .chain(question.offers.iter().map(|offer| &offer.answer))
+            .find_map(|answer| match answer {
+                Answer::Tag(path) => Some(path.clone()),
+                _ => None,
+            });
+        if let Some(path) = first_tag {
+            entry.set_text(&path);
+        }
+        group.add(&entry);
+        let why = gtk::Label::builder().xalign(0.0).wrap(true).visible(false).build();
+        why.add_css_class("error");
+        let button = gtk::Button::builder()
+            .label("Use This Tag")
+            .halign(gtk::Align::Center)
+            .build();
+        button.add_css_class("pill");
+        button.add_css_class("suggested-action");
+        let asked = question.key.clone();
+        let use_it = glib::clone!(
+            #[weak(rename_to = page)]
+            self,
+            #[weak]
+            why,
+            #[weak]
+            entry,
+            move || {
+                if let Err(reason) = page.type_tag(&asked, entry.text().as_str()) {
+                    why.set_label(&reason);
+                    why.set_visible(true);
+                }
+            }
+        );
+        let use_it = Rc::new(use_it);
+        button.connect_clicked(glib::clone!(
+            #[strong]
+            use_it,
+            move |_| use_it()
+        ));
+        entry.connect_entry_activated(move |_| use_it());
+        self.typing_dialog(
+            &format!("Enter a Tag: {}", question.title),
+            &question.key,
+            &[group.upcast_ref(), why.upcast_ref(), button.upcast_ref()],
+        );
+        entry.grab_focus();
+    }
+
     fn typing_dialog(&self, title: &str, question: &str, children: &[&gtk::Widget]) {
         let content = gtk::Box::builder()
             .orientation(gtk::Orientation::Vertical)
@@ -819,6 +943,8 @@ impl Questions {
         imp.exact_group.add(&imp.exact);
         imp.exact_group.set_visible(false);
 
+        imp.report.set_visible(false);
+
         imp.asked.set_title("Tags");
         imp.asked.set_visible(false);
         imp.apart.set_title("Countries");
@@ -838,6 +964,7 @@ impl Questions {
             .build();
         content.append(&imp.loading);
         content.append(&imp.empty);
+        content.append(&imp.report);
         content.append(&imp.exact_group);
         content.append(&imp.asked);
         content.append(&imp.apart);
@@ -941,6 +1068,7 @@ fn row(key: &str, question: &Question, has_places: bool) -> adw::ActionRow {
             match kind {
                 Kind::Shift => item("Enter a Shift…", "shift"),
                 Kind::Date => item("Enter a Date…", "date"),
+                Kind::Person => item("Enter a Tag…", "tag"),
                 _ => {}
             }
         }
