@@ -156,6 +156,7 @@ fn the_app_can_be_clicked_through_headless() {
     writes_time_zones_and_takes_them_back(&ui, lib);
     merges_a_tag_and_takes_it_back(&ui, lib);
     gives_people_from_immich_and_takes_them_back(&ui, lib);
+    moves_an_event_into_its_city_and_takes_it_back(&ui, lib);
 
     ui.run(&["act", "win.show-view", "'suggestions'"], lib);
     let state = state(&ui, lib);
@@ -899,6 +900,82 @@ fn gives_people_from_immich_and_takes_them_back(ui: &Ui, library: &Path) {
 }
 
 /// The TagsList of a photo, as ExifTool reads it.
+/// Folder Migration, clicked through: one event is asked about, answered with where its photos
+/// are, previewed as one folder that costs no traffic, moved by the apply with every photo as it
+/// was, and moved back by taking the pass back.
+fn moves_an_event_into_its_city_and_takes_it_back(ui: &Ui, library: &Path) {
+    const TOOL: &str = "folder-migration";
+    const GARDEN: &str = "Germany/2013-05-18 Garden Party";
+    const MOVED: &str = "Germany/Hamburg/2013-05-18 Garden Party";
+    let photo = |dir: &str| library.join(dir).join("IMG_6001.JPG");
+    let content = photomanager_core::identity::content_id(&std::fs::read(photo(GARDEN)).unwrap()).unwrap();
+    let mtime = std::fs::metadata(photo(GARDEN)).unwrap().modified().unwrap();
+
+    ui.run(&["act", "win.show-view", "'tools'"], library);
+    ui.run(&["act", "win.tools-scope", &format!("'{GARDEN}'")], library);
+    let tools = counted(ui, library, 5);
+    assert_eq!(tools["waiting"][TOOL].as_u64(), Some(1), "{tools}");
+    ui.run(&["act", "win.run-tool", &format!("'{TOOL}'")], library);
+    let asked = questions(ui, library, |questions| {
+        questions["tool"] == TOOL && questions["questions"].as_array().unwrap().len() == 1
+    });
+    assert_eq!(asked["questions"][0]["kind"], "folder", "{asked}");
+    ui.run(
+        &["act", "win.answer", &format!("('{TOOL}', '{GARDEN}', 'best')")],
+        library,
+    );
+    questions(ui, library, |questions| {
+        questions["questions"][0]["answer"] == format!("Into {MOVED}")
+    });
+
+    let before = state(ui, library)["applied"]["batch"].as_i64().unwrap_or(0);
+    ui.run(&["act", "win.preview-answers"], library);
+    let mut previewed = Value::Null;
+    for _ in 0..60 {
+        previewed = state(ui, library)["preview"].clone();
+        if previewed["title"] == "Folder Migration" && previewed["change"].as_u64() == Some(1) {
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(500));
+    }
+    assert_eq!(previewed["change"].as_u64(), Some(1), "{previewed}");
+    ui.run(&["click", "Apply", "--role", "button"], library);
+    let written = written(ui, library, "write", before);
+    assert_eq!(written["written"].as_u64(), Some(1), "{written}");
+    let batch = written["batch"].as_i64().unwrap();
+    assert!(!library.join(GARDEN).exists(), "the event left its old folder");
+    let moved = photo(MOVED);
+    assert_eq!(
+        photomanager_core::identity::content_id(&std::fs::read(&moved).unwrap()).as_deref(),
+        Some(content.as_str())
+    );
+    assert_eq!(
+        std::fs::metadata(&moved).unwrap().modified().unwrap(),
+        mtime,
+        "a move keeps the mtime"
+    );
+
+    let taken_before = state(ui, library)["history"]["taken"]["batch"].as_i64().unwrap_or(0);
+    ui.run(&["act", "win.undo-pass", &format!("int64 {batch}")], library);
+    ui.run(&["click", "Take It Back", "--role", "button"], library);
+    for _ in 0..120 {
+        let now = state(ui, library);
+        if now["history"]["taken"]["batch"].as_i64().unwrap_or(0) > taken_before
+            && now["writing"] == false
+            && now["scanning"] == false
+        {
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(500));
+    }
+    assert!(photo(GARDEN).is_file(), "back in its old folder");
+    assert!(!library.join(MOVED).exists());
+    assert!(
+        library.join("Germany/Hamburg").is_dir(),
+        "the city folder holds another event and stays"
+    );
+}
+
 fn tags_of(photo: &Path) -> Vec<String> {
     let out = Command::new("exiftool")
         .args(["-j", "-XMP-digiKam:TagsList"])
