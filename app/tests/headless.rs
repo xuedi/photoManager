@@ -800,9 +800,17 @@ fn gives_people_from_immich_and_takes_them_back(ui: &Ui, library: &Path) {
         }
         std::thread::sleep(std::time::Duration::from_millis(500));
     }
-    assert_eq!(fetched["people"]["named"].as_u64(), Some(4), "{}", fetched["dashboard_toast"]);
+    assert_eq!(
+        fetched["people"]["named"].as_u64(),
+        Some(4),
+        "{}",
+        fetched["dashboard_toast"]
+    );
     assert!(
-        fetched["dashboard_toast"].as_str().unwrap_or_default().starts_with("4 named persons"),
+        fetched["dashboard_toast"]
+            .as_str()
+            .unwrap_or_default()
+            .starts_with("4 named persons"),
         "{}",
         fetched["dashboard_toast"]
     );
@@ -816,7 +824,11 @@ fn gives_people_from_immich_and_takes_them_back(ui: &Ui, library: &Path) {
     assert_eq!(asked["questions"][0]["title"], "Ben", "{asked}");
     assert_eq!(asked["questions"][0]["kind"], "person");
     assert!(
-        asked["findings"].as_array().unwrap().iter().any(|finding| finding["title"] == "From Immich"),
+        asked["findings"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|finding| finding["title"] == "From Immich"),
         "{asked}"
     );
     ui.run(&["act", "win.answer-exact", &format!("'{TOOL}'")], library);
@@ -830,7 +842,10 @@ fn gives_people_from_immich_and_takes_them_back(ui: &Ui, library: &Path) {
             .count()
             == 3
     });
-    assert!(answered["settings"].as_str().unwrap().contains("people/family/Anna"), "{answered}");
+    assert!(
+        answered["settings"].as_str().unwrap().contains("people/family/Anna"),
+        "{answered}"
+    );
 
     let before = state(ui, library)["applied"]["batch"].as_i64().unwrap_or(0);
     ui.run(&["act", "win.preview-answers"], library);
@@ -870,7 +885,10 @@ fn gives_people_from_immich_and_takes_them_back(ui: &Ui, library: &Path) {
         }
         std::thread::sleep(std::time::Duration::from_millis(500));
     }
-    assert!(!tags_of(&turned).contains(&"people/family/Anna".to_string()), "the tag is gone again");
+    assert!(
+        !tags_of(&turned).contains(&"people/family/Anna".to_string()),
+        "the tag is gone again"
+    );
     let out = Command::new("exiftool")
         .args(["-j", "-struct", "-XMP-mwg-rs:RegionInfo"])
         .arg(&turned)

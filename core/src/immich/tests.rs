@@ -212,14 +212,15 @@ fn the_key_is_never_logged_nor_kept() {
         .with_max_level(tracing::Level::TRACE)
         .with_writer(move || sink.clone())
         .finish();
-    tracing::subscriber::with_default(subscriber, || {
-        let mut client = Client::new(&immich.url, fake::KEY).unwrap();
-        tracing::debug!(?client, "a client");
-        fetch(&mut client, &file, None, &|_| {}, &AtomicBool::new(false)).unwrap();
-        let mut wrong = Client::new(&immich.url, &format!("{}x", fake::KEY)).unwrap();
-        let refused = fetch(&mut wrong, &file, None, &|_| {}, &AtomicBool::new(false)).unwrap_err();
-        tracing::error!(%refused, "refused");
-    });
+    // Process wide: a subscriber scoped to this thread misses a line whose callsite another
+    // test's fetch registered first, and every test's log is searched for the key this way.
+    tracing::subscriber::set_global_default(subscriber).unwrap();
+    let mut client = Client::new(&immich.url, fake::KEY).unwrap();
+    tracing::debug!(?client, "a client");
+    fetch(&mut client, &file, None, &|_| {}, &AtomicBool::new(false)).unwrap();
+    let mut wrong = Client::new(&immich.url, &format!("{}x", fake::KEY)).unwrap();
+    let refused = fetch(&mut wrong, &file, None, &|_| {}, &AtomicBool::new(false)).unwrap_err();
+    tracing::error!(%refused, "refused");
     let log = String::from_utf8(written.0.lock().unwrap().clone()).unwrap();
     assert!(
         log.contains("people fetched from Immich"),
