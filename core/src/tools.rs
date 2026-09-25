@@ -30,6 +30,7 @@ use crate::write::{Change, Field, Gps};
 
 pub mod add_tag;
 pub mod dates_folder;
+pub mod folders;
 pub mod gps_from_event;
 pub mod gps_from_places;
 pub mod offsets;
@@ -176,6 +177,8 @@ pub enum Answer {
     Zone(String),
     /// This person is this tag.
     Tag(String),
+    /// Into this folder of the library: an event's new place, or the event a loose photo joins.
+    Folder(String),
 }
 
 /// One camera of an event, and how far its clock was off.
@@ -195,6 +198,7 @@ const SHIFT: &str = "shift";
 const DATE: &str = "date";
 const ZONE: &str = "zone";
 const TAG: &str = "tag";
+const FOLDER: &str = "folder";
 
 /// Where an answer puts its photos.
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -270,6 +274,13 @@ impl Answer {
                     .ok_or_else(|| format!("{value} is not a tag"))?;
                 Ok(Answer::Tag(crate::tags::path(path)?))
             }
+            Value::Object(fields) if fields.contains_key(FOLDER) => {
+                let path = fields
+                    .get(FOLDER)
+                    .and_then(Value::as_str)
+                    .ok_or_else(|| format!("{value} is not a folder"))?;
+                Ok(Answer::Folder(folders::event_folder(path)?))
+            }
             Value::Object(fields) if fields.contains_key(PIN) => {
                 let wrong = || format!("{value} is not a pin");
                 let point = fields.get(PIN).and_then(Value::as_array).ok_or_else(wrong)?;
@@ -326,6 +337,11 @@ impl Answer {
                 fields.insert(TAG.to_string(), Value::from(path.as_str()));
                 Value::Object(fields)
             }
+            Answer::Folder(path) => {
+                let mut fields = Map::new();
+                fields.insert(FOLDER.to_string(), Value::from(path.as_str()));
+                Value::Object(fields)
+            }
             Answer::Place(place) => place.written(),
             Answer::Pin { lat, lon, near } => {
                 let mut fields = Map::new();
@@ -345,6 +361,7 @@ impl Answer {
             Answer::Date(at) => format!("From {at}"),
             Answer::Zone(zone) => format!("In {zone}"),
             Answer::Tag(path) => format!("Tagged {path}"),
+            Answer::Folder(path) => format!("Into {path}"),
             Answer::Shift(moved) => moved
                 .iter()
                 .map(|moved| match moved.by.over_a_year() {
@@ -362,7 +379,12 @@ impl Answer {
     pub fn names(&self) -> String {
         match self {
             Answer::Leave => "nothing".to_string(),
-            Answer::Neighbours | Answer::Date(_) | Answer::Zone(_) | Answer::Shift(_) | Answer::Tag(_) => self.tells(),
+            Answer::Neighbours
+            | Answer::Date(_)
+            | Answer::Zone(_)
+            | Answer::Shift(_)
+            | Answer::Tag(_)
+            | Answer::Folder(_) => self.tells(),
             Answer::Place(place) => place.name.clone(),
             Answer::Pin { near, .. } => format!("a point near {}", near.name),
         }
@@ -376,7 +398,8 @@ impl Answer {
             | Answer::Date(_)
             | Answer::Zone(_)
             | Answer::Shift(_)
-            | Answer::Tag(_) => None,
+            | Answer::Tag(_)
+            | Answer::Folder(_) => None,
             Answer::Place(place) => Some(Spot {
                 lat: place.lat,
                 lon: place.lon,
@@ -556,6 +579,8 @@ pub enum Kind {
     Zone,
     /// Which tag a person is: one is typed.
     Person,
+    /// Which folder an event or a photo belongs in: its parts are typed.
+    Folder,
 }
 
 /// One camera of an event, as a question about its dates shows it.
@@ -663,6 +688,12 @@ pub fn shift_answer(question: &Question, typed: &[(String, String)]) -> Result<A
 /// A date typed by hand.
 pub fn date_answer(text: &str) -> Result<Answer, String> {
     Ok(Answer::Date(crate::dates::format(crate::dates::parse(text)?)))
+}
+
+/// A folder typed by hand, from its parts: `Country/City/YYYY-MM-DD Name`, the city and the name
+/// optional.
+pub fn folder_answer(country: &str, city: &str, date: &str, name: &str) -> Result<Answer, String> {
+    Ok(Answer::Folder(folders::assembled(country, city, date, name)?))
 }
 
 /// A tag typed by hand, its levels separated by `/`.
@@ -786,6 +817,11 @@ pub trait Tool: Sync {
     fn wording(&self) -> Wording {
         Wording::default()
     }
+
+    /// Whether it moves folders and photos rather than writing them. Such a tool runs alone.
+    fn moves(&self) -> bool {
+        false
+    }
 }
 
 /// What a tool's question page calls things. The page is the same for every tool; only the
@@ -876,6 +912,7 @@ pub trait AnyTool: Sync {
     fn answered(&self, settings: Option<&str>, question: &str) -> Result<Option<Answer>, String>;
     fn waiting(&self, open: usize) -> String;
     fn wording(&self) -> Wording;
+    fn moves(&self) -> bool;
     fn page(&self) -> Page;
     /// Whether these settings can be read, and why not.
     fn check(&self, settings: &str) -> Result<(), String>;
@@ -974,6 +1011,10 @@ impl<T: Tool> AnyTool for T {
         Tool::wording(self)
     }
 
+    fn moves(&self) -> bool {
+        Tool::moves(self)
+    }
+
     fn check(&self, settings: &str) -> Result<(), String> {
         T::Settings::read(settings).map(|_| ())
     }
@@ -998,6 +1039,7 @@ pub const ALL: &[&dyn AnyTool] = &[
     &tag_vocabulary::TagVocabulary,
     &add_tag::AddATag,
     &people::PeopleFromImmich,
+    &folders::FolderMigration,
     #[cfg(feature = "demo")]
     &demo::Rating,
 ];
@@ -1016,6 +1058,14 @@ pub fn together(
     geo: Option<&Geo>,
     scope: &Scope,
 ) -> Result<ChangeSet, String> {
+    if chosen.len() > 1
+        && let Some((tool, _)) = chosen.iter().find(|(tool, _)| tool.moves())
+    {
+        return Err(format!(
+            "{} moves folders and runs alone, never together with a tool that writes",
+            tool.title()
+        ));
+    }
     struct Merged {
         change: Change,
         by: Vec<&'static str>,

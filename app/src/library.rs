@@ -246,6 +246,7 @@ impl Library {
         let scope = scope.clone();
         let remembered: Vec<Option<String>> = tools::ALL.iter().map(|tool| self.tool_settings(tool.key())).collect();
         let geo_db = self.paths.geo_db();
+        let root = self.paths.library().to_path_buf();
         self.read_off_thread(
             move |cache| {
                 let geo = Geo::read_only(&geo_db).ok().flatten();
@@ -256,10 +257,14 @@ impl Library {
                 };
                 for (tool, settings) in tools::ALL.iter().zip(&remembered) {
                     let key = tool.key().to_string();
-                    counted.tools.push((
-                        key.clone(),
-                        tools::count(*tool, cache, geo, &scope, settings.as_deref()),
-                    ));
+                    let count = match tool.moves() {
+                        true => tool.change_set(cache, geo, &scope, settings.as_deref()).map(|mut set| {
+                            set.look(&root);
+                            set.counts().change
+                        }),
+                        false => tools::count(*tool, cache, geo, &scope, settings.as_deref()),
+                    };
+                    counted.tools.push((key.clone(), count));
                     if tool.asks() {
                         let waiting =
                             tools::waiting(*tool, cache, geo, &scope, settings.as_deref()).unwrap_or_default();
@@ -713,10 +718,13 @@ impl Library {
         };
         let scope = scope.clone();
         let geo_db = self.paths.geo_db();
+        let root = self.paths.library().to_path_buf();
         self.build(
             move |cache| {
                 let geo = Geo::read_only(&geo_db).ok().flatten();
-                tool.change_set(cache, geo.as_ref(), &scope, settings.as_deref())
+                let mut set = tool.change_set(cache, geo.as_ref(), &scope, settings.as_deref())?;
+                set.look(&root);
+                Ok(set)
             },
             report,
         );

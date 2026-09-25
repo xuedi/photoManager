@@ -509,6 +509,51 @@ impl Tool for PeopleFromImmich {
     }
 }
 
+/// The photos among these in which Immich names someone the file does not: no face region and no
+/// people tag of that name, or of one near it. By photo, the names. `None` when nothing was
+/// fetched from Immich, so nothing is known either way.
+pub fn untold(cache: &Cache, rel_paths: &[String]) -> Result<Option<BTreeMap<String, Vec<String>>>, String> {
+    let Some(known) = Known::load(cache)? else {
+        return Ok(None);
+    };
+    let stated = cache.stated(rel_paths).map_err(|error| error.to_string())?;
+    let mut untold = BTreeMap::new();
+    for rel_path in rel_paths {
+        let Some(asset) = known.assets.get(rel_path) else {
+            continue;
+        };
+        let said = stated.get(rel_path).map(|stated| &stated.said);
+        let mut names: Vec<String> = said
+            .map(|said| {
+                tags::deepest(&said.tags)
+                    .into_iter()
+                    .filter(|tag| is_people(tag))
+                    .map(|tag| leaf(&tag).to_string())
+                    .collect()
+            })
+            .unwrap_or_default();
+        if let Some(regions) = said.and_then(|said| said.regions.as_ref()) {
+            names.extend(regions.faces.iter().map(|face| face.name.clone()));
+            names.extend(regions.persons.iter().cloned());
+        }
+        let mut missing: Vec<String> = known
+            .named(asset)
+            .map(|(_, person)| person.name.trim().to_string())
+            .filter(|name| {
+                !names
+                    .iter()
+                    .any(|said| fold(said) == fold(name) || nearness(name, said).is_some())
+            })
+            .collect();
+        missing.sort();
+        missing.dedup();
+        if !missing.is_empty() {
+            untold.insert(rel_path.clone(), missing);
+        }
+    }
+    Ok(Some(untold))
+}
+
 /// Why a box would land somewhere else than the face, if it would: the photo is offline in
 /// Immich, or the file is not the picture Immich measured the faces on.
 fn refusal(asset: &Asset, shape: cache::Shape, found: &[(&Face, String)]) -> Option<String> {

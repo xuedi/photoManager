@@ -421,7 +421,7 @@ impl Tools {
             .build();
         button.add_css_class("pill");
         button.add_css_class("suggested-action");
-        for tool in tools::ALL {
+        for tool in tools::ALL.iter().filter(|tool| !tool.moves()) {
             let check = gtk::CheckButton::builder().valign(gtk::Align::Center).build();
             let row = adw::ActionRow::builder()
                 .title(tool.title())

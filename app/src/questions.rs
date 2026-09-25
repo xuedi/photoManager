@@ -1,7 +1,7 @@
 //! The page a tool that asks shows before it can change anything: one row per question, the
 //! best offer beside it, and Confirm, the other offers and Leave Alone. A question about a place
 //! also has Choose Another and Pick on Map, one about a camera's clock Enter a Shift, one about a
-//! date Enter a Date, one about a person Enter a Tag. It draws the questions `core` hands over and
+//! date Enter a Date, one about a person Enter a Tag, one about a folder Enter a Folder. It draws the questions `core` hands over and
 //! knows neither the tool nor what its questions are about: the words it uses for them are the
 //! tool's, and every offer carries the answer Confirm puts in. What the tool found out beyond its
 //! questions is drawn above them.
@@ -16,6 +16,7 @@ use adw::prelude::*;
 use adw::subclass::prelude::*;
 use gtk::{gio, glib};
 use photomanager_core::scope::Scope;
+use photomanager_core::tools::folders::Parts;
 use photomanager_core::tools::{self, Answer, Finding, Kind, Located, Offer, Question};
 
 use crate::library::Library;
@@ -211,6 +212,10 @@ impl Questions {
             }
             "tag" => {
                 self.enter_tag(&asked);
+                return true;
+            }
+            "folder" => {
+                self.enter_folder(&asked);
                 return true;
             }
             "forget" => None,
@@ -679,6 +684,12 @@ impl Questions {
         self.give(question, &answer)
     }
 
+    /// A folder typed for a question from its parts, answered the way any answer is.
+    pub fn type_folder(&self, question: &str, parts: &Parts) -> Result<(), String> {
+        let answer = tools::folder_answer(&parts.country, &parts.city, &parts.date, &parts.name)?;
+        self.give(question, &answer)
+    }
+
     /// An answer made on this page goes through `win.answer` like every other, so the tools are
     /// counted again, and the dialog it was typed in closes.
     fn give(&self, question: &str, answer: &Answer) -> Result<(), String> {
@@ -877,6 +888,135 @@ impl Questions {
         entry.grab_focus();
     }
 
+    /// The parts of the folder an event or a photo goes into, with where it is now and where it
+    /// would be, said again with every letter typed.
+    fn enter_folder(&self, question: &Question) {
+        let parts = Parts::of(question);
+        let group = adw::PreferencesGroup::builder()
+            .description(match parts.date_fixed {
+                true => "The city may be left empty for an event that was nowhere in particular. The date stays as the folder says it.",
+                false => "The event the photo goes into, a new one or one that is there. The date as YYYY-MM-DD, with zeros for what is not known.",
+            })
+            .build();
+        let entry = |title: &str, text: &str| {
+            let entry = adw::EntryRow::builder().title(title).text(text).build();
+            group.add(&entry);
+            entry
+        };
+        let country = entry("Country", &parts.country);
+        let city = entry("City", &parts.city);
+        let date = entry("Date", &parts.date);
+        date.set_editable(!parts.date_fixed);
+        date.set_sensitive(!parts.date_fixed);
+        let name = entry("Event", &parts.name);
+
+        let paths = adw::PreferencesGroup::new();
+        let now = adw::ActionRow::builder()
+            .title("Now")
+            .subtitle(glib::markup_escape_text(&question.key))
+            .subtitle_lines(3)
+            .subtitle_selectable(true)
+            .build();
+        let after = adw::ActionRow::builder().title("After").subtitle_lines(3).build();
+        paths.add(&now);
+        paths.add(&after);
+        let why = gtk::Label::builder().xalign(0.0).wrap(true).visible(false).build();
+        why.add_css_class("error");
+        let button = gtk::Button::builder()
+            .label("Use This Folder")
+            .halign(gtk::Align::Center)
+            .build();
+        button.add_css_class("pill");
+        button.add_css_class("suggested-action");
+
+        let asked = question.clone();
+        let typed = Rc::new(glib::clone!(
+            #[weak]
+            country,
+            #[weak]
+            city,
+            #[weak]
+            date,
+            #[weak]
+            name,
+            #[upgrade_or_default]
+            move || Parts {
+                country: country.text().to_string(),
+                city: city.text().to_string(),
+                date: date.text().to_string(),
+                name: name.text().to_string(),
+                date_fixed: parts.date_fixed,
+            }
+        ));
+        let said = glib::clone!(
+            #[weak]
+            after,
+            #[weak]
+            button,
+            #[strong]
+            typed,
+            #[strong]
+            asked,
+            move || match typed().after(&asked) {
+                Ok(path) => {
+                    after.set_subtitle(&glib::markup_escape_text(&path));
+                    button.set_sensitive(true);
+                }
+                Err(reason) => {
+                    after.set_subtitle(&glib::markup_escape_text(&reason));
+                    button.set_sensitive(false);
+                }
+            }
+        );
+        said();
+        let said = Rc::new(said);
+        for entry in [&country, &city, &date, &name] {
+            entry.connect_changed(glib::clone!(
+                #[strong]
+                said,
+                move |_| said()
+            ));
+        }
+        let key = question.key.clone();
+        let use_it = Rc::new(glib::clone!(
+            #[weak(rename_to = page)]
+            self,
+            #[weak]
+            why,
+            #[strong]
+            typed,
+            move || {
+                if let Err(reason) = page.type_folder(&key, &typed()) {
+                    why.set_label(&reason);
+                    why.set_visible(true);
+                }
+            }
+        ));
+        button.connect_clicked(glib::clone!(
+            #[strong]
+            use_it,
+            move |_| use_it()
+        ));
+        for entry in [&country, &city, &date, &name] {
+            entry.connect_entry_activated(glib::clone!(
+                #[strong]
+                use_it,
+                move |_| use_it()
+            ));
+        }
+        self.typing_dialog(
+            &format!("Enter a Folder: {}", question.title),
+            &question.key,
+            &[
+                group.upcast_ref(),
+                paths.upcast_ref(),
+                why.upcast_ref(),
+                button.upcast_ref(),
+            ],
+        );
+        city.grab_focus();
+    }
+
     fn typing_dialog(&self, title: &str, question: &str, children: &[&gtk::Widget]) {
         let content = gtk::Box::builder()
             .orientation(gtk::Orientation::Vertical)
@@ -1069,6 +1209,7 @@ fn row(key: &str, question: &Question, has_places: bool) -> adw::ActionRow {
                 Kind::Shift => item("Enter a Shift…", "shift"),
                 Kind::Date => item("Enter a Date…", "date"),
                 Kind::Person => item("Enter a Tag…", "tag"),
+                Kind::Folder => item("Enter a Folder…", "folder"),
                 _ => {}
             }
         }

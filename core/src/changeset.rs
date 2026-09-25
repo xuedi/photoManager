@@ -17,7 +17,7 @@ use std::sync::atomic::AtomicBool;
 use crate::cache::{Cache, Said, Stated};
 use crate::journal::{self, Journal, Kind};
 use crate::metadata::Regions;
-use crate::write::{self, Assignment, Change, Engine, Field, Outcome, Summary, Target, change};
+use crate::write::{self, Assignment, Change, Engine, Field, Move, Outcome, Summary, Target, change};
 
 /// How far back the undo looks for the pass it can take back.
 const RECENT: i64 = 50;
@@ -35,6 +35,9 @@ pub struct Wanted {
     pub change: Change,
     /// The tool will not decide for this photo, and says why: it is listed, and never written.
     pub refused: Option<String>,
+    /// A folder or a photo to take elsewhere instead of anything to write: `rel_path` is where it
+    /// is now.
+    pub moved: Option<Move>,
 }
 
 impl Wanted {
@@ -43,6 +46,7 @@ impl Wanted {
             rel_path: rel_path.into(),
             change,
             refused: None,
+            moved: None,
         }
     }
 
@@ -51,6 +55,17 @@ impl Wanted {
             rel_path: rel_path.into(),
             change: Change::default(),
             refused: Some(why.into()),
+            moved: None,
+        }
+    }
+
+    /// A move, and why it will not be made when it will not.
+    pub fn moving(moved: Move, refused: Option<String>) -> Wanted {
+        Wanted {
+            rel_path: moved.from.clone(),
+            change: Change::default(),
+            refused,
+            moved: Some(moved),
         }
     }
 }
@@ -118,6 +133,8 @@ pub struct Row {
     pub change: Change,
     pub differences: Vec<Difference>,
     pub verdict: Verdict,
+    /// Where it goes and what goes with it, for a row that moves a folder or a photo.
+    pub moved: Option<Move>,
     selected: bool,
 }
 
@@ -132,6 +149,12 @@ impl Row {
 
     /// The whole change in one line, the way a person reads it.
     pub fn tells(&self) -> String {
+        if let Some(moved) = &self.moved {
+            return match moved.photos.len() {
+                1 => format!("to {}, 1 photo", moved.to),
+                count => format!("to {}, {count} photos", moved.to),
+            };
+        }
         match self.differences.is_empty() {
             true => "nothing".to_string(),
             false => self
@@ -170,13 +193,44 @@ pub struct ChangeSet {
 impl ChangeSet {
     /// Reads the cache, never a photo, and writes nothing at all.
     pub fn build(cache: &Cache, title: &str, wanted: &[Wanted]) -> crate::cache::Result<ChangeSet> {
-        let paths: Vec<String> = wanted.iter().map(|one| one.rel_path.clone()).collect();
+        let paths: Vec<String> = wanted
+            .iter()
+            .filter(|one| one.moved.is_none())
+            .map(|one| one.rel_path.clone())
+            .collect();
         let known = cache.stated(&paths)?;
         Ok(ChangeSet {
             title: title.to_string(),
             tool: None,
-            rows: wanted.iter().map(|one| row(one, known.get(&one.rel_path))).collect(),
+            rows: wanted
+                .iter()
+                .map(|one| match &one.moved {
+                    Some(moved) => moving_row(one, moved),
+                    None => row(one, known.get(&one.rel_path)),
+                })
+                .collect(),
         })
+    }
+
+    /// Whether its rows move folders and photos rather than write them.
+    pub fn moves(&self) -> bool {
+        self.rows.iter().any(|row| row.moved.is_some())
+    }
+
+    /// Looks at the folders a move would take, never at a photo: a row whose target is there
+    /// already, or whose folder holds a file the move was not built with or lacks one it was, is
+    /// refused, as the engine would refuse it.
+    pub fn look(&mut self, library: &Path) {
+        for row in &mut self.rows {
+            let Some(moved) = &row.moved else { continue };
+            if row.verdict != Verdict::Change {
+                continue;
+            }
+            if let Some(why) = looked_at(library, moved) {
+                row.verdict = Verdict::Refused(why);
+                row.selected = false;
+            }
+        }
     }
 
     pub fn is_empty(&self) -> bool {
@@ -231,7 +285,7 @@ impl ChangeSet {
     pub fn targets(&self, library: &Path) -> Vec<Target> {
         self.rows
             .iter()
-            .filter(|row| row.selected && row.would_change())
+            .filter(|row| row.selected && row.would_change() && row.moved.is_none())
             .map(|row| Target {
                 path: library.join(&row.rel_path),
                 content_id: row.content_id.clone(),
@@ -240,10 +294,22 @@ impl ChangeSet {
             .collect()
     }
 
+    /// The folders and photos an apply would move: the selected rows and nothing else.
+    pub fn relocations(&self) -> Vec<Move> {
+        self.rows
+            .iter()
+            .filter(|row| row.selected && row.would_change())
+            .filter_map(|row| row.moved.clone())
+            .collect()
+    }
+
     /// The exact tag-level diff of one row: one ExifTool read, the same code path a write takes,
     /// and nothing written or journaled. A refusal comes back as its reason.
     pub fn exact(&self, index: usize, engine: &mut Engine) -> Result<Vec<Assignment>, String> {
         let row = self.rows.get(index).ok_or("there is no such row")?;
+        if row.moved.is_some() {
+            return Err("A move changes no field of any photo, only the folder it is in".to_string());
+        }
         let target = Target {
             path: engine.library().join(&row.rel_path),
             content_id: row.content_id.clone(),
@@ -296,6 +362,21 @@ pub fn apply(
     progress: &(dyn Fn(usize, usize) + Sync),
     cancel: &AtomicBool,
 ) -> write::Result<Summary> {
+    if set.moves() {
+        let moves = set.relocations();
+        if moves.is_empty() {
+            return Err(write::Error::Refusing("no folder is selected".to_string()));
+        }
+        return engine.relocate(
+            journal,
+            cache,
+            &set.title,
+            set.tool.as_deref(),
+            &moves,
+            progress,
+            cancel,
+        );
+    }
     let targets = set.targets(engine.library());
     if targets.is_empty() {
         return Err(write::Error::Refusing("no photo is selected".to_string()));
@@ -359,9 +440,70 @@ fn row(wanted: &Wanted, known: Option<&Stated>) -> Row {
         size: known.map(|known| known.size).unwrap_or_default(),
         change: wanted.change.clone(),
         differences,
+        moved: None,
         selected: verdict == Verdict::Change,
         verdict,
     }
+}
+
+/// A move uploads nothing: Nextcloud takes a renamed folder as a move, so it costs no traffic.
+fn moving_row(wanted: &Wanted, moved: &Move) -> Row {
+    let verdict = match &wanted.refused {
+        Some(why) => Verdict::Refused(why.clone()),
+        None if moved.from == moved.to => Verdict::Nothing,
+        None => Verdict::Change,
+    };
+    Row {
+        rel_path: wanted.rel_path.clone(),
+        content_id: String::new(),
+        size: 0,
+        change: Change::default(),
+        differences: vec![Difference {
+            what: "folder",
+            before: Some(moved.from.clone()),
+            after: moved.to.clone(),
+        }],
+        moved: Some(moved.clone()),
+        selected: verdict == Verdict::Change,
+        verdict,
+    }
+}
+
+/// Why the folders on disk would refuse a move, if they would.
+fn looked_at(library: &Path, moved: &Move) -> Option<String> {
+    if std::fs::symlink_metadata(library.join(&moved.to)).is_ok() {
+        return Some(format!("{} is there already", moved.to));
+    }
+    let from = library.join(&moved.from);
+    if std::fs::symlink_metadata(&from).is_err() {
+        return Some(format!("{} is not there, so scan the library first", moved.from));
+    }
+    let known: std::collections::HashSet<&str> = moved.photos.iter().map(|(rel_path, _)| rel_path.as_str()).collect();
+    let mut found = std::collections::HashSet::new();
+    for entry in walkdir::WalkDir::new(&from).sort_by_file_name() {
+        let Ok(entry) = entry else {
+            return Some(format!("{} cannot be read", moved.from));
+        };
+        if entry.file_type().is_dir() {
+            continue;
+        }
+        let rel_path = entry
+            .path()
+            .strip_prefix(library)
+            .map(|path| path.to_string_lossy().to_string())
+            .unwrap_or_default();
+        if !known.contains(rel_path.as_str()) {
+            return Some(format!(
+                "{rel_path} is not a photo the scan knows, so scan the library first"
+            ));
+        }
+        found.insert(rel_path);
+    }
+    let mut missing: Vec<&&str> = known.iter().filter(|rel_path| !found.contains(**rel_path)).collect();
+    missing.sort();
+    missing
+        .first()
+        .map(|rel_path| format!("{rel_path} is no longer there, so scan the library first"))
 }
 
 fn verdict(wanted: &Wanted, known: Option<&Stated>, differences: &[Difference]) -> Verdict {

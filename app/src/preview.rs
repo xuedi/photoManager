@@ -214,6 +214,11 @@ impl Preview {
         self.imp().set.borrow().as_ref().map(ChangeSet::counts)
     }
 
+    /// Whether the rows are folders to move rather than photos to write.
+    fn moves(&self) -> bool {
+        self.imp().set.borrow().as_ref().is_some_and(ChangeSet::moves)
+    }
+
     /// How many rows have had their exact diff fetched: one ExifTool read each.
     pub fn asked(&self) -> usize {
         self.imp().asked.get()
@@ -395,7 +400,7 @@ impl Preview {
                     }
                 }
                 self.refill();
-                let told = told(kind, &summary);
+                let told = told(kind, &summary, self.moves());
                 *self.imp().applied.borrow_mut() = Some((kind, summary));
                 self.say(&told, kind == Kind::Write);
                 self.show_summary();
@@ -469,15 +474,24 @@ impl Preview {
             imp.apply_button.set_sensitive(false);
             return;
         };
-        imp.title.set_subtitle(&match counts.written {
-            0 => format!("{} of {} photos selected", counts.selected, counts.photos),
-            written => format!("{written} of {} photos changed", counts.photos),
+        let moves = self.moves();
+        let (rows_are, title) = match moves {
+            true => ("folders", "Folders and Photos"),
+            false => ("photos", "Photos"),
+        };
+        if let Some(column) = imp.table.columns().item(1).and_downcast::<gtk::ColumnViewColumn>() {
+            column.set_title(Some(if moves { "Folder or Photo" } else { "Photo" }));
+        }
+        imp.title.set_subtitle(&match (counts.written, moves) {
+            (0, _) => format!("{} of {} {rows_are} selected", counts.selected, counts.photos),
+            (written, true) => format!("{written} of {} moved", counts.photos),
+            (written, false) => format!("{written} of {} photos changed", counts.photos),
         });
 
         // What is zero is left out: a summary of six rows that all say nothing is no summary.
-        let mut rows = vec![("Photos", counts.photos), ("Would change", counts.change)];
+        let mut rows = vec![(title, counts.photos), ("Would change", counts.change)];
         for (title, count) in [
-            ("Written", counts.written),
+            (if moves { "Moved" } else { "Written" }, counts.written),
             ("Failed", counts.failed),
             ("Already right", counts.nothing),
             ("Refused", counts.refused),
@@ -503,8 +517,10 @@ impl Preview {
         }
         imp.summary.set_visible(true);
 
-        imp.traffic
-            .set_label(&format!("{} would be uploaded again", size(counts.traffic)));
+        imp.traffic.set_label(&match moves {
+            true => "A move uploads nothing again".to_string(),
+            false => format!("{} would be uploaded again", size(counts.traffic)),
+        });
         imp.apply_button.set_sensitive(counts.selected > 0);
     }
 
@@ -672,12 +688,14 @@ fn listed(item: &glib::Object) -> gtk::ListItem {
 }
 
 /// What a finished pass says in a toast.
-fn told(kind: Kind, summary: &Summary) -> String {
-    let what = match kind {
-        Kind::Write => "changed",
-        Kind::Undo => "put back",
+fn told(kind: Kind, summary: &Summary, moves: bool) -> String {
+    let what = match (kind, moves) {
+        (Kind::Write, false) => "photos changed",
+        (Kind::Write, true) => "moved",
+        (Kind::Undo, false) => "photos put back",
+        (Kind::Undo, true) => "moved back",
     };
-    let mut parts = vec![format!("{} photos {what}", summary.written)];
+    let mut parts = vec![format!("{} {what}", summary.written)];
     for (count, name) in [
         (summary.skipped, "already right"),
         (summary.refused, "refused"),

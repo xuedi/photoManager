@@ -163,6 +163,7 @@ fn scans_into_its_cache() {
     reads_the_history(&window, &opened);
     keeps_a_tag_vocabulary(&window, &opened);
     runs_tools_together(&window, &opened);
+    answers_where_an_event_belongs(&window, &opened);
 }
 
 /// The tag tool opens its tree instead of questions. A rename merges two nodes and the merged
@@ -295,6 +296,97 @@ fn runs_tools_together(window: &Window, opened: &Rc<Library>) {
         (2, 2),
         "one row per photo with a date to zone, the third states its offset and its tags are tidy"
     );
+    window.show_view("dashboard");
+}
+
+/// The folder tool asks one question per event not in a city and per loose photo; Confirm Sure
+/// Cities takes the one event every photo of which names its city; Enter a Folder says where it
+/// would go with every letter; the preview is of folders and costs no traffic. Nothing is moved
+/// here: the apply is the smoke test's.
+fn answers_where_an_event_belongs(window: &Window, opened: &Rc<Library>) {
+    use photomanager_core::tools::folders::Parts;
+    use photomanager_core::tools::{Answer, Kind};
+    const TOOL: &str = "folder-migration";
+    const BEN: &str = "China/2006-09-00 Besuch Ben";
+    const GARDEN: &str = "Germany/2013-05-18 Garden Party";
+    let tools = window.tools();
+    let questions = tools.questions();
+    let act = |name: &str, target: gtk::glib::Variant| WidgetExt::activate_action(window, name, Some(&target)).unwrap();
+    let asked = |key: &str| {
+        questions
+            .questions()
+            .into_iter()
+            .find(|question| question.key == key)
+            .unwrap_or_else(|| panic!("nothing asks about {key}"))
+    };
+    window.show_view("tools");
+    act("win.tools-scope", "all".to_variant());
+    act("win.run-tool", TOOL.to_variant());
+    until(
+        || questions.key().as_deref() == Some(TOOL) && !questions.is_busy(),
+        "the events were asked about",
+    );
+    assert_eq!(asked(BEN).kind, Kind::Folder);
+    let row = rows(questions.upcast_ref())
+        .into_iter()
+        .find(|row| row.title() == BEN && row.subtitle().is_some_and(|said| said.starts_with("2 photos")))
+        .expect("a row for the event, by its whole path");
+    let subtitle = row.subtitle().unwrap();
+    assert!(
+        subtitle.contains("Offered: China/Beijing/2006-09-00 Besuch Ben - the places tag of every photo"),
+        "{subtitle}"
+    );
+    let menu = descendants(row.upcast_ref())
+        .into_iter()
+        .find_map(|widget| widget.downcast::<gtk::MenuButton>().ok())
+        .and_then(|button| button.menu_model())
+        .expect("a menu of answers");
+    let items: Vec<String> = (0..menu.n_items())
+        .filter_map(|index| {
+            menu.item_attribute_value(index, "label", None)
+                .and_then(|label| label.get::<String>())
+        })
+        .collect();
+    assert!(items.iter().any(|item| item == "Enter a Folder…"), "{items:?}");
+    assert!(
+        labels(questions.upcast_ref())
+            .iter()
+            .any(|label| label == "Where the Events Are"),
+        "the report is above the questions"
+    );
+
+    act("win.answer-exact", TOOL.to_variant());
+    assert!(matches!(asked(BEN).answer, Some(Answer::Folder(_))));
+    assert_eq!(asked(GARDEN).answer, None, "only the sure one");
+
+    act("win.answer", (TOOL, GARDEN, "folder").to_variant());
+    assert_eq!(questions.typing().as_deref(), Some(GARDEN), "the folder dialog is open");
+    let mut parts = Parts::of(&asked(GARDEN));
+    assert!(parts.date_fixed);
+    parts.country = String::new();
+    assert!(questions.type_folder(GARDEN, &parts).is_err());
+    assert_eq!(
+        questions.typing().as_deref(),
+        Some(GARDEN),
+        "a bad folder keeps the dialog open"
+    );
+    parts.country = "Germany".to_string();
+    parts.city = "Hamburg".to_string();
+    questions.type_folder(GARDEN, &parts).unwrap();
+    assert_eq!(questions.typing(), None, "the dialog closed");
+    assert_eq!(
+        asked(GARDEN).answer,
+        Some(Answer::Folder("Germany/Hamburg/2013-05-18 Garden Party".to_string()))
+    );
+
+    WidgetExt::activate_action(window, "win.preview-answers", None).unwrap();
+    let preview = window.preview();
+    until(
+        || preview.title().as_deref() == Some("Folder Migration") && !opened.is_busy(),
+        "the answers were previewed",
+    );
+    let counts = preview.counts().unwrap();
+    assert_eq!((counts.photos, counts.change, counts.traffic), (2, 2, 0));
     window.show_view("dashboard");
 }
 

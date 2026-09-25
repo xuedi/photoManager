@@ -158,6 +158,18 @@ pub struct Tagged {
     pub event_name: Option<String>,
 }
 
+/// An event folder as its path names it.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct Folder {
+    pub event_dir: String,
+    pub country: Option<String>,
+    pub city: Option<String>,
+    pub year: Option<i64>,
+    pub month: Option<i64>,
+    pub day: Option<i64>,
+    pub photos: usize,
+}
+
 #[derive(Debug, Clone)]
 pub struct Known {
     pub id: i64,
@@ -679,6 +691,37 @@ impl Cache {
         }
         writer.commit()?;
         Ok(paths.len())
+    }
+
+    /// Every photo in a folder and below it.
+    pub fn under(&self, dir: &str) -> Result<Vec<String>> {
+        let mut statement = self
+            .connection
+            .prepare("SELECT rel_path FROM photo WHERE substr(rel_path, 1, length(?1)) = ?1 ORDER BY rel_path")?;
+        let rows = statement.query_map(params![format!("{dir}/")], |row| row.get(0))?;
+        rows.collect()
+    }
+
+    /// Every event folder of the library, with what its path says: the country, the city if it
+    /// is in one, and the date.
+    pub fn event_folders(&self) -> Result<Vec<Folder>> {
+        let mut statement = self.connection.prepare(
+            "SELECT event_dir, country, city, event_year, event_month, event_day, count(*) FROM photo
+             WHERE event_dir IS NOT NULL
+             GROUP BY event_dir ORDER BY event_dir",
+        )?;
+        let rows = statement.query_map([], |row| {
+            Ok(Folder {
+                event_dir: row.get(0)?,
+                country: row.get(1)?,
+                city: row.get(2)?,
+                year: row.get(3)?,
+                month: row.get(4)?,
+                day: row.get(5)?,
+                photos: row.get::<_, i64>(6)? as usize,
+            })
+        })?;
+        rows.collect()
     }
 
     /// The paths of the photos with this image data.

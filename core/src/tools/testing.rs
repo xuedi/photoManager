@@ -32,7 +32,7 @@ pub struct Library {
     base: PathBuf,
     pub root: PathBuf,
     pub cache: Cache,
-    journal: Journal,
+    pub journal: Journal,
 }
 
 impl Library {
