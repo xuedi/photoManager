@@ -372,8 +372,9 @@ later loses nothing that only Immich knew. Immich is only read, never written.
   A person without a name, or hidden, is never asked about and never written.
 - **What the page offers.** A tag of the people tree with the same name, in either spelling of the
   root, is sure, and **Confirm Exact Matches** takes it; two tags of the same name are both
-  offered and neither is sure. Then tags of nearly the same name - one that starts the other, the
-  same first name, a letter or two apart - and, where no tag has the name, a new `people/<Name>`.
+  offered and neither is sure. Then tags of nearly the same name - the same words in another
+  order (family name first or last), one that starts the other, the same first name, a letter or
+  two apart - and, where no tag has the name, a new `people/<Name>`.
   **Enter a Tag** takes any tag of the tree, and **Leave Alone** writes nothing for that person.
 - **The answers** are kept by Immich's id of the person, not its name, so a person renamed in
   Immich keeps the answer, and so does a new fetch.
