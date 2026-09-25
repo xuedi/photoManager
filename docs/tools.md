@@ -83,6 +83,11 @@ The kind of a question decides what its row offers beside Confirm, Leave Alone a
 | a camera's clock | a shift per camera | the other offers, Enter a Shift |
 | a date | a date, or between the neighbours | the other offers, Enter a Date |
 | a time zone | one of the country's zones | the other offers |
+| a person | a people tag | the other offers, Enter a Tag |
+
+A tool may also say what it found out about the scope beyond its questions: a few lines drawn
+above them, some with a list to open. The page draws them like the questions, without knowing
+what they are about.
 
 **Enter a Shift** shows the event's cameras, each with its evidence and an entry, and a camera
 left empty is right: `-640d`, `+1y 2d 03:00`. **Enter a Date** takes the one date format. What is
@@ -350,6 +355,71 @@ One tag onto every photo of the scope, most often a selection handed over from t
 asks for the tag first, with its levels separated by `/`, and checks it before the preview. What a
 photo carries stays; the tag is written with every level into every field, like any tag write. A
 photo that carries it already and whose fields are tidy has nothing to do.
+
+## People from Immich
+
+Immich knows who is in the photos: its face recognition found the faces and a person named them.
+The files know it only where someone tagged a person by hand, and carry no face region at all. This
+tool writes what Immich knows into the files, so the files say it too, and a photo moved or renamed
+later loses nothing that only Immich knew. Immich is only read, never written.
+
+- **What it reads.** The snapshot beside the cache, fetched with **Get People from Immich** on the
+  dashboard ([cache.md](cache.md#what-immich-knows)): Immich's address is set in Preferences, its
+  API key is kept in the GNOME keyring, and Test Connection says whether both work. The key needs
+  to read assets, persons, faces and libraries, nothing more.
+- **Who is asked about.** Every person Immich has a name for and does not hide, with a face in a
+  photo of the scope: one question per person, titled with Immich's name and counted in photos.
+  A person without a name, or hidden, is never asked about and never written.
+- **What the page offers.** A tag of the people tree with the same name, in either spelling of the
+  root, is sure, and **Confirm Exact Matches** takes it; two tags of the same name are both
+  offered and neither is sure. Then tags of nearly the same name - one that starts the other, the
+  same first name, a letter or two apart - and, where no tag has the name, a new `people/<Name>`.
+  **Enter a Tag** takes any tag of the tree, and **Leave Alone** writes nothing for that person.
+- **The answers** are kept by Immich's id of the person, not its name, so a person renamed in
+  Immich keeps the answer, and so does a new fetch.
+- **What a photo gets.** A face region for every answered person Immich found in it, named with the
+  last level of the person's tag, so a file names each person one way; the persons named in
+  `PersonInImage`; and each person's tag in all five tag fields with every level. What it carried
+  stays: a tag is only added. The region list is replaced as a whole, so Immich decides the faces.
+- **The boxes.** Immich measures a face on its preview, which is turned the way the photo is shown.
+  The file wants the box on the stored picture, before any turn, so every box is turned back by
+  the photo's orientation - each of the eight - and clamped to the picture, and the stored size is
+  written with it. The way back is tested against Immich's own way there.
+- **Who is in the change set.** Every photo of the scope with an answered person whose regions or
+  tags do not say it yet. A second run finds nothing; after a new fetch only the photos whose
+  people changed in Immich come back.
+- **Refused, with why.** A photo Immich has offline; one Immich knows and the library does not; one
+  whose stored size or turn is not what Immich saw, or whose faces were measured on a picture of
+  another shape, because its boxes would land somewhere else.
+- **It runs together** with any tool that does not set the tags, such as the time zones, as one
+  write. With the tag vocabulary a photo both would tag is refused: tidy the tags first, then
+  write the people.
+
+**Above the questions** the page says what Immich knows that the files do not: when the snapshot
+was fetched and how many persons it names, how many photos of the scope do not say someone Immich
+found in them, which people tags are carried by photos Immich found no face of that person in, and
+how many persons Immich found faces of but has no name for - to be named in Immich, since nothing
+is written there from here.
+
+**Immich afterwards.** A write changes a photo's modification time, so Immich reads it again on its
+next library scan and runs its face detection once more. It matches the new faces to the old ones
+by where they are, and a write that changes only metadata keeps every face on the same person. The
+regions written are for every other face-aware viewer: Immich's own face import is to stay off,
+or every person would be there twice.
+
+```mermaid
+flowchart TD
+    snap[(immich.db)] --> ask[one question per named person:<br/>which people tag]
+    tree[the people tree, from the cache] --> ask
+    ask --> answers[(the tool's settings in app.db)]
+    snap --> map[Immich's photos to the library's, by path]
+    cache[(cache: size, turn,<br/>regions and tags in the file)] --> map
+    answers --> want[per photo: regions, persons, tags]
+    map --> want
+    want --> diff{the file says it already?}
+    diff -- no --> preview[preview, apply, journal, take back]
+    diff -- yes --> nothing[not in the change set]
+```
 
 ## Running tools together
 

@@ -11,7 +11,7 @@ It lives in `$XDG_CACHE_HOME/org.beijingcode.PhotoManager/cache.db` (SQLite, wri
 
 | Table | Holds |
 |-------|-------|
-| `photo` | one row per JPEG: where it is, what the filesystem says (size, mtime, inode), its content id, what the folders say (country, city, event date and name, the event's folder, sub-folder), what the metadata says (dates, GPS and how the position was worked out, the city in the location text, camera, orientation, rating, size, whether its tag fields are tidy), and the raw metadata as JSON |
+| `photo` | one row per JPEG: where it is, what the filesystem says (size, mtime, inode), its content id, what the folders say (country, city, event date and name, the event's folder, sub-folder), what the metadata says (dates, GPS and how the position was worked out, the city in the location text, camera, orientation, rating, size, whether its tag fields are tidy, the face regions and persons it names), and the raw metadata as JSON |
 | `tag` | one row per tag path per photo, from every tag field, plus its leaf |
 | `issue` | one row per thing worth looking at, with its kind and a detail |
 
@@ -44,6 +44,37 @@ the same, and the [tag vocabulary](tools.md#tag-vocabulary) is the tool that wri
 
 A second, read-only connection can look at the cache while the application's own connection is
 busy with a scan or an apply; that is how the dashboard is refreshed off the main thread.
+
+## Face regions
+
+A photo may say who is in it in two ways: MWG face regions, each a name and a box as a fraction of
+the stored picture with the size it was measured against, and the IPTC persons. The scan keeps both
+as the file lists them, so a change set can tell whether a photo already says what a
+[people](tools.md#people-from-immich) write would, and a second run finds nothing. The preview
+shows the names before and after, and when the names agree but a box, the size or the persons do
+not, it says so after the names.
+
+## What Immich knows
+
+Next to the cache lies a second database, `immich.db`: what was last read from Immich about who is
+in the photos. It holds Immich's persons, every photo Immich knows with where it lies inside the
+library and how Immich saw its size and turn, and the face boxes of every photo a named person is
+in. It is Immich's data, never ours: it is read only on the Get People from Immich button,
+thrown away and read again at will, and a new one replaces the old only once it is whole. A read
+that is stopped or fails keeps the one before. It has its own schema version, and one of another
+version is no snapshot at all.
+
+The answers given about it - which tag each person is - are not in it: they are the tool's
+settings, next to the journal, and outlive every new read.
+
+```mermaid
+flowchart LR
+    button[Get People from Immich] --> api[Immich API, read only:<br/>libraries, persons, assets, faces]
+    keyring[(GNOME keyring)] -- the key --> api
+    api --> part[(immich.db.part)]
+    part -- whole --> snap[(immich.db)]
+    part -- stopped or failed --> gone[thrown away]
+```
 
 ## Two ids
 

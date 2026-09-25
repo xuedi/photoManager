@@ -47,8 +47,8 @@ flowchart TD
     journal --> undo[undo the last set,<br/>or any pass from the history]
 ```
 
-The cache does not keep everything a change can set. Where it cannot answer - a place in words, a
-face region, a label being cleared - the row says so rather than guessing, and the verdict errs
+The cache does not keep everything a change can set. Where it cannot answer - a place in words or
+a label being cleared - the row says so rather than guessing, and the verdict errs
 towards "would change": over-estimating costs an estimate, under-estimating would silently drop a
 photo the user wanted changed.
 

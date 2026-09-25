@@ -101,7 +101,7 @@ visited as few times as possible, and it is never left half written.
 | place in words | `XMP-photoshop:City`/`State`/`Country`, `XMP-iptcCore:CountryCode`/`Location`, and the five IPTC spellings |
 | date | `EXIF:DateTimeOriginal` and `CreateDate` with `OffsetTimeOriginal`/`Digitized`/`OffsetTime`, `XMP-xmp:CreateDate`, `XMP-photoshop:DateCreated`, `IPTC:DateCreated`/`TimeCreated`; takes away `XMP-exif:DateTimeOriginal` and `DateTimeDigitized` |
 | rating | `XMP-xmp:Rating`, and nowhere else |
-| faces | `XMP-mwg-rs:RegionInfo` and `XMP-iptcExt:PersonInImage` |
+| faces | `XMP-mwg-rs:RegionInfo` (type Face, a name, a box centred and as a fraction of the stored picture, the stored size in pixels as `AppliedToDimensions`) and `XMP-iptcExt:PersonInImage`, both replaced as a whole |
 | leftovers | takes away `XMP-xmp:Label` and `XMP-mediapro:CatalogSets`, where older writers left keywords; the [tag vocabulary](tools.md#tag-vocabulary) writes both with every tag write |
 
 All five tag fields say the same thing, because different readers each read a different one, and
