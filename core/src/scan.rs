@@ -101,6 +101,8 @@ struct Found {
 
 enum Outcome {
     Unchanged,
+    /// The same file as a row that is gone from its path: renamed, so its row follows it.
+    Moved(String),
     Read {
         content_id: Option<String>,
         metadata: Box<Metadata>,
@@ -125,6 +127,10 @@ pub fn run(
 
     let known = cache.all_known()?;
     let gone = missing(&known, &photos);
+    let left: HashMap<Fingerprint, String> = gone
+        .iter()
+        .filter_map(|path| Some((known.get(path)?.fingerprint, path.clone())))
+        .collect();
     let mut summary = Summary {
         photos: photos.len(),
         gone: gone.len(),
@@ -138,7 +144,7 @@ pub fn run(
                 if cancel.load(Ordering::Relaxed) {
                     return;
                 }
-                let _ = sender.send(examine(&known, file, rel_path, reader, thumbs, mode));
+                let _ = sender.send(examine(&known, &left, file, rel_path, reader, thumbs, mode));
             });
         });
 
@@ -172,6 +178,7 @@ pub fn run(
 
 fn examine(
     known: &HashMap<String, Known>,
+    left: &HashMap<Fingerprint, String>,
     file: &Path,
     rel_path: &str,
     reader: &dyn Reader,
@@ -197,6 +204,16 @@ fn examine(
             rel_path: rel_path.to_string(),
             fingerprint,
             outcome: Outcome::Unchanged,
+        };
+    }
+    if mode == Mode::Reconcile
+        && !existed
+        && let Some(from) = left.get(&fingerprint)
+    {
+        return Found {
+            rel_path: rel_path.to_string(),
+            fingerprint,
+            outcome: Outcome::Moved(from.clone()),
         };
     }
 
@@ -240,6 +257,10 @@ fn store(
         for entry in found.iter() {
             match &entry.outcome {
                 Outcome::Unchanged => summary.unchanged += 1,
+                Outcome::Moved(from) => {
+                    writer.relocate(from, &entry.rel_path)?;
+                    summary.moved += 1;
+                }
                 Outcome::Failed(why) => {
                     summary.read += 1;
                     writer.forget(&entry.rel_path)?;
@@ -617,6 +638,47 @@ mod tests {
             .unwrap()
             .unwrap();
         assert_eq!(after.content_id, content, "a move keeps the image id");
+    }
+
+    #[test]
+    fn a_renamed_folder_is_followed_without_reading_a_photo_again() {
+        let mut setup = setup("renamed");
+        setup.scan(Mode::Reconcile);
+        let before = setup.cache.known("China/IMG_3140.JPG").unwrap().unwrap();
+
+        let event = setup.library.join("China/2006-09-00 Besuch Ben");
+        let city = setup.library.join("China/Beijing/2006-09-00 Besuch Ben");
+        std::fs::create_dir_all(city.parent().unwrap()).unwrap();
+        std::fs::rename(&event, &city).unwrap();
+        std::fs::create_dir_all(setup.library.join("China/2006-09-14 Loose")).unwrap();
+        std::fs::rename(
+            setup.library.join("China/IMG_3140.JPG"),
+            setup.library.join("China/2006-09-14 Loose/IMG_3140.JPG"),
+        )
+        .unwrap();
+
+        let summary = setup.scan(Mode::Reconcile);
+        assert_eq!(summary.read, 0, "nothing was read again: {summary:?}");
+        assert_eq!(summary.moved, 3);
+        assert_eq!(summary.photos, crate::fixtures::photo_count());
+
+        let sub = "China/Beijing/2006-09-00 Besuch Ben/2006-08-21/P1000002.JPG";
+        let rows = setup.cache.stated(&[sub.to_string()]).unwrap();
+        assert!(rows[sub].said.tags.iter().any(|tag| tag == "places/inChina/Beijing"));
+        let dirs = setup.cache.event_dirs(&[sub.to_string()]).unwrap();
+        assert_eq!(dirs[sub], "China/Beijing/2006-09-00 Besuch Ben");
+
+        let loose = setup
+            .cache
+            .known("China/2006-09-14 Loose/IMG_3140.JPG")
+            .unwrap()
+            .unwrap();
+        assert_eq!(loose.id, before.id, "the same row");
+        let off: Vec<(String, i64)> = setup.cache.issue_counts().unwrap();
+        assert!(
+            !off.iter().any(|(kind, _)| kind == "off the convention"),
+            "the loose file fits now: {off:?}"
+        );
     }
 
     #[test]

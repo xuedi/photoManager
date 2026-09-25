@@ -17,6 +17,7 @@
 //! file only by its mtime, and a write nothing notices is worse than no write at all.
 
 pub mod change;
+pub mod relocate;
 pub mod tool;
 
 use std::path::{Path, PathBuf};
@@ -26,6 +27,7 @@ use std::time::Instant;
 use serde_json::{Map, Value};
 
 pub use change::{Assign, Assignment, Change, Face, Faces, Field, Gps, Place, Taken};
+pub use relocate::Move;
 use tool::Tool;
 
 use crate::cache::Cache;
@@ -268,9 +270,16 @@ impl Engine {
             )));
         }
         let entries = journal.written(undoes)?;
-        if entries.is_empty() {
+        let moves: Vec<journal::Moved> = journal
+            .moves(undoes)?
+            .into_iter()
+            .filter(|moved| moved.outcome.as_deref() == Some(journal::WRITTEN))
+            .rev()
+            .collect();
+        if entries.is_empty() && moves.is_empty() {
             return Err(Error::Refusing(format!("batch {undoes} changed no photo")));
         }
+        let total = entries.len() + moves.len();
 
         let taken_back = journal.pass(undoes)?;
         let batch = journal.start(
@@ -288,7 +297,7 @@ impl Engine {
                 summary.cancelled = true;
                 break;
             }
-            let path = self.library.join(&entry.rel_path);
+            let path = self.found(cache, &entry.rel_path, &entry.content_id);
             let mut want = Vec::new();
             let mut expect = Vec::new();
             for swap in &entry.swaps {
@@ -312,13 +321,59 @@ impl Engine {
                 Wish::Back { want, expect },
             )?;
             summary.note(&entry.rel_path, outcome);
-            progress(done + 1, entries.len());
+            progress(done + 1, total);
+        }
+        for (done, moved) in moves.iter().enumerate() {
+            if summary.cancelled || cancel.load(Ordering::Relaxed) {
+                summary.cancelled = true;
+                break;
+            }
+            let there = Move {
+                from: moved.from.clone(),
+                to: moved.to.clone(),
+                photos: moved.photos.clone(),
+            };
+            let outcome = self.shift(journal, cache, batch, &there.back())?;
+            summary.note(&moved.from, outcome);
+            progress(entries.len() + done + 1, total);
         }
 
         journal.finish(batch)?;
         summary.seconds = started.elapsed().as_secs();
         tracing::info!(batch, undoes, written = summary.written, "undo pass done");
         Ok(summary)
+    }
+
+    /// Where a photo of an older pass is now: where the pass left it, or when that is gone, where
+    /// the cache last saw its image data - so a pass can be taken back after its folder moved.
+    fn found(&self, cache: &Cache, rel_path: &str, content: &str) -> PathBuf {
+        let path = self.library.join(rel_path);
+        if path.exists() {
+            return path;
+        }
+        let name = Path::new(rel_path).file_name();
+        let elsewhere: Vec<String> = cache
+            .paths_of(content)
+            .unwrap_or_default()
+            .into_iter()
+            .filter(|other| self.library.join(other).exists())
+            .collect();
+        let named: Vec<&String> = elsewhere
+            .iter()
+            .filter(|other| Path::new(other).file_name() == name)
+            .collect();
+        let now = match (named.as_slice(), elsewhere.as_slice()) {
+            ([one], _) => Some(*one),
+            (_, [one]) => Some(one),
+            _ => None,
+        };
+        match now {
+            Some(now) => {
+                tracing::debug!(was = rel_path, now, "followed by its image data");
+                self.library.join(now)
+            }
+            None => path,
+        }
     }
 
     /// A refusal is about this photo alone, so it never comes back as an error.

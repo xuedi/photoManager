@@ -74,7 +74,7 @@ CREATE INDEX issue_kind ON issue (kind);
 ";
 
 /// What the filesystem alone says about a file, enough to decide whether to read it again.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct Fingerprint {
     pub size: u64,
     pub mtime_ns: i64,
@@ -658,6 +658,38 @@ impl Cache {
         })
     }
 
+    /// A folder or a photo moved inside the library: every row under `from` follows it to `to`,
+    /// keeping everything read from the files. Returns how many rows moved.
+    pub fn relocate(&mut self, from: &str, to: &str) -> Result<usize> {
+        let under = format!("{from}/");
+        let paths: Vec<String> = {
+            let mut statement = self
+                .connection
+                .prepare("SELECT rel_path FROM photo WHERE rel_path = ?1 OR substr(rel_path, 1, length(?2)) = ?2")?;
+            let rows = statement.query_map(params![from, under], |row| row.get(0))?;
+            rows.collect::<Result<Vec<String>>>()?
+        };
+        let writer = self.transaction()?;
+        for path in &paths {
+            let moved = match path.strip_prefix(&under) {
+                Some(rest) => format!("{to}/{rest}"),
+                None => to.to_string(),
+            };
+            writer.relocate(path, &moved)?;
+        }
+        writer.commit()?;
+        Ok(paths.len())
+    }
+
+    /// The paths of the photos with this image data.
+    pub fn paths_of(&self, content_id: &str) -> Result<Vec<String>> {
+        let mut statement = self
+            .connection
+            .prepare("SELECT rel_path FROM photo WHERE content_id = ?1 ORDER BY rel_path")?;
+        let rows = statement.query_map(params![content_id], |row| row.get(0))?;
+        rows.collect()
+    }
+
     pub fn forget(&mut self, rel_paths: &[String]) -> Result<usize> {
         let writer = self.transaction()?;
         let mut removed = 0;
@@ -693,6 +725,57 @@ impl Writer<'_> {
     pub fn forget_issues(&self, rel_path: &str) -> Result<()> {
         self.transaction
             .execute("DELETE FROM issue WHERE rel_path = ?1", params![rel_path])?;
+        Ok(())
+    }
+
+    /// One photo's row follows its file to another path: what its folders say is read again from
+    /// the new one, and so is whether it fits the convention.
+    pub fn relocate(&self, from: &str, to: &str) -> Result<()> {
+        let placement = Placement::parse(to);
+        let id: Option<i64> = self
+            .transaction
+            .query_row("SELECT id FROM photo WHERE rel_path = ?1", params![from], |row| {
+                row.get(0)
+            })
+            .optional()?;
+        let Some(id) = id else {
+            return Ok(());
+        };
+        self.forget(to)?;
+        self.transaction.execute(
+            "UPDATE photo SET rel_path = ?2, country = ?3, city = ?4, event_text = ?5, event_year = ?6,
+                event_month = ?7, event_day = ?8, event_name = ?9, sub_path = ?10, event_dir = ?11
+             WHERE id = ?1",
+            params![
+                id,
+                to,
+                placement.country,
+                placement.city,
+                placement.event_text,
+                placement.event_year,
+                placement.event_month,
+                placement.event_day,
+                placement.event_name,
+                placement.sub_path,
+                placement.event_dir,
+            ],
+        )?;
+        self.transaction.execute(
+            "DELETE FROM issue WHERE rel_path = ?1 AND kind = ?2",
+            params![from, crate::scan::IssueKind::OffConvention.as_str()],
+        )?;
+        self.transaction
+            .execute("UPDATE issue SET rel_path = ?2 WHERE rel_path = ?1", params![from, to])?;
+        if !placement.fits() {
+            self.add_issue(
+                &Issue {
+                    rel_path: to.to_string(),
+                    kind: crate::scan::IssueKind::OffConvention,
+                    detail: Some(placement.fit.as_str().to_string()),
+                },
+                Some(id),
+            )?;
+        }
         Ok(())
     }
 

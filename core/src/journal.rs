@@ -12,7 +12,7 @@ use rusqlite::{Connection, OptionalExtension, params};
 
 use crate::clock::now;
 
-const SCHEMA_VERSION: i64 = 2;
+const SCHEMA_VERSION: i64 = 3;
 
 const SCHEMA: &str = "
 CREATE TABLE batch (
@@ -49,12 +49,36 @@ CREATE TABLE swap (
 CREATE INDEX swap_entry ON swap (entry_id);
 ";
 
+/// A folder or a file taken to another place in the library, and every photo that went with it.
+const MOVES: &str = "
+CREATE TABLE relocation (
+    id        INTEGER PRIMARY KEY,
+    batch_id  INTEGER NOT NULL REFERENCES batch (id),
+    from_path TEXT NOT NULL,
+    to_path   TEXT NOT NULL,
+    outcome   TEXT,
+    detail    TEXT
+);
+CREATE INDEX relocation_batch ON relocation (batch_id);
+CREATE INDEX relocation_from ON relocation (from_path);
+
+CREATE TABLE relocated (
+    relocation_id INTEGER NOT NULL REFERENCES relocation (id) ON DELETE CASCADE,
+    rel_path      TEXT NOT NULL,
+    content_id    TEXT NOT NULL
+);
+CREATE INDEX relocated_relocation ON relocated (relocation_id);
+";
+
 /// From version 1: a batch learns what ran it. Only columns are added, so every row a version-1
 /// journal holds reads the same afterwards, and a batch from before it has no title.
 const TO_2: &str = "
 ALTER TABLE batch ADD COLUMN title TEXT;
 ALTER TABLE batch ADD COLUMN tool TEXT;
 ";
+
+/// The migrations, each from the version before it. Only tables and columns are added.
+const STEPS: [(i64, &str); 2] = [(1, TO_2), (2, MOVES)];
 
 /// What a batch from before batches had names is called.
 pub const EARLIER: &str = "Earlier change";
@@ -134,6 +158,28 @@ impl Pass {
     }
 }
 
+/// A move about to happen: from where, to where, and every photo that goes with it, by the path
+/// it had before the move.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Relocation {
+    pub from: String,
+    pub to: String,
+    pub photos: Vec<(String, String)>,
+}
+
+/// A move as the journal holds it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Moved {
+    pub id: i64,
+    pub batch_id: i64,
+    pub from: String,
+    pub to: String,
+    pub outcome: Option<String>,
+    pub detail: Option<String>,
+    /// Each photo's path before the move and its content id.
+    pub photos: Vec<(String, String)>,
+}
+
 #[derive(Debug)]
 pub enum Error {
     /// A journal from a version we do not know. It is kept, and nothing is written.
@@ -194,9 +240,10 @@ impl Journal {
         match version {
             0 if fresh || is_empty(&connection)? => {
                 connection.execute_batch(SCHEMA)?;
+                connection.execute_batch(MOVES)?;
                 connection.pragma_update(None, "user_version", SCHEMA_VERSION)?;
             }
-            1 => migrate(&connection, file)?,
+            1 | 2 => migrate(&connection, file, version)?,
             SCHEMA_VERSION => {}
             other => return Err(Error::Foreign(other)),
         }
@@ -251,6 +298,91 @@ impl Journal {
         }
     }
 
+    /// Writes down a move that is about to happen, and commits before returning.
+    pub fn record_move(&mut self, batch: i64, relocation: &Relocation) -> Result<i64> {
+        let change = self.connection.transaction()?;
+        change.execute(
+            "INSERT INTO relocation (batch_id, from_path, to_path) VALUES (?1, ?2, ?3)",
+            params![batch, relocation.from, relocation.to],
+        )?;
+        let id = change.last_insert_rowid();
+        {
+            let mut insert =
+                change.prepare("INSERT INTO relocated (relocation_id, rel_path, content_id) VALUES (?1, ?2, ?3)")?;
+            for (rel_path, content_id) in &relocation.photos {
+                insert.execute(params![id, rel_path, content_id])?;
+            }
+        }
+        change.commit()?;
+        Ok(id)
+    }
+
+    /// Notes what became of a move.
+    pub fn settle_move(&mut self, relocation: i64, outcome: &str, detail: Option<&str>) -> Result<()> {
+        let touched = self.connection.execute(
+            "UPDATE relocation SET outcome = ?2, detail = ?3 WHERE id = ?1",
+            params![relocation, outcome, detail],
+        )?;
+        match touched {
+            0 => Err(Error::Unknown(format!("no move {relocation} to settle"))),
+            _ => Ok(()),
+        }
+    }
+
+    /// The moves of a batch, in the order they were made.
+    pub fn moves(&self, batch: i64) -> Result<Vec<Moved>> {
+        self.read_moves(
+            "SELECT id, batch_id, from_path, to_path, outcome, detail FROM relocation
+             WHERE batch_id = ?1 ORDER BY id",
+            params![batch],
+        )
+    }
+
+    /// Moves that were recorded and never settled: the process stopped between the record and
+    /// the outcome.
+    pub fn unsettled_moves(&self) -> Result<Vec<Moved>> {
+        self.read_moves(
+            "SELECT id, batch_id, from_path, to_path, outcome, detail FROM relocation
+             WHERE outcome IS NULL ORDER BY id",
+            [],
+        )
+    }
+
+    fn read_moves(&self, sql: &str, parameters: impl rusqlite::Params) -> Result<Vec<Moved>> {
+        let mut statement = self.connection.prepare(sql)?;
+        let rows = statement.query_map(parameters, |row| {
+            Ok(Moved {
+                id: row.get(0)?,
+                batch_id: row.get(1)?,
+                from: row.get(2)?,
+                to: row.get(3)?,
+                outcome: row.get(4)?,
+                detail: row.get(5)?,
+                photos: Vec::new(),
+            })
+        })?;
+        let mut moves = rows.collect::<rusqlite::Result<Vec<Moved>>>()?;
+        let mut photos = self
+            .connection
+            .prepare("SELECT rel_path, content_id FROM relocated WHERE relocation_id = ?1 ORDER BY rowid")?;
+        for moved in &mut moves {
+            moved.photos = photos
+                .query_map(params![moved.id], |row| Ok((row.get(0)?, row.get(1)?)))?
+                .collect::<rusqlite::Result<Vec<(String, String)>>>()?;
+        }
+        Ok(moves)
+    }
+
+    /// Whether every entry and move of a batch has an outcome.
+    pub fn settled(&self, batch: i64) -> Result<bool> {
+        Ok(self.connection.query_row(
+            "SELECT NOT EXISTS(SELECT 1 FROM entry WHERE batch_id = ?1 AND outcome IS NULL)
+                AND NOT EXISTS(SELECT 1 FROM relocation WHERE batch_id = ?1 AND outcome IS NULL)",
+            params![batch],
+            |row| row.get(0),
+        )?)
+    }
+
     pub fn finish(&mut self, batch: i64) -> Result<()> {
         self.connection
             .execute("UPDATE batch SET finished_at = ?2 WHERE id = ?1", params![batch, now()])?;
@@ -261,8 +393,11 @@ impl Journal {
     /// that died halfway leaves these behind, and they are what tells us so.
     pub fn unfinished(&self) -> Result<Vec<i64>> {
         let mut statement = self.connection.prepare(
-            "SELECT DISTINCT b.id FROM batch b LEFT JOIN entry e ON e.batch_id = b.id
-             WHERE b.finished_at IS NULL OR e.outcome IS NULL ORDER BY b.id",
+            "SELECT b.id FROM batch b
+             WHERE b.finished_at IS NULL
+                OR EXISTS(SELECT 1 FROM entry e WHERE e.batch_id = b.id AND e.outcome IS NULL)
+                OR EXISTS(SELECT 1 FROM relocation r WHERE r.batch_id = b.id AND r.outcome IS NULL)
+             ORDER BY b.id",
         )?;
         let rows = statement.query_map([], |row| row.get(0))?;
         Ok(rows.collect::<rusqlite::Result<Vec<i64>>>()?)
@@ -336,11 +471,12 @@ impl Journal {
         Ok(rows.collect::<rusqlite::Result<Vec<Swap>>>()?)
     }
 
-    /// Whether anything was ever written to a photo. The very first write of all is a moment the
-    /// application asks about, and this is what answers it.
+    /// Whether anything was ever written to a photo or moved. The very first write of all is a
+    /// moment the application asks about, and this is what answers it.
     pub fn ever_written(&self) -> Result<bool> {
         Ok(self.connection.query_row(
-            "SELECT EXISTS(SELECT 1 FROM entry WHERE outcome = ?1)",
+            "SELECT EXISTS(SELECT 1 FROM entry WHERE outcome = ?1)
+                OR EXISTS(SELECT 1 FROM relocation WHERE outcome = ?1)",
             params![WRITTEN],
             |row| row.get(0),
         )?)
@@ -359,8 +495,12 @@ impl Journal {
     }
 }
 
+/// A pass counts the photos it wrote and the photos it moved.
 const PASS: &str = "SELECT b.id, b.kind, b.started_at, b.finished_at, b.undoes,
-        (SELECT count(*) FROM entry e WHERE e.batch_id = b.id AND e.outcome = ?1), b.title, b.tool
+        (SELECT count(*) FROM entry e WHERE e.batch_id = b.id AND e.outcome = ?1)
+        + (SELECT count(*) FROM relocation r JOIN relocated p ON p.relocation_id = r.id
+           WHERE r.batch_id = b.id AND r.outcome = ?1),
+        b.title, b.tool
     FROM batch b";
 
 fn read_pass(row: &rusqlite::Row<'_>) -> rusqlite::Result<Pass> {
@@ -376,11 +516,12 @@ fn read_pass(row: &rusqlite::Row<'_>) -> rusqlite::Result<Pass> {
     })
 }
 
-/// Takes a version-1 journal to version 2. A copy of the whole file is made beside it first, as
-/// SQLite sees it, so what the write-ahead log still holds is in it too. A copy already there is
-/// from a migration that did not finish, of the same version-1 journal, and is kept as it is.
-fn migrate(connection: &Connection, file: &Path) -> Result<()> {
-    let copy = beside(file, ".v1");
+/// Takes an older journal to this version. A copy of the whole file is made beside it first, as
+/// SQLite sees it, so what the write-ahead log still holds is in it too, named after the version
+/// it was. A copy already there is from a migration that did not finish, of the same journal, and
+/// is kept as it is. Every step then runs in one transaction.
+fn migrate(connection: &Connection, file: &Path, version: i64) -> Result<()> {
+    let copy = beside(file, &format!(".v{version}"));
     if !copy.exists() {
         let target = copy
             .to_str()
@@ -388,7 +529,11 @@ fn migrate(connection: &Connection, file: &Path) -> Result<()> {
         connection.execute("VACUUM INTO ?1", params![target])?;
     }
     let change = connection.unchecked_transaction()?;
-    change.execute_batch(TO_2)?;
+    for (from, step) in STEPS {
+        if from >= version {
+            change.execute_batch(step)?;
+        }
+    }
     change.pragma_update(None, "user_version", SCHEMA_VERSION)?;
     change.commit()?;
     tracing::info!(copy = %copy.display(), "the journal was migrated to version {SCHEMA_VERSION}");
@@ -625,6 +770,44 @@ mod tests {
         assert_eq!(journal.pass(third).unwrap().title(), "Rate");
         drop(journal);
         assert!(Journal::open(&file).is_ok(), "a migrated journal opens as it is");
+    }
+
+    #[test]
+    fn a_version_two_journal_learns_moves_and_keeps_every_row() {
+        let file = temp("migrate-two");
+        let mut journal = Journal::open(&file).unwrap();
+        let batch = journal.start(Kind::Write, None, "Rate", Some("demo")).unwrap();
+        let id = journal.record(batch, &entry("a.jpg")).unwrap();
+        journal.settle(id, WRITTEN, None).unwrap();
+        journal
+            .connection
+            .execute_batch("DROP TABLE relocated; DROP TABLE relocation; PRAGMA user_version = 2;")
+            .unwrap();
+        drop(journal);
+
+        let mut journal = Journal::open(&file).unwrap();
+        assert!(file.with_file_name("app.db.v2").exists(), "no copy was left beside it");
+        assert_eq!(count(&file.with_file_name("app.db.v2"), "entry"), 1);
+        assert_eq!(journal.pass(batch).unwrap().title(), "Rate");
+        assert_eq!(journal.pass(batch).unwrap().written, 1);
+
+        let moving = journal.start(Kind::Write, None, "Folder Migration", None).unwrap();
+        let relocation = Relocation {
+            from: "China/2006-09-00 Besuch".to_string(),
+            to: "China/Beijing/2006-09-00 Besuch".to_string(),
+            photos: vec![
+                ("China/2006-09-00 Besuch/a.jpg".to_string(), "c1".to_string()),
+                ("China/2006-09-00 Besuch/b.jpg".to_string(), "c2".to_string()),
+            ],
+        };
+        let id = journal.record_move(moving, &relocation).unwrap();
+        assert_eq!(journal.unsettled_moves().unwrap().len(), 1);
+        assert!(!journal.settled(moving).unwrap());
+        journal.settle_move(id, WRITTEN, None).unwrap();
+        assert!(journal.settled(moving).unwrap());
+        let moved = &journal.moves(moving).unwrap()[0];
+        assert_eq!(moved.photos, relocation.photos);
+        assert_eq!(journal.pass(moving).unwrap().written, 2, "a move counts its photos");
     }
 
     #[test]

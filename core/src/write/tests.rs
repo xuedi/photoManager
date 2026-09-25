@@ -397,7 +397,8 @@ fn a_pass_from_before_the_migration_can_still_be_taken_back() {
     let connection = rusqlite::Connection::open(&file).unwrap();
     connection
         .execute_batch(
-            "ALTER TABLE batch DROP COLUMN title; ALTER TABLE batch DROP COLUMN tool; PRAGMA user_version = 1;",
+            "ALTER TABLE batch DROP COLUMN title; ALTER TABLE batch DROP COLUMN tool;
+             DROP TABLE relocated; DROP TABLE relocation; PRAGMA user_version = 1;",
         )
         .unwrap();
     drop(connection);
@@ -1029,5 +1030,344 @@ fn a_batch_of_one_process_does_not_start_one_per_photo() {
     assert!(
         setup.engine.tool.commands() >= 6,
         "a read and a write per photo at least"
+    );
+}
+
+// Moves - a folder or a photo to another place in the library
+
+const BEN: &str = "China/2006-09-00 Besuch Ben";
+const BEN_IN_CITY: &str = "China/Beijing/2006-09-00 Besuch Ben";
+
+impl Setup {
+    fn scan(&mut self) {
+        let thumbs = crate::thumbs::Thumbs::new(self.root.parent().unwrap().join("thumbs"));
+        crate::scan::run(
+            &mut self.cache,
+            &self.root,
+            &crate::metadata::Exiv2,
+            &thumbs,
+            crate::scan::Mode::Reconcile,
+            &|_| {},
+            &AtomicBool::new(false),
+        )
+        .unwrap();
+    }
+
+    /// A move of everything under `from` as the files are now.
+    fn moving(&self, from: &str, to: &str) -> Move {
+        let mut photos = Vec::new();
+        for entry in walkdir::WalkDir::new(self.path(from)).sort_by_file_name() {
+            let entry = entry.unwrap();
+            if entry.file_type().is_file() {
+                let rel_path = entry.path().strip_prefix(&self.root).unwrap().display().to_string();
+                let bytes = std::fs::read(entry.path()).unwrap();
+                photos.push((rel_path, content_id(&bytes).unwrap()));
+            }
+        }
+        Move {
+            from: from.to_string(),
+            to: to.to_string(),
+            photos,
+        }
+    }
+
+    fn relocate(&mut self, moves: &[Move]) -> Summary {
+        self.engine
+            .relocate(
+                &mut self.journal,
+                &mut self.cache,
+                "Folder Migration",
+                Some("folder-migration"),
+                moves,
+                &quiet(),
+                &AtomicBool::new(false),
+            )
+            .unwrap()
+    }
+
+    fn undo_batch(&mut self, batch: i64) -> Summary {
+        self.engine
+            .undo(
+                &mut self.journal,
+                &mut self.cache,
+                batch,
+                &quiet(),
+                &AtomicBool::new(false),
+            )
+            .unwrap()
+    }
+
+    /// Every file with its image data and its modification time, by path.
+    fn files(&self) -> BTreeMap<String, (String, std::time::SystemTime)> {
+        let mut all = BTreeMap::new();
+        for entry in walkdir::WalkDir::new(&self.root) {
+            let entry = entry.unwrap();
+            if entry.file_type().is_file() {
+                let rel_path = entry.path().strip_prefix(&self.root).unwrap().display().to_string();
+                let bytes = std::fs::read(entry.path()).unwrap();
+                let mtime = entry.metadata().unwrap().modified().unwrap();
+                all.insert(rel_path, (content_id(&bytes).unwrap_or_default(), mtime));
+            }
+        }
+        all
+    }
+}
+
+fn under(
+    files: &BTreeMap<String, (String, std::time::SystemTime)>,
+    from: &str,
+    to: &str,
+) -> BTreeMap<String, (String, std::time::SystemTime)> {
+    files
+        .iter()
+        .map(|(path, file)| (relocate::rebased(path, from, to), file.clone()))
+        .collect()
+}
+
+#[test]
+fn an_event_moves_into_its_city_and_back_with_every_photo_as_it_was() {
+    let mut setup = Setup::new("move-and-back");
+    setup.scan();
+    let before = setup.files();
+
+    let moved = setup.relocate(&[setup.moving(BEN, BEN_IN_CITY)]);
+    assert_eq!((moved.written, moved.refused, moved.failed), (1, 0, 0), "{moved:?}");
+    assert_eq!(moved.outcomes, [(BEN.to_string(), Outcome::Written)]);
+    assert!(!setup.path(BEN).exists());
+    assert_eq!(
+        setup.files(),
+        under(&before, BEN, BEN_IN_CITY),
+        "every photo, its image data and its mtime"
+    );
+
+    let sub = format!("{BEN_IN_CITY}/2006-08-21/P1000002.JPG");
+    assert!(setup.cache.known(&sub).unwrap().is_some(), "the cache rows followed");
+    assert_eq!(
+        setup.cache.event_dirs(std::slice::from_ref(&sub)).unwrap()[&sub],
+        BEN_IN_CITY
+    );
+    let pass = setup.journal.pass(moved.batch).unwrap();
+    assert_eq!(pass.written, 2, "two photos moved");
+    assert_eq!(pass.tool.as_deref(), Some("folder-migration"));
+    let told: Vec<String> = crate::history::photos(&setup.journal, moved.batch)
+        .unwrap()
+        .iter()
+        .map(crate::history::told)
+        .collect();
+    assert_eq!(told, [format!("place of 2 photos: {BEN} -> {BEN_IN_CITY}")]);
+
+    let undone = setup.undo_batch(moved.batch);
+    assert_eq!(undone.written, 1, "{undone:?}");
+    assert_eq!(undone.outcomes, [(BEN.to_string(), Outcome::Written)]);
+    assert_eq!(setup.files(), before, "back where it was, byte for byte");
+    assert!(
+        !setup.path("China/Beijing").exists(),
+        "the city folder it left empty is gone"
+    );
+    assert!(setup.cache.known(&format!("{BEN}/P1000001.JPG")).unwrap().is_some());
+    assert_eq!(
+        setup.journal.pass(undone.batch).unwrap().title(),
+        "Take back: Folder Migration"
+    );
+    assert!(setup.journal.unfinished().unwrap().is_empty());
+}
+
+#[test]
+fn a_target_that_is_there_already_refuses() {
+    let mut setup = Setup::new("move-target-there");
+    let there = "Germany/Hamburg/2014-08-00 Wedding";
+    let one = setup.moving("Germany/2019-07-13 Sommerfest", there);
+    let before = setup.files();
+    let moved = setup.relocate(&[one]);
+    assert_eq!(moved.refused, 1, "{moved:?}");
+    assert!(matches!(&moved.outcomes[0].1, Outcome::Refused(why) if why.contains("is there already")));
+    assert_eq!(setup.files(), before);
+    assert!(
+        setup.journal.moves(moved.batch).unwrap().is_empty(),
+        "nothing was recorded"
+    );
+}
+
+#[test]
+fn a_file_the_move_does_not_know_refuses() {
+    let mut setup = Setup::new("move-unknown-file");
+    let one = setup.moving(BEN, BEN_IN_CITY);
+    std::fs::write(setup.path(&format!("{BEN}/2006-08-21/notes.txt")), "a stray").unwrap();
+    let moved = setup.relocate(std::slice::from_ref(&one));
+    assert!(
+        matches!(&moved.outcomes[0].1, Outcome::Refused(why) if why.contains("notes.txt is not a photo the scan knows")),
+        "{moved:?}"
+    );
+    assert!(setup.path(BEN).exists());
+    assert!(!setup.path("China/Beijing").exists(), "no folder was made for it");
+
+    std::fs::remove_file(setup.path(&format!("{BEN}/2006-08-21/notes.txt"))).unwrap();
+    std::fs::remove_file(setup.path(&format!("{BEN}/P1000001.JPG"))).unwrap();
+    let moved = setup.relocate(&[one]);
+    assert!(
+        matches!(&moved.outcomes[0].1, Outcome::Refused(why) if why.contains("P1000001.JPG is no longer there")),
+        "{moved:?}"
+    );
+}
+
+#[test]
+fn a_path_that_leaves_the_library_refuses() {
+    let mut setup = Setup::new("move-outside");
+    for to in ["../elsewhere/Ben", "/tmp/Ben", "China/./Ben", ""] {
+        let one = setup.moving(BEN, to);
+        let moved = setup.relocate(&[one]);
+        assert_eq!(moved.refused, 1, "{to}: {moved:?}");
+    }
+    let into_itself = setup.moving(BEN, &format!("{BEN}/deeper"));
+    assert_eq!(setup.relocate(&[into_itself]).refused, 1);
+    assert!(setup.path(BEN).exists());
+}
+
+#[test]
+fn a_loose_photo_moves_into_an_event_and_the_country_folder_stays() {
+    let mut setup = Setup::new("move-loose");
+    setup.scan();
+    let to = format!("{BEN}/IMG_3140.JPG");
+    let moved = setup.relocate(&[setup.moving("China/IMG_3140.JPG", &to)]);
+    assert_eq!(moved.written, 1, "{moved:?}");
+    assert!(setup.path(&to).is_file());
+    assert!(setup.path("China").is_dir(), "a folder that is not empty is kept");
+    assert!(setup.cache.known(&to).unwrap().is_some());
+}
+
+#[test]
+fn the_old_parent_goes_when_the_move_left_it_empty() {
+    let mut setup = Setup::new("move-prune");
+    let moved = setup.relocate(&[setup.moving("Ireland/2008-10-03 Galway", "Netherlands/2008-10-03 Galway")]);
+    assert_eq!(moved.written, 1, "{moved:?}");
+    assert!(!setup.path("Ireland").exists(), "the country it left empty");
+    assert!(
+        setup.path("Netherlands/2008-10-03 Galway/Kira/IMG_0002.JPG").is_file(),
+        "sub-folders go with it"
+    );
+
+    let undone = setup.undo_batch(moved.batch);
+    assert_eq!(undone.written, 1, "{undone:?}");
+    assert!(setup.path("Ireland/2008-10-03 Galway/Kira/IMG_0002.JPG").is_file());
+    assert!(!setup.path("Netherlands").exists());
+}
+
+#[test]
+fn an_interrupted_move_is_settled_by_where_the_folder_is() {
+    let mut setup = Setup::new("move-interrupted");
+    setup.scan();
+    let one = setup.moving(BEN, BEN_IN_CITY);
+    let relocation = journal::Relocation {
+        from: one.from.clone(),
+        to: one.to.clone(),
+        photos: one.photos.clone(),
+    };
+
+    let before_rename = setup
+        .journal
+        .start(journal::Kind::Write, None, "Folder Migration", None)
+        .unwrap();
+    setup.journal.record_move(before_rename, &relocation).unwrap();
+    std::fs::create_dir_all(setup.path("China/Beijing")).unwrap();
+    assert_eq!(setup.journal.unfinished().unwrap(), [before_rename]);
+    assert_eq!(setup.engine.resolve(&mut setup.journal, &mut setup.cache).unwrap(), 1);
+    let settled = &setup.journal.moves(before_rename).unwrap()[0];
+    assert_eq!(settled.outcome.as_deref(), Some(journal::REFUSED));
+    assert!(setup.path(BEN).exists());
+    assert!(!setup.path("China/Beijing").exists(), "the folder made for it is gone");
+    assert!(setup.journal.unfinished().unwrap().is_empty());
+
+    let after_rename = setup
+        .journal
+        .start(journal::Kind::Write, None, "Folder Migration", None)
+        .unwrap();
+    setup.journal.record_move(after_rename, &relocation).unwrap();
+    std::fs::create_dir_all(setup.path("China/Beijing")).unwrap();
+    std::fs::rename(setup.path(BEN), setup.path(BEN_IN_CITY)).unwrap();
+    assert_eq!(setup.engine.resolve(&mut setup.journal, &mut setup.cache).unwrap(), 1);
+    let settled = &setup.journal.moves(after_rename).unwrap()[0];
+    assert_eq!(settled.outcome.as_deref(), Some(journal::WRITTEN));
+    assert!(
+        setup
+            .cache
+            .known(&format!("{BEN_IN_CITY}/P1000001.JPG"))
+            .unwrap()
+            .is_some()
+    );
+
+    let undone = setup.undo_batch(after_rename);
+    assert_eq!(
+        undone.written, 1,
+        "a settled move is taken back like any other: {undone:?}"
+    );
+    assert!(setup.path(BEN).exists());
+}
+
+#[test]
+fn an_undo_refuses_a_folder_that_changed_since_the_move() {
+    let mut setup = Setup::new("move-undo-drifted");
+    let moved = setup.relocate(&[setup.moving(BEN, BEN_IN_CITY)]);
+    std::fs::copy(
+        setup.path(&format!("{BEN_IN_CITY}/P1000001.JPG")),
+        setup.path(&format!("{BEN_IN_CITY}/P1000001 copy.JPG")),
+    )
+    .unwrap();
+    let undone = setup.undo_batch(moved.batch);
+    assert_eq!(undone.refused, 1, "{undone:?}");
+    assert!(setup.path(BEN_IN_CITY).exists(), "it stays where it is");
+
+    std::fs::remove_file(setup.path(&format!("{BEN_IN_CITY}/P1000001 copy.JPG"))).unwrap();
+    std::fs::create_dir_all(setup.path(BEN)).unwrap();
+    let refused = setup.engine.undo(
+        &mut setup.journal,
+        &mut setup.cache,
+        moved.batch,
+        &quiet(),
+        &AtomicBool::new(false),
+    );
+    assert!(
+        refused.is_err(),
+        "a pass is taken back once, even when the photos were left alone"
+    );
+}
+
+#[test]
+fn a_date_written_before_a_move_is_taken_back_after_it() {
+    let mut setup = Setup::new("move-then-undo-date");
+    setup.scan();
+    let photo = format!("{BEN}/P1000001.JPG");
+    let target = setup.target(
+        &photo,
+        Change::of([Field::Taken(Some(Taken {
+            at: "2006-08-22 09:30:00".to_string(),
+            offset: Some("+08:00".to_string()),
+        }))]),
+    );
+    let dated = setup
+        .engine
+        .write(
+            &mut setup.journal,
+            &mut setup.cache,
+            "Dates",
+            None,
+            &[target],
+            &quiet(),
+            &AtomicBool::new(false),
+        )
+        .unwrap();
+    assert_eq!(dated.written, 1, "{dated:?}");
+    setup.scan();
+
+    let moved = setup.relocate(&[setup.moving(BEN, BEN_IN_CITY)]);
+    assert_eq!(moved.written, 1, "{moved:?}");
+
+    let there = format!("{BEN_IN_CITY}/P1000001.JPG");
+    let undone = setup.undo_batch(dated.batch);
+    assert_eq!(undone.written, 1, "{undone:?}");
+    let entry = &setup.journal.entries(undone.batch).unwrap()[0];
+    assert_eq!(entry.rel_path, there, "found by its image data");
+    assert_eq!(
+        setup.field(&there, "ExifIFD:DateTimeOriginal"),
+        Some(Value::from("2006:08:21 09:30:00"))
     );
 }

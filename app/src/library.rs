@@ -110,13 +110,19 @@ pub struct Sidebars {
 
 impl Library {
     pub fn open(paths: Paths) -> Result<Rc<Library>, String> {
-        let cache = Cache::open(&paths.cache_db()).map_err(|error| error.to_string())?;
+        let mut cache = Cache::open(&paths.cache_db()).map_err(|error| error.to_string())?;
         let geo = Geo::open(&paths.geo_db())
             .map_err(|error| tracing::error!(%error, "the place data cannot be opened"))
             .ok();
-        let journal = Journal::open(&paths.app_db())
+        let mut journal = Journal::open(&paths.app_db())
             .map_err(|error| tracing::error!(%error, "the journal cannot be opened, so nothing can be written"))
             .ok();
+        if let Some(journal) = journal.as_mut() {
+            let settled = Engine::new(paths.library()).and_then(|engine| engine.resolve(journal, &mut cache));
+            if let Err(error) = settled {
+                tracing::error!(%error, "an interrupted move could not be settled");
+            }
+        }
         let settings = Settings::open(&paths.app_db())
             .map_err(|error| tracing::error!(%error, "the settings cannot be opened"))
             .ok();

@@ -48,9 +48,33 @@ pub fn pass(journal: &Journal, batch: i64) -> Result<Pass> {
     read(journal, journal.pass(batch)?)
 }
 
-/// Every photo of one pass and what it got, in the order they were done.
+/// Every photo of one pass and what it got, in the order they were done. A folder a pass moved
+/// is one of them, with where it went.
 pub fn photos(journal: &Journal, batch: i64) -> Result<Vec<Recorded>> {
-    journal.entries(batch)
+    let mut all = journal.entries(batch)?;
+    let text = |path: &str| Some(serde_json::Value::from(path).to_string());
+    for moved in journal.moves(batch)? {
+        all.push(Recorded {
+            id: moved.id,
+            batch_id: moved.batch_id,
+            rel_path: moved.from.clone(),
+            content_id: String::new(),
+            before: String::new(),
+            image_hash: None,
+            outcome: moved.outcome,
+            detail: moved.detail,
+            swaps: vec![Swap {
+                tag: match moved.photos.len() {
+                    1 => "place of 1 photo".to_string(),
+                    count => format!("place of {count} photos"),
+                },
+                key: String::new(),
+                old: text(&moved.from),
+                new: text(&moved.to),
+            }],
+        });
+    }
+    Ok(all)
 }
 
 /// What one photo of a pass got, the way a person reads it: every tag with its two sides, or why
@@ -103,18 +127,33 @@ fn read(journal: &Journal, pass: journal::Pass) -> Result<Pass> {
 }
 
 /// The photos of a pass that a later write wrote again and that still say what that write left:
-/// a later write that was itself taken back for that photo does not count.
+/// a later write that was itself taken back for that photo does not count. A photo is known by
+/// its image data, so one whose folder moved in between is still the same photo. For a pass that
+/// moved folders, the photos of a folder a later pass moved on again.
 fn changed_since(journal: &Journal, batch: i64) -> Result<i64> {
-    Ok(journal.connection().query_row(
-        "SELECT count(DISTINCT e.rel_path) FROM entry e
+    let written: i64 = journal.connection().query_row(
+        "SELECT count(DISTINCT e.content_id) FROM entry e
          WHERE e.batch_id = ?1 AND e.outcome = ?2 AND EXISTS (
             SELECT 1 FROM entry later JOIN batch b ON b.id = later.batch_id
-            WHERE later.rel_path = e.rel_path AND later.outcome = ?2
+            WHERE later.content_id = e.content_id AND later.outcome = ?2
               AND b.id > ?1 AND b.kind = ?3
               AND NOT EXISTS (
                 SELECT 1 FROM batch u JOIN entry back ON back.batch_id = u.id
-                WHERE u.undoes = b.id AND back.rel_path = e.rel_path AND back.outcome = ?2))",
+                WHERE u.undoes = b.id AND back.content_id = e.content_id AND back.outcome = ?2))",
         params![batch, WRITTEN, Kind::Write.as_str()],
         |row| row.get(0),
-    )?)
+    )?;
+    let moved: i64 = journal.connection().query_row(
+        "SELECT count(*) FROM relocation r JOIN relocated p ON p.relocation_id = r.id
+         WHERE r.batch_id = ?1 AND r.outcome = ?2 AND EXISTS (
+            SELECT 1 FROM relocation later JOIN batch b ON b.id = later.batch_id
+            WHERE later.from_path = r.to_path AND later.outcome = ?2
+              AND b.id > ?1 AND b.kind = ?3
+              AND NOT EXISTS (
+                SELECT 1 FROM batch u JOIN relocation back ON back.batch_id = u.id
+                WHERE u.undoes = b.id AND back.from_path = later.to_path AND back.outcome = ?2))",
+        params![batch, WRITTEN, Kind::Write.as_str()],
+        |row| row.get(0),
+    )?;
+    Ok(written + moved)
 }
