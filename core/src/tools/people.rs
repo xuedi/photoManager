@@ -115,10 +115,20 @@ fn person_tags(tree: &TagTree) -> Vec<(String, i64)> {
         .collect()
 }
 
-/// How near a tag's name is to a person's, if near at all: a name that starts the other, the
-/// same first name, or a letter or two apart.
+fn words(name: &str) -> Vec<&str> {
+    let mut words: Vec<&str> = name.split_whitespace().collect();
+    words.sort_unstable();
+    words
+}
+
+/// How near a tag's name is to a person's, if near at all: the same words in another order
+/// (family name first or last), a name that starts the other, the same first name, or a letter
+/// or two apart.
 fn nearness(name: &str, tag: &str) -> Option<f64> {
     let (name, tag) = (fold(name), fold(leaf(tag)));
+    if words(&name).len() > 1 && words(&name) == words(&tag) {
+        return Some(0.9);
+    }
     let shorter = name.chars().count().min(tag.chars().count());
     if shorter >= 3 && (tag.starts_with(&name) || name.starts_with(&tag)) {
         return Some(0.6);

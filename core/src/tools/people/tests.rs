@@ -143,6 +143,28 @@ fn every_named_person_is_asked_about_once_with_offers_from_the_people_tree() {
 }
 
 #[test]
+fn a_name_in_the_other_order_is_offered_first_but_not_sure() {
+    let known = [
+        ("people/groupChina/Chen Mei".to_string(), 12),
+        ("people/Mei".to_string(), 3),
+    ];
+    let offered = offers("Mei Chen", &known);
+    assert_eq!(offered[0].answer, Answer::Tag("people/groupChina/Chen Mei".to_string()));
+    assert!(!offered[0].sure && !offered[0].exact);
+    assert!(
+        offered
+            .iter()
+            .any(|offer| offer.answer == Answer::Tag("people/Mei Chen".to_string())),
+        "a new tag stays on offer"
+    );
+    assert_ne!(
+        nearness("Mei Lin Chen", "people/Chen Mei"),
+        Some(0.9),
+        "only the same words are the other order"
+    );
+}
+
+#[test]
 fn an_answer_outlives_a_new_fetch_and_a_rename_in_immich() {
     let (library, immich) = fetched("people-rename");
     let settings = answered(None, "p-ann", "people/family/Anna");
