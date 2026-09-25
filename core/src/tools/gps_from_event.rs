@@ -88,7 +88,7 @@ impl Tool for GpsFromEvent {
                 Some(geo) => offers(
                     geo,
                     &mut near,
-                    event_dir,
+                    &Placement::of_folder(event_dir, cache.layout()),
                     positions.get(event_dir).map(Vec::as_slice).unwrap_or_default(),
                 )
                 .map_err(|error| error.to_string())?,
@@ -165,16 +165,28 @@ impl Near {
 }
 
 /// Where the rest of the event is, then what its folders name, all inside the folder's country.
-/// The note says when the country is one the place data does not know, so nothing was narrowed.
+/// Without a country level, a folder above the event the place data knows as a country narrows
+/// the offers; without either nothing does. The note says when a country folder is one the place
+/// data does not know, so nothing was narrowed.
 fn offers(
     geo: &Geo,
     near: &mut Near,
-    event_dir: &str,
+    placement: &Placement,
     positions: &[(f64, f64)],
 ) -> crate::geo::Result<(Vec<Offer>, Option<String>)> {
-    let placement = Placement::parse(&format!("{event_dir}/-"));
-    let folder_country = placement.country.clone().unwrap_or_default();
-    let country = geo.country(&folder_country)?.map(|(code, _)| code);
+    let mut folder_country = placement.country.clone().unwrap_or_default();
+    if placement.country.is_none() {
+        for folder in &placement.above {
+            if geo.country(folder)?.is_some() {
+                folder_country = folder.clone();
+                break;
+            }
+        }
+    }
+    let country = match folder_country.is_empty() {
+        true => None,
+        false => geo.country(&folder_country)?.map(|(code, _)| code),
+    };
     let inside = |place: &Located| country.as_ref().is_none_or(|code| &place.code == code);
 
     let mut places: Vec<(Located, usize)> = Vec::new();
@@ -201,7 +213,9 @@ fn offers(
         })
         .collect();
 
-    let hint = country.as_deref().or(Some(folder_country.as_str()));
+    let hint = country
+        .as_deref()
+        .or(Some(folder_country.as_str()).filter(|text| !text.is_empty()));
     for text in [placement.city.as_deref(), placement.event_name.as_deref()]
         .into_iter()
         .flatten()
@@ -220,7 +234,7 @@ fn offers(
         }
     }
 
-    let note = country.is_none().then(|| {
+    let note = (country.is_none() && placement.country.is_some()).then(|| {
         format!("The place data knows no country called {folder_country}, so the offers are not narrowed to it")
     });
     Ok((offers, note))

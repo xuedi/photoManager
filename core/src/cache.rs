@@ -5,7 +5,7 @@ use std::path::{Path, PathBuf};
 
 use rusqlite::{Connection, OptionalExtension, params};
 
-use crate::layout::Placement;
+use crate::layout::{Layout, Placement};
 use crate::metadata::{Metadata, Regions};
 use crate::scan::Issue;
 
@@ -14,6 +14,13 @@ const SCHEMA_VERSION: i64 = 6;
 /// SQLite takes a few hundred parameters happily; a library's worth of paths is asked for in
 /// chunks of this size.
 const CHUNK: usize = 500;
+
+/// Which layout the rows were placed with. Added to any cache of this version when it is opened,
+/// so the placements can be read again when the layout changes without a rescan.
+const PLACED: &str = "CREATE TABLE IF NOT EXISTS placed (layout TEXT NOT NULL)";
+
+/// Bumped when the reading of a path changes, so every row is placed again once.
+const PLACEMENT_VERSION: &str = "2";
 
 const SCHEMA: &str = "
 CREATE TABLE photo (
@@ -181,6 +188,9 @@ pub struct Known {
 pub struct Cache {
     connection: Connection,
     file: PathBuf,
+    layout: Layout,
+    /// The layout the rows were last placed with, as kept; `None` when they never were.
+    placed: Option<String>,
 }
 
 pub type Result<T> = rusqlite::Result<T>;
@@ -213,10 +223,8 @@ impl Cache {
             return Ok(None);
         }
         connection.query_row("SELECT count(*) FROM photo", [], |row| row.get::<_, i64>(0))?;
-        Ok(Some(Cache {
-            connection,
-            file: file.to_path_buf(),
-        }))
+        connection.execute_batch(PLACED)?;
+        Ok(Some(Cache::with(connection, file)?))
     }
 
     /// A second, read-only look at a cache someone else has open, for questions asked off the
@@ -232,10 +240,7 @@ impl Cache {
         if version != SCHEMA_VERSION {
             return Ok(None);
         }
-        Ok(Some(Cache {
-            connection,
-            file: file.to_path_buf(),
-        }))
+        Ok(Some(Cache::with(connection, file)?))
     }
 
     pub(crate) fn connection(&self) -> &Connection {
@@ -246,21 +251,79 @@ impl Cache {
         let connection = Connection::open(file)?;
         prepare(&connection)?;
         connection.execute_batch(SCHEMA)?;
+        connection.execute_batch(PLACED)?;
         connection.pragma_update(None, "user_version", SCHEMA_VERSION)?;
+        Cache::with(connection, file)
+    }
+
+    fn with(connection: Connection, file: &Path) -> Result<Cache> {
+        let placed: Option<String> = match connection.query_row("SELECT layout FROM placed", [], |row| row.get(0)) {
+            Ok(text) => Some(text),
+            Err(rusqlite::Error::QueryReturnedNoRows) => None,
+            Err(rusqlite::Error::SqliteFailure(_, _)) => None,
+            Err(error) => return Err(error),
+        };
+        let layout = placed
+            .as_deref()
+            .and_then(|text| text.strip_prefix(&format!("{PLACEMENT_VERSION} ")))
+            .and_then(|text| Layout::read(text).ok())
+            .unwrap_or_default();
         Ok(Cache {
             connection,
             file: file.to_path_buf(),
+            layout,
+            placed,
         })
+    }
+
+    /// The layout the paths are read with.
+    pub fn layout(&self) -> &Layout {
+        &self.layout
+    }
+
+    /// Reads every path again with this layout when the rows were placed with another one: the
+    /// country, city, event and whether it fits. Nothing is read from a file. Returns how many
+    /// rows were placed again.
+    pub fn follow_layout(&mut self, layout: &Layout) -> Result<usize> {
+        let kept = format!("{PLACEMENT_VERSION} {layout}");
+        if self.placed.as_deref() == Some(kept.as_str()) {
+            return Ok(0);
+        }
+        let paths: Vec<(i64, String)> = {
+            let mut statement = self.connection.prepare("SELECT id, rel_path FROM photo")?;
+            let rows = statement.query_map([], |row| Ok((row.get(0)?, row.get(1)?)))?;
+            rows.collect::<Result<_>>()?
+        };
+        self.layout = layout.clone();
+        let writer = self.transaction()?;
+        writer.transaction.execute(
+            "DELETE FROM issue WHERE kind = ?1",
+            params![crate::scan::IssueKind::OffLayout.as_str()],
+        )?;
+        for (id, rel_path) in &paths {
+            writer.place(*id, rel_path)?;
+        }
+        writer.transaction.execute("DELETE FROM placed", [])?;
+        writer
+            .transaction
+            .execute("INSERT INTO placed (layout) VALUES (?1)", params![kept])?;
+        writer.commit()?;
+        self.placed = Some(kept);
+        tracing::info!(layout = %layout, rows = paths.len(), "photos placed in the layout");
+        Ok(paths.len())
     }
 
     /// Throws the cache away and starts an empty one.
     pub fn rebuild(self) -> Result<Cache> {
         let file = self.file.clone();
+        let layout = self.layout.clone();
         drop(self);
         for suffix in ["", "-wal", "-shm"] {
             let _ = std::fs::remove_file(format!("{}{suffix}", file.display()));
         }
-        Cache::create(&file)
+        let mut cache = Cache::create(&file)?;
+        cache.follow_layout(&layout)?;
+        Ok(cache)
     }
 
     pub fn file(&self) -> &Path {
@@ -667,6 +730,7 @@ impl Cache {
     pub fn transaction(&mut self) -> Result<Writer<'_>> {
         Ok(Writer {
             transaction: self.connection.transaction()?,
+            layout: &self.layout,
         })
     }
 
@@ -691,6 +755,56 @@ impl Cache {
         }
         writer.commit()?;
         Ok(paths.len())
+    }
+
+    /// How many events a layout would find out of place by the shape of their folders, and how
+    /// many there are. An event folder is found by its date whatever the layout, so this can be
+    /// asked before one is chosen. What the photos say about a folder is Folder Migration's.
+    pub fn events_off(&self, layout: &Layout) -> Result<(usize, usize)> {
+        let mut statement = self
+            .connection
+            .prepare("SELECT DISTINCT event_dir FROM photo WHERE event_dir IS NOT NULL")?;
+        let dirs = statement
+            .query_map([], |row| row.get::<_, String>(0))?
+            .collect::<Result<Vec<String>>>()?;
+        let off = dirs
+            .iter()
+            .filter(|dir| !Placement::of_folder(dir, layout).fits())
+            .count();
+        Ok((off, dirs.len()))
+    }
+
+    /// An event of the library to show a layout with: one with the most levels it is in now, read
+    /// with the layout its folders fit - the kept one, else a preset - so its country or year is
+    /// known even right after the layout changed.
+    pub fn sample_event(&self) -> Result<Option<Placement>> {
+        let mut statement = self.connection.prepare(
+            "SELECT event_dir FROM photo WHERE event_dir IS NOT NULL AND event_name IS NOT NULL
+             GROUP BY event_dir ORDER BY (city IS NOT NULL) DESC, count(*) DESC LIMIT 1",
+        )?;
+        let dir: Option<String> = statement.query_row([], |row| row.get(0)).optional()?;
+        Ok(dir.map(|dir| {
+            let placed = Placement::of_folder(&dir, &self.layout);
+            if placed.fits() {
+                return placed;
+            }
+            crate::layout::PRESETS
+                .iter()
+                .filter_map(|(_, text)| Layout::read(text).ok())
+                .map(|layout| Placement::of_folder(&dir, &layout))
+                .find(Placement::fits)
+                .unwrap_or(placed)
+        }))
+    }
+
+    /// The top-level tags, which a tag level of a layout can have as its root.
+    pub fn tag_roots(&self) -> Result<Vec<String>> {
+        let mut statement = self.connection.prepare(
+            "SELECT DISTINCT CASE WHEN instr(path, '/') > 0 THEN substr(path, 1, instr(path, '/') - 1) ELSE path END
+             FROM tag ORDER BY 1",
+        )?;
+        let rows = statement.query_map([], |row| row.get(0))?;
+        rows.collect()
     }
 
     /// Every photo in a folder and below it.
@@ -757,6 +871,7 @@ fn prepare(connection: &Connection) -> Result<()> {
 
 pub struct Writer<'a> {
     transaction: rusqlite::Transaction<'a>,
+    layout: &'a Layout,
 }
 
 impl Writer<'_> {
@@ -771,10 +886,13 @@ impl Writer<'_> {
         Ok(())
     }
 
+    pub fn layout(&self) -> &Layout {
+        self.layout
+    }
+
     /// One photo's row follows its file to another path: what its folders say is read again from
-    /// the new one, and so is whether it fits the convention.
+    /// the new one, and so is whether it fits the layout.
     pub fn relocate(&self, from: &str, to: &str) -> Result<()> {
-        let placement = Placement::parse(to);
         let id: Option<i64> = self
             .transaction
             .query_row("SELECT id FROM photo WHERE rel_path = ?1", params![from], |row| {
@@ -785,13 +903,26 @@ impl Writer<'_> {
             return Ok(());
         };
         self.forget(to)?;
+        self.transaction
+            .execute("UPDATE photo SET rel_path = ?2 WHERE id = ?1", params![id, to])?;
         self.transaction.execute(
-            "UPDATE photo SET rel_path = ?2, country = ?3, city = ?4, event_text = ?5, event_year = ?6,
-                event_month = ?7, event_day = ?8, event_name = ?9, sub_path = ?10, event_dir = ?11
+            "DELETE FROM issue WHERE rel_path = ?1 AND kind = ?2",
+            params![from, crate::scan::IssueKind::OffLayout.as_str()],
+        )?;
+        self.transaction
+            .execute("UPDATE issue SET rel_path = ?2 WHERE rel_path = ?1", params![from, to])?;
+        self.place(id, to)
+    }
+
+    /// What a row's path says, read with the layout, and the issue when it does not fit.
+    fn place(&self, id: i64, rel_path: &str) -> Result<()> {
+        let placement = Placement::parse(rel_path, self.layout);
+        self.transaction.execute(
+            "UPDATE photo SET country = ?2, city = ?3, event_text = ?4, event_year = ?5,
+                event_month = ?6, event_day = ?7, event_name = ?8, sub_path = ?9, event_dir = ?10
              WHERE id = ?1",
             params![
                 id,
-                to,
                 placement.country,
                 placement.city,
                 placement.event_text,
@@ -803,17 +934,11 @@ impl Writer<'_> {
                 placement.event_dir,
             ],
         )?;
-        self.transaction.execute(
-            "DELETE FROM issue WHERE rel_path = ?1 AND kind = ?2",
-            params![from, crate::scan::IssueKind::OffConvention.as_str()],
-        )?;
-        self.transaction
-            .execute("UPDATE issue SET rel_path = ?2 WHERE rel_path = ?1", params![from, to])?;
         if !placement.fits() {
             self.add_issue(
                 &Issue {
-                    rel_path: to.to_string(),
-                    kind: crate::scan::IssueKind::OffConvention,
+                    rel_path: rel_path.to_string(),
+                    kind: crate::scan::IssueKind::OffLayout,
                     detail: Some(placement.fit.as_str().to_string()),
                 },
                 Some(id),
@@ -936,11 +1061,65 @@ mod tests {
                     inode: 30,
                 },
                 Some("abc"),
-                &Placement::parse(rel_path),
+                &Placement::parse(rel_path, &Layout::default()),
                 &Metadata::empty(),
             )
             .unwrap();
         writer.commit().unwrap();
+    }
+
+    #[test]
+    fn a_new_layout_places_every_row_again_without_a_scan() {
+        let file = temp("layout");
+        let mut cache = Cache::open(&file).unwrap();
+        put_one(&mut cache, "Germany/2019-07-13 Party/P1.JPG");
+        put_one(&mut cache, "2019/Germany/2019-07-13 Fair/P2.JPG");
+        assert_eq!(cache.follow_layout(&Layout::default()).unwrap(), 2, "placed once");
+        assert_eq!(cache.follow_layout(&Layout::default()).unwrap(), 0, "and not again");
+        let off = |cache: &Cache| {
+            cache
+                .connection
+                .query_row(
+                    "SELECT group_concat(rel_path) FROM issue WHERE kind = 'off the layout'",
+                    [],
+                    |row| row.get::<_, Option<String>>(0),
+                )
+                .unwrap()
+        };
+        assert_eq!(off(&cache).as_deref(), Some("2019/Germany/2019-07-13 Fair/P2.JPG"));
+        assert_eq!(
+            cache.events_off(&Layout::read("year/country").unwrap()).unwrap(),
+            (1, 2)
+        );
+
+        let by_year = Layout::read("year/country").unwrap();
+        assert_eq!(cache.follow_layout(&by_year).unwrap(), 2);
+        assert_eq!(off(&cache).as_deref(), Some("Germany/2019-07-13 Party/P1.JPG"));
+        let country: Option<String> = cache
+            .connection
+            .query_row(
+                "SELECT country FROM photo WHERE rel_path = '2019/Germany/2019-07-13 Fair/P2.JPG'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(country.as_deref(), Some("Germany"));
+        let fingerprint = cache
+            .known("Germany/2019-07-13 Party/P1.JPG")
+            .unwrap()
+            .unwrap()
+            .fingerprint;
+        assert_eq!(fingerprint.mtime_ns, 20, "nothing was read again");
+        drop(cache);
+
+        let cache = Cache::open(&file).unwrap();
+        assert_eq!(
+            cache.layout(),
+            &by_year,
+            "a cache remembers the layout it was placed with"
+        );
+        let rebuilt = cache.rebuild().unwrap();
+        assert_eq!(rebuilt.layout(), &by_year, "and keeps it through a rebuild");
     }
 
     #[test]

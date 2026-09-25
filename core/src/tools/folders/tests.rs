@@ -218,7 +218,7 @@ fn a_country_mismatch_is_said_and_the_other_country_offered() {
     assert!(
         report[0]
             .detail
-            .starts_with("In the folder of their city already: 1. Not yet: 13")
+            .starts_with("In the layout Country / (City) / Event already: 1. Not yet: 13")
     );
 }
 
@@ -244,48 +244,64 @@ fn a_folder_answer_is_checked_and_round_trips() {
     for wrong in [
         "Germany",
         "Germany/Hamburg",
-        "Germany/Hamburg/Harbour/2019-07-13 Sommerfest",
         "Germany//2019-07-13 Sommerfest",
         "../2019-07-13 Sommerfest",
         "Germany/.hidden/2019-07-13 Sommerfest",
         "Germany/2019-7-13 Sommerfest",
+        "Germany/2019-07-13 Sommerfest/inside",
     ] {
         assert!(event_folder(wrong).is_err(), "{wrong}");
     }
-    assert_eq!(
-        tools::folder_answer("Germany", " Hamburg ", "2019-07-13", "Sommerfest"),
-        Ok(answer)
+    assert!(
+        event_folder("Germany/Hamburg/Harbour/2019-07-13 Sommerfest").is_ok(),
+        "whether it is in the layout is asked when it moves"
     );
+    assert_eq!(typed("Germany", " Hamburg ", "2019-07-13", "Sommerfest"), Ok(answer));
     assert_eq!(
-        tools::folder_answer("Germany", "", "2019-07-13", ""),
+        typed("Germany", "", "2019-07-13", ""),
         Ok(Answer::Folder("Germany/2019-07-13".to_string()))
     );
-    assert!(tools::folder_answer("Germany", "Ham/burg", "2019-07-13", "x").is_err());
-    assert!(tools::folder_answer("", "Hamburg", "2019-07-13", "x").is_err());
-    assert!(tools::folder_answer("Germany", "Hamburg", "yesterday", "x").is_err());
+    assert!(typed("Germany", "Ham/burg", "2019-07-13", "x").is_err());
+    assert!(typed("", "Hamburg", "2019-07-13", "x").is_err());
+    assert!(typed("Germany", "Hamburg", "yesterday", "x").is_err());
+}
+
+/// A folder typed into the default layout's parts.
+fn typed(country: &str, city: &str, date: &str, name: &str) -> Result<Answer, String> {
+    let parts = Parts {
+        named: vec![
+            (Component::Country, country.to_string()),
+            (Component::City, city.to_string()),
+        ],
+        date: date.to_string(),
+        name: name.to_string(),
+        date_fixed: true,
+    };
+    tools::folder_answer(&Layout::default(), &parts)
 }
 
 #[test]
 fn the_parts_come_from_the_answer_the_offer_or_where_it_is() {
     let library = Library::new("folders-parts");
     let questions = asked(&library, None);
-    let ben = Parts::of(question(&questions, BEN));
+    let layout = Layout::default();
+    let ben = Parts::of(question(&questions, BEN), &layout);
     assert_eq!(
         (
-            ben.country.as_str(),
-            ben.city.as_str(),
+            ben.text(&Component::Country),
+            ben.text(&Component::City),
             ben.date.as_str(),
             ben.name.as_str()
         ),
         ("China", "Beijing", "2006-09-00", "Besuch Ben")
     );
     assert!(ben.date_fixed);
-    let southtour = Parts::of(question(&questions, "China/2008-01-00 Holiday SOUTHTOUR"));
-    assert_eq!(southtour.city, "", "nothing offered, so where it is");
+    let southtour = Parts::of(question(&questions, "China/2008-01-00 Holiday SOUTHTOUR"), &layout);
+    assert_eq!(southtour.text(&Component::City), "", "nothing offered, so where it is");
     let loose = question(&questions, LOOSE);
-    let parts = Parts::of(loose);
+    let parts = Parts::of(loose, &layout);
     assert!(!parts.date_fixed);
-    assert_eq!(parts.after(loose).unwrap(), format!("{BEN}/IMG_3140.JPG"));
+    assert_eq!(parts.after(loose, &layout).unwrap(), format!("{BEN}/IMG_3140.JPG"));
 }
 
 // Phase 3 - the change set and the apply
@@ -473,5 +489,149 @@ fn it_never_runs_together_with_a_tool_that_writes() {
     assert_eq!(
         error,
         "Folder Migration moves folders and runs alone, never together with a tool that writes"
+    );
+}
+
+// Into any layout
+
+fn laid_out(library: &mut Library, text: &str) {
+    library.cache.follow_layout(&Layout::read(text).unwrap()).unwrap();
+}
+
+fn sure(question: &Question) -> Option<&str> {
+    question.sure().map(|offer| match &offer.answer {
+        Answer::Folder(path) => path.as_str(),
+        other => panic!("not a folder: {other:?}"),
+    })
+}
+
+#[test]
+fn by_year_and_country_the_date_and_the_folders_are_sure() {
+    let mut library = Library::new("folders-by-year");
+    laid_out(&mut library, "year/country");
+    let questions = asked(&library, None);
+    assert_eq!(
+        questions.len(),
+        14,
+        "every event is off the layout, the loose photo is in no folder of it"
+    );
+    assert_eq!(
+        sure(question(&questions, BEN)),
+        Some("2006/China/2006-09-00 Besuch Ben")
+    );
+    assert_eq!(
+        sure(question(&questions, IN_A_CITY)),
+        Some("2014/Germany/2014-08-00 Wedding"),
+        "the country is the folder the place data knows as one"
+    );
+
+    let islands = question(&questions, ISLANDS);
+    assert_eq!(sure(islands), None, "an event without a year is asked about");
+    assert_eq!(offered(islands), [("0000/Greece/0000-00-00 Aeron ilands", None)]);
+
+    let report = tool().report(&library.cache, Some(&geo()), &whole(), None).unwrap();
+    assert_eq!(
+        report[0].detail,
+        "In the layout Year / Country / Event already: 0. Not yet: 14. Sure where they go: 13."
+    );
+}
+
+#[test]
+fn a_tag_level_is_sure_when_every_photo_carries_one_and_asks_when_they_differ() {
+    let mut library = Library::new("folders-by-tag");
+    laid_out(&mut library, "tag:places");
+    let questions = asked(&library, None);
+    assert_eq!(sure(question(&questions, BEN)), Some("inChina/2006-09-00 Besuch Ben"));
+    let galway = question(&questions, GALWAY);
+    assert_eq!(sure(galway), None);
+    assert_eq!(
+        offered(galway),
+        [
+            ("inIreland/2008-10-03 Galway", Some(1)),
+            ("inNetherland/2008-10-03 Galway", Some(1)),
+        ]
+    );
+    assert!(galway.offers[0].words.contains("the places tag of 1 of 2 photos"));
+}
+
+#[test]
+fn a_region_comes_from_the_city() {
+    let mut library = Library::new("folders-by-region");
+    laid_out(&mut library, "country/region/city");
+    let questions = asked(&library, None);
+    assert_eq!(
+        sure(question(&questions, BEN)),
+        Some("China/Beijing/Beijing/2006-09-00 Besuch Ben"),
+        "the region the place data puts the city in"
+    );
+    let wedding = question(&questions, IN_A_CITY);
+    assert_eq!(
+        sure(wedding),
+        Some("Germany/Hamburg/Hamburg/2014-08-00 Wedding"),
+        "the city folder it was in is kept"
+    );
+    assert!(wedding.offers[0].words.contains("the city folder it is in"));
+}
+
+#[test]
+fn an_answer_off_the_layout_is_refused_and_a_move_is_taken_back_under_another() {
+    let mut library = Library::new("folders-other-layout");
+    let before = tree(&library);
+    laid_out(&mut library, "year/country");
+    let settings = answered(None, BEN, "2006/China/2006-09-00 Besuch Ben");
+    let settings = answered(Some(&settings), GARDEN, "Germany/Hamburg/2013-05-18 Garden Party");
+    let set = looked(&library, Some(&settings));
+    assert_eq!(
+        verdicts(&set)
+            .into_iter()
+            .filter(|(_, verdict)| verdict.contains("is not Year"))
+            .count(),
+        1,
+        "{:?}",
+        verdicts(&set)
+    );
+    assert_eq!(set.counts().change, 1, "one move, the other refused");
+    let summary = library.apply(&set);
+    assert_eq!(summary.written, 1, "{summary:?}");
+    assert!(library.root.join("2006/China/2006-09-00 Besuch Ben").is_dir());
+    library.rescan();
+    assert!(
+        asked(&library, Some(&settings))
+            .iter()
+            .all(|question| question.key != BEN),
+        "it is in the layout now"
+    );
+
+    laid_out(&mut library, "country/city?");
+    library.undo();
+    assert_eq!(tree(&library), before, "back where it was, whatever the layout");
+    assert!(!library.root.join("2006").exists());
+}
+
+#[test]
+fn levels_in_the_wrong_order_are_found_by_what_the_photos_say() {
+    let mut library = Library::new("folders-wrong-order");
+    let geo = geo();
+    let off =
+        |text: &str, library: &Library| events_off(&library.cache, Some(&geo), &Layout::read(text).unwrap()).unwrap();
+    assert_eq!(off("country/city?", &library), (0, 14));
+    assert_eq!(
+        off("city?/country", &library),
+        (1, 14),
+        "Germany/Hamburg reads as a city Germany in a country Hamburg, which is no country"
+    );
+    assert_eq!(off("year/country", &library), (14, 14));
+
+    laid_out(&mut library, "city?/country");
+    let questions = asked(&library, None);
+    assert_eq!(
+        sure(question(&questions, IN_A_CITY)),
+        Some("Hamburg/Germany/2014-08-00 Wedding"),
+        "its city and its country the right way round"
+    );
+    assert_eq!(
+        sure(question(&questions, BEN)),
+        Some("Beijing/China/2006-09-00 Besuch Ben"),
+        "the others lack the optional city"
     );
 }

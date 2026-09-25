@@ -12,6 +12,7 @@ use rusqlite::{Connection, OptionalExtension, params};
 
 use crate::clock::{now, stamp};
 use crate::journal::{self, Journal};
+use crate::layout::Layout;
 
 const SCHEMA: &str = "
 CREATE TABLE IF NOT EXISTS setting (
@@ -29,6 +30,9 @@ pub const BACKUP_LOCATION: &str = "backup-location";
 pub const IMMICH_URL: &str = "immich-url";
 /// Where the library lies inside Immich, when its own import paths are not to be used.
 pub const IMMICH_PREFIX: &str = "immich-prefix";
+
+/// How the folders above an event are laid out, as [`Layout`] keeps it as text.
+pub const FOLDER_LAYOUT: &str = "folder-layout";
 
 pub type Result<T> = rusqlite::Result<T>;
 
@@ -89,6 +93,17 @@ impl Settings {
         self.connection
             .execute("DELETE FROM setting WHERE name = ?1", params![name])?;
         Ok(())
+    }
+}
+
+/// The folder layout the user chose, or the default when they chose none or it no longer reads.
+pub fn layout(settings: &Settings) -> Layout {
+    match settings.get(FOLDER_LAYOUT) {
+        Ok(Some(text)) => Layout::read(&text).unwrap_or_else(|why| {
+            tracing::warn!(%why, "the kept folder layout does not read, using the default");
+            Layout::default()
+        }),
+        _ => Layout::default(),
     }
 }
 
@@ -181,6 +196,19 @@ mod tests {
 
         settings.forget("a").unwrap();
         assert_eq!(settings.get("a").unwrap(), None);
+    }
+
+    #[test]
+    fn the_layout_is_the_default_until_one_is_kept() {
+        let file = temp("layout").join("app.db");
+        let mut settings = Settings::open(&file).unwrap();
+        assert_eq!(layout(&settings), Layout::default());
+        settings.put(FOLDER_LAYOUT, "year/country").unwrap();
+        assert_eq!(layout(&settings).to_string(), "year/country");
+        settings.put(FOLDER_LAYOUT, "").unwrap();
+        assert!(layout(&settings).levels.is_empty(), "events only is a layout too");
+        settings.put(FOLDER_LAYOUT, "country?/city?").unwrap();
+        assert_eq!(layout(&settings), Layout::default(), "one that does not read");
     }
 
     #[test]

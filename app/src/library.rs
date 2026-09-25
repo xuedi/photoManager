@@ -18,6 +18,7 @@ use photomanager_core::geo::reverse::At;
 use photomanager_core::history;
 use photomanager_core::immich::{self, Fetched, Snapshot};
 use photomanager_core::journal::{Journal, Kind, Pass, Recorded};
+use photomanager_core::layout::{Layout, Placement};
 use photomanager_core::metadata::Exiv2;
 use photomanager_core::paths::Paths;
 use photomanager_core::scan::{self, Mode, Progress, Summary, Thumbnails};
@@ -126,6 +127,10 @@ impl Library {
         let settings = Settings::open(&paths.app_db())
             .map_err(|error| tracing::error!(%error, "the settings cannot be opened"))
             .ok();
+        let layout = settings.as_ref().map(settings::layout).unwrap_or_default();
+        if let Err(error) = cache.follow_layout(&layout) {
+            tracing::error!(%error, "the photos could not be placed in the folder layout");
+        }
         Ok(Rc::new(Library {
             geo: RefCell::new(geo),
             journal: RefCell::new(journal),
@@ -422,6 +427,56 @@ impl Library {
             .map(|found| found.candidates)
             .map_err(|error| tracing::warn!(%error, "the place data could not be asked"))
             .unwrap_or_default()
+    }
+
+    /// The folder layout the user chose, or the default.
+    pub fn layout(&self) -> Layout {
+        self.settings
+            .borrow()
+            .as_ref()
+            .map(settings::layout)
+            .unwrap_or_default()
+    }
+
+    /// Keeps a new folder layout and places every photo in it again. Nothing in the library
+    /// moves; what is off the new layout is for Folder Migration.
+    pub fn set_layout(&self, layout: &Layout) -> Result<(), String> {
+        layout.check()?;
+        if self.scanning.get() || self.working.get() {
+            return Err("wait until the library is not busy".to_string());
+        }
+        {
+            let mut cache = self.cache.borrow_mut();
+            let cache = cache.as_mut().ok_or("the cache is busy")?;
+            cache.follow_layout(layout).map_err(|error| error.to_string())?;
+        }
+        self.put_setting(settings::FOLDER_LAYOUT, &layout.to_string());
+        *self.survey.borrow_mut() = None;
+        self.moved_on();
+        Ok(())
+    }
+
+    /// How many events a layout would find out of place, of how many.
+    pub fn events_off(&self, layout: &Layout) -> Option<(usize, usize)> {
+        let cache = self.cache.borrow();
+        let geo = self.geo.borrow();
+        photomanager_core::tools::folders::events_off(cache.as_ref()?, geo.as_ref(), layout)
+            .map_err(|error| tracing::warn!(%error, "the events off a layout could not be counted"))
+            .ok()
+    }
+
+    /// The top-level tags a tag level can be made of.
+    pub fn tag_roots(&self) -> Vec<String> {
+        self.cache
+            .borrow()
+            .as_ref()
+            .and_then(|cache| cache.tag_roots().ok())
+            .unwrap_or_default()
+    }
+
+    /// An event of the library to show a layout with.
+    pub fn sample_event(&self) -> Option<Placement> {
+        self.cache.borrow().as_ref()?.sample_event().ok().flatten()
     }
 
     pub fn setting(&self, name: &str) -> Option<String> {

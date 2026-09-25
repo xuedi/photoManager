@@ -3,6 +3,7 @@ use photomanager::library::Library;
 use photomanager::window::{VIEWS, Window};
 use photomanager_core::changeset::Wanted;
 use photomanager_core::filter::{Filter, Gap};
+use photomanager_core::layout::{Component, Layout};
 use photomanager_core::paths::Paths;
 use photomanager_core::scope::Scope;
 use photomanager_core::write::{Change, Field};
@@ -164,6 +165,77 @@ fn scans_into_its_cache() {
     keeps_a_tag_vocabulary(&window, &opened);
     runs_tools_together(&window, &opened);
     answers_where_an_event_belongs(&window, &opened);
+    chooses_a_folder_layout(&opened);
+}
+
+/// The layout is picked from the presets, put together level by level, refused when it could be
+/// read two ways, and saved: the photos are placed in it again and nothing on disk moves.
+fn chooses_a_folder_layout(opened: &Rc<Library>) {
+    use photomanager::layout_editor::LayoutEditor;
+    use photomanager_core::filter::Kind;
+
+    let editor = LayoutEditor::new(opened.clone());
+    assert_eq!(editor.titles(), ["Country", "City"]);
+    assert_eq!(editor.preset().as_deref(), Some("Country / City / Event"));
+    assert!(!editor.can_save(), "nothing changed yet");
+    assert_eq!(editor.example(), "Germany/Hamburg/2014-08-00 Wedding");
+
+    editor.choose_preset("Year / Country / Event");
+    assert_eq!(editor.titles(), ["Year", "Country"]);
+    assert!(editor.can_save());
+    assert_eq!(editor.example(), "2014/Germany/2014-08-00 Wedding");
+
+    editor.move_level(1, 0);
+    assert_eq!(editor.titles(), ["Country", "Year"]);
+    assert_eq!(editor.preset().as_deref(), Some("Country / Year / Event"));
+    editor.add(Component::Region);
+    assert_eq!(editor.titles(), ["Country", "Year", "Region"]);
+    assert_eq!(editor.preset(), None, "its own now");
+    assert_eq!(editor.example(), "Germany/2014/<Region>/2014-08-00 Wedding");
+    editor.remove(1);
+    editor.toggle_optional(0);
+    editor.toggle_optional(1);
+    assert!(
+        editor.problem().is_some(),
+        "an optional country next to an optional region"
+    );
+    assert!(!editor.can_save());
+    assert_eq!(editor.example(), "");
+
+    editor.choose_preset("Year / Country / Event");
+    let before = walk(opened.paths().library());
+    editor.save_now().unwrap();
+    assert_eq!(opened.layout().to_string(), "year/country");
+    assert!(!editor.can_save(), "saved");
+    assert_eq!(
+        opened.count(&Filter::of(Kind::OffLayout)),
+        Some(photomanager_core::fixtures::photo_count() as i64),
+        "every photo is off a layout by year"
+    );
+    assert_eq!(walk(opened.paths().library()), before, "nothing moved");
+
+    let again = LayoutEditor::new(opened.clone());
+    assert_eq!(
+        again.titles(),
+        ["Year", "Country"],
+        "the kept layout is where it starts"
+    );
+    again.choose_preset("Country / City / Event");
+    again.save_now().unwrap();
+    assert_eq!(opened.count(&Filter::of(Kind::OffLayout)), Some(0));
+}
+
+fn walk(root: &std::path::Path) -> Vec<std::path::PathBuf> {
+    let mut all = Vec::new();
+    for entry in std::fs::read_dir(root).unwrap() {
+        let path = entry.unwrap().path();
+        if path.is_dir() {
+            all.extend(walk(&path));
+        }
+        all.push(path);
+    }
+    all.sort();
+    all
 }
 
 /// The tag tool opens its tree instead of questions. A rename merges two nodes and the merged
@@ -361,17 +433,17 @@ fn answers_where_an_event_belongs(window: &Window, opened: &Rc<Library>) {
 
     act("win.answer", (TOOL, GARDEN, "folder").to_variant());
     assert_eq!(questions.typing().as_deref(), Some(GARDEN), "the folder dialog is open");
-    let mut parts = Parts::of(&asked(GARDEN));
+    let mut parts = Parts::of(&asked(GARDEN), &Layout::default());
     assert!(parts.date_fixed);
-    parts.country = String::new();
+    parts.set(&Component::Country, "");
     assert!(questions.type_folder(GARDEN, &parts).is_err());
     assert_eq!(
         questions.typing().as_deref(),
         Some(GARDEN),
         "a bad folder keeps the dialog open"
     );
-    parts.country = "Germany".to_string();
-    parts.city = "Hamburg".to_string();
+    parts.set(&Component::Country, "Germany");
+    parts.set(&Component::City, "Hamburg");
     questions.type_folder(GARDEN, &parts).unwrap();
     assert_eq!(questions.typing(), None, "the dialog closed");
     assert_eq!(

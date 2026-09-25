@@ -15,6 +15,7 @@ use std::rc::Rc;
 use adw::prelude::*;
 use adw::subclass::prelude::*;
 use gtk::{gio, glib};
+use photomanager_core::layout::{Component, Layout};
 use photomanager_core::scope::Scope;
 use photomanager_core::tools::folders::Parts;
 use photomanager_core::tools::{self, Answer, Finding, Kind, Located, Offer, Question};
@@ -686,8 +687,18 @@ impl Questions {
 
     /// A folder typed for a question from its parts, answered the way any answer is.
     pub fn type_folder(&self, question: &str, parts: &Parts) -> Result<(), String> {
-        let answer = tools::folder_answer(&parts.country, &parts.city, &parts.date, &parts.name)?;
+        let answer = tools::folder_answer(&self.layout(), parts)?;
         self.give(question, &answer)
+    }
+
+    /// The folder layout the answers are typed in.
+    pub fn layout(&self) -> Layout {
+        self.imp()
+            .library
+            .borrow()
+            .as_ref()
+            .map(|library| library.layout())
+            .unwrap_or_default()
     }
 
     /// An answer made on this page goes through `win.answer` like every other, so the tools are
@@ -891,24 +902,46 @@ impl Questions {
     /// The parts of the folder an event or a photo goes into, with where it is now and where it
     /// would be, said again with every letter typed.
     fn enter_folder(&self, question: &Question) {
-        let parts = Parts::of(question);
+        let layout = self.layout();
+        let parts = Parts::of(question, &layout);
+        let optional: Vec<String> = layout
+            .levels
+            .iter()
+            .filter(|level| level.optional)
+            .map(|level| level.component.title().to_lowercase())
+            .collect();
+        let mut described = match parts.date_fixed {
+            true => "The date stays as the folder says it.".to_string(),
+            false => {
+                "The event the photo goes into, a new one or one that is there. The date as YYYY-MM-DD, with zeros \
+                 for what is not known."
+                    .to_string()
+            }
+        };
+        if !optional.is_empty() {
+            described = format!("The {} may be left empty. {described}", optional.join(" and the "));
+        }
         let group = adw::PreferencesGroup::builder()
-            .description(match parts.date_fixed {
-                true => "The city may be left empty for an event that was nowhere in particular. The date stays as the folder says it.",
-                false => "The event the photo goes into, a new one or one that is there. The date as YYYY-MM-DD, with zeros for what is not known.",
-            })
+            .title(layout.title())
+            .description(described)
             .build();
         let entry = |title: &str, text: &str| {
             let entry = adw::EntryRow::builder().title(title).text(text).build();
             group.add(&entry);
             entry
         };
-        let country = entry("Country", &parts.country);
-        let city = entry("City", &parts.city);
+        let levels: Vec<(Component, adw::EntryRow)> = parts
+            .named
+            .iter()
+            .map(|(component, text)| (component.clone(), entry(&component.title(), text)))
+            .collect();
         let date = entry("Date", &parts.date);
         date.set_editable(!parts.date_fixed);
         date.set_sensitive(!parts.date_fixed);
         let name = entry("Event", &parts.name);
+        let mut entries: Vec<adw::EntryRow> = levels.iter().map(|(_, entry)| entry.clone()).collect();
+        entries.push(date.clone());
+        entries.push(name.clone());
 
         let paths = adw::PreferencesGroup::new();
         let now = adw::ActionRow::builder()
@@ -930,47 +963,55 @@ impl Questions {
         button.add_css_class("suggested-action");
 
         let asked = question.clone();
-        let typed = Rc::new(glib::clone!(
-            #[weak]
-            country,
-            #[weak]
-            city,
-            #[weak]
-            date,
-            #[weak]
-            name,
-            #[upgrade_or_default]
-            move || Parts {
-                country: country.text().to_string(),
-                city: city.text().to_string(),
-                date: date.text().to_string(),
-                name: name.text().to_string(),
-                date_fixed: parts.date_fixed,
-            }
-        ));
-        let said = glib::clone!(
-            #[weak]
-            after,
-            #[weak]
-            button,
-            #[strong]
-            typed,
-            #[strong]
-            asked,
-            move || match typed().after(&asked) {
-                Ok(path) => {
-                    after.set_subtitle(&glib::markup_escape_text(&path));
-                    button.set_sensitive(true);
+        let typed = {
+            let levels: Vec<(Component, glib::WeakRef<adw::EntryRow>)> = levels
+                .iter()
+                .map(|(component, entry)| (component.clone(), entry.downgrade()))
+                .collect();
+            let (date, name) = (date.downgrade(), name.downgrade());
+            let date_fixed = parts.date_fixed;
+            let text = |entry: &glib::WeakRef<adw::EntryRow>| {
+                entry
+                    .upgrade()
+                    .map(|entry| entry.text().to_string())
+                    .unwrap_or_default()
+            };
+            Rc::new(move || Parts {
+                named: levels
+                    .iter()
+                    .map(|(component, entry)| (component.clone(), text(entry)))
+                    .collect(),
+                date: text(&date),
+                name: text(&name),
+                date_fixed,
+            })
+        };
+        let said = {
+            let layout = layout.clone();
+            glib::clone!(
+                #[weak]
+                after,
+                #[weak]
+                button,
+                #[strong]
+                typed,
+                #[strong]
+                asked,
+                move || match typed().after(&asked, &layout) {
+                    Ok(path) => {
+                        after.set_subtitle(&glib::markup_escape_text(&path));
+                        button.set_sensitive(true);
+                    }
+                    Err(reason) => {
+                        after.set_subtitle(&glib::markup_escape_text(&reason));
+                        button.set_sensitive(false);
+                    }
                 }
-                Err(reason) => {
-                    after.set_subtitle(&glib::markup_escape_text(&reason));
-                    button.set_sensitive(false);
-                }
-            }
-        );
+            )
+        };
         said();
         let said = Rc::new(said);
-        for entry in [&country, &city, &date, &name] {
+        for entry in &entries {
             entry.connect_changed(glib::clone!(
                 #[strong]
                 said,
@@ -997,7 +1038,7 @@ impl Questions {
             use_it,
             move |_| use_it()
         ));
-        for entry in [&country, &city, &date, &name] {
+        for entry in &entries {
             entry.connect_entry_activated(glib::clone!(
                 #[strong]
                 use_it,
@@ -1014,7 +1055,13 @@ impl Questions {
                 button.upcast_ref(),
             ],
         );
-        city.grab_focus();
+        let first_empty = levels
+            .iter()
+            .map(|(_, entry)| entry)
+            .find(|entry| entry.text().is_empty())
+            .or(levels.first().map(|(_, entry)| entry))
+            .unwrap_or(&name);
+        first_empty.grab_focus();
     }
 
     fn typing_dialog(&self, title: &str, question: &str, children: &[&gtk::Widget]) {

@@ -1,4 +1,4 @@
-//! What the gallery browses by: the countries and their events, and the tag tree, each with
+//! What the gallery browses by: the top folders and their events, and the tag tree, each with
 //! how many photos it holds. Counts are of the whole library, so they do not move while the
 //! other controls are changed.
 
@@ -6,7 +6,8 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use crate::cache::{Cache, Result};
 
-/// A country, or an event inside one.
+/// A top folder of the library - a country, a year, whatever the layout starts with - or an
+/// event inside one. An event right in the library root is a top folder with no events.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Place {
     pub name: String,
@@ -16,12 +17,14 @@ pub struct Place {
     pub events: Vec<Place>,
 }
 
-/// The countries in name order, each with its events. A country's count includes its loose
-/// photos, which belong to no event.
+/// The top folders in name order, each with the events below it. A folder's count includes its
+/// loose photos, which belong to no event. It follows the folders as they are, so a library
+/// halfway into another layout shows both.
 pub fn places(cache: &Cache) -> Result<Vec<Place>> {
     let mut statement = cache.connection().prepare(
-        "SELECT country, event_dir, count(*) FROM photo WHERE country IS NOT NULL
-         GROUP BY country, event_dir ORDER BY country, event_dir",
+        "SELECT substr(rel_path, 1, instr(rel_path, '/') - 1) AS top, event_dir, count(*) FROM photo
+         WHERE instr(rel_path, '/') > 0
+         GROUP BY top, event_dir ORDER BY top, event_dir",
     )?;
     let rows = statement.query_map([], |row| {
         Ok((
@@ -30,21 +33,21 @@ pub fn places(cache: &Cache) -> Result<Vec<Place>> {
             row.get::<_, i64>(2)?,
         ))
     })?;
-    let mut countries: Vec<Place> = Vec::new();
+    let mut tops: Vec<Place> = Vec::new();
     for row in rows {
-        let (country, event_dir, photos) = row?;
-        if countries.last().is_none_or(|last| last.folder != country) {
-            countries.push(Place {
-                name: country.clone(),
-                folder: country.clone(),
+        let (top, event_dir, photos) = row?;
+        if tops.last().is_none_or(|last| last.folder != top) {
+            tops.push(Place {
+                name: top.clone(),
+                folder: top.clone(),
                 photos: 0,
                 events: Vec::new(),
             });
         }
-        let place = countries.last_mut().expect("just pushed");
+        let place = tops.last_mut().expect("just pushed");
         place.photos += photos;
-        if let Some(folder) = event_dir {
-            let name = folder.strip_prefix(&format!("{country}/")).unwrap_or(&folder);
+        if let Some(folder) = event_dir.filter(|folder| *folder != top) {
+            let name = folder.strip_prefix(&format!("{top}/")).unwrap_or(&folder);
             place.events.push(Place {
                 name: name.to_string(),
                 folder: folder.clone(),
@@ -53,7 +56,7 @@ pub fn places(cache: &Cache) -> Result<Vec<Place>> {
             });
         }
     }
-    Ok(countries)
+    Ok(tops)
 }
 
 /// A tag and everything below it.
@@ -370,5 +373,57 @@ mod fixture_tests {
             6,
             "the loose one is in no event"
         );
+    }
+
+    #[test]
+    fn the_top_folders_follow_any_layout() {
+        use crate::cache::Fingerprint;
+        use crate::layout::{Layout, Placement};
+        use crate::metadata::Metadata;
+
+        let dir = std::env::temp_dir().join("photomanager-browse-layouts");
+        let _ = std::fs::remove_dir_all(&dir);
+        let mut cache = Cache::open(&dir.join("cache.db")).unwrap();
+        let paths = [
+            "2019/Germany/2019-07-13 Party/a.jpg",
+            "2019/Germany/2019-07-13 Party/b.jpg",
+            "2019/2019-08-01 Fair/c.jpg",
+            "2019/loose.jpg",
+            "2020-01-01 New Year/d.jpg",
+            "2020-01-01 New Year/sub/e.jpg",
+            "Germany/Hamburg/2014-08-00 Wedding/f.jpg",
+            "root.jpg",
+        ];
+        for layout in ["year/country?", "", "country/city?"] {
+            cache.follow_layout(&Layout::read(layout).unwrap()).unwrap();
+            let writer = cache.transaction().unwrap();
+            for (at, path) in paths.iter().enumerate() {
+                let print = Fingerprint {
+                    size: 1,
+                    mtime_ns: 1,
+                    inode: at as u64,
+                };
+                let placement = Placement::parse(path, writer.layout());
+                writer
+                    .put(path, print, Some("x"), &placement, &Metadata::empty())
+                    .unwrap();
+            }
+            writer.commit().unwrap();
+
+            let tops = places(&cache).unwrap();
+            let names: Vec<&str> = tops.iter().map(|top| top.name.as_str()).collect();
+            assert_eq!(names, ["2019", "2020-01-01 New Year", "Germany"], "{layout}");
+            assert_eq!(
+                tops.iter().map(|top| top.photos).sum::<i64>(),
+                7,
+                "all but the one at the root"
+            );
+            assert!(tops[1].events.is_empty(), "an event at the root is a flat entry");
+            let events: Vec<&str> = tops[0].events.iter().map(|event| event.name.as_str()).collect();
+            assert_eq!(events, ["2019-08-01 Fair", "Germany/2019-07-13 Party"]);
+            for top in &tops {
+                assert_eq!(Filter::all().within(&top.folder).count(&cache).unwrap(), top.photos);
+            }
+        }
     }
 }

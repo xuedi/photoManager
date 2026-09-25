@@ -155,7 +155,8 @@ fn index(gap: Gap) -> usize {
         .expect("every gap is listed")
 }
 
-/// The gaps of the whole library, and per country and event, from the predicates the filters use.
+/// The gaps of the whole library, and per top folder and event, from the predicates the filters
+/// use. The top folder is whatever the layout starts with: a country, a year, an event.
 fn gaps(cache: &Cache) -> Result<(Coverage, Vec<Place>)> {
     let sums: Vec<String> = Gap::ALL
         .iter()
@@ -178,8 +179,9 @@ fn gaps(cache: &Cache) -> Result<(Coverage, Vec<Place>)> {
     };
 
     let mut statement = cache.connection().prepare(&format!(
-        "SELECT country, event_dir, count(*), {sums} FROM photo p
-         GROUP BY country, event_dir ORDER BY country, event_dir"
+        "SELECT CASE WHEN instr(rel_path, '/') > 0 THEN substr(rel_path, 1, instr(rel_path, '/') - 1) END AS top,
+            event_dir, count(*), {sums} FROM photo p
+         GROUP BY top, event_dir ORDER BY top, event_dir"
     ))?;
     let rows = statement.query_map([], |row| {
         Ok((
@@ -190,7 +192,7 @@ fn gaps(cache: &Cache) -> Result<(Coverage, Vec<Place>)> {
         ))
     })?;
 
-    // The whole library is the sum of its groups, photos outside any country included.
+    // The whole library is the sum of its groups, photos outside any folder included.
     let mut whole = Place::new("", "");
     let mut countries: Vec<Place> = Vec::new();
     for row in rows {
@@ -204,7 +206,7 @@ fn gaps(cache: &Cache) -> Result<(Coverage, Vec<Place>)> {
         }
         let place = countries.last_mut().expect("just pushed");
         place.add(photos, &gaps);
-        if let Some(folder) = event_dir {
+        if let Some(folder) = event_dir.filter(|folder| *folder != country) {
             let name = folder
                 .strip_prefix(&format!("{country}/"))
                 .unwrap_or(&folder)
@@ -275,7 +277,7 @@ fn tidy(cache: &Cache) -> Result<Vec<Finding>> {
 
     add(
         "Loose files".to_string(),
-        "directly in a country folder or the library, outside any event".to_string(),
+        "in a folder of the layout or the library root, outside any event".to_string(),
         Filter::of(Kind::Loose),
     )?;
     add(
@@ -284,9 +286,9 @@ fn tidy(cache: &Cache) -> Result<Vec<Finding>> {
         Filter::of(Kind::SubFolder),
     )?;
     add(
-        "Folders without a date".to_string(),
-        "where an event should be, a folder whose name carries no date".to_string(),
-        Filter::of(Kind::OffConvention),
+        "Off the layout".to_string(),
+        "events in other folders than the layout says, and folders without a date".to_string(),
+        Filter::of(Kind::OffLayout),
     )?;
     for (kind, title, detail) in [
         (IssueKind::Sidecar, "Sidecars", "XMP files next to the photos"),

@@ -35,7 +35,7 @@ pub enum IssueKind {
     NotAPhoto,
     Sidecar,
     NoDate,
-    OffConvention,
+    OffLayout,
     DuplicateContent,
 }
 
@@ -45,7 +45,7 @@ impl IssueKind {
         IssueKind::NotAPhoto,
         IssueKind::Sidecar,
         IssueKind::NoDate,
-        IssueKind::OffConvention,
+        IssueKind::OffLayout,
         IssueKind::DuplicateContent,
     ];
 
@@ -59,7 +59,7 @@ impl IssueKind {
             IssueKind::NotAPhoto => "not a photo",
             IssueKind::Sidecar => "sidecar",
             IssueKind::NoDate => "no date",
-            IssueKind::OffConvention => "off the convention",
+            IssueKind::OffLayout => "off the layout",
             IssueKind::DuplicateContent => "duplicate content",
         }
     }
@@ -289,7 +289,7 @@ fn store(
                         true => summary.changed += 1,
                         false => summary.added += 1,
                     }
-                    let placement = Placement::parse(&entry.rel_path);
+                    let placement = Placement::parse(&entry.rel_path, writer.layout());
                     writer.forget_issues(&entry.rel_path)?;
                     let id = writer.put(
                         &entry.rel_path,
@@ -301,7 +301,7 @@ fn store(
 
                     let mut issues = Vec::new();
                     if !placement.fits() {
-                        issues.push((IssueKind::OffConvention, Some(placement.fit.as_str().to_string())));
+                        issues.push((IssueKind::OffLayout, Some(placement.fit.as_str().to_string())));
                     }
                     if metadata.taken_at.is_none() {
                         issues.push((IssueKind::NoDate, None));
@@ -570,7 +570,7 @@ mod tests {
         let issues = setup.issues();
         let kind = |name: &str| issues.iter().find(|(k, _)| k == name).map(|(_, n)| *n).unwrap_or(0);
         assert_eq!(kind("no date"), 4, "four fixture photos carry no date");
-        assert_eq!(kind("off the convention"), 1, "the loose file in China/");
+        assert_eq!(kind("off the layout"), 1, "the loose file in China/");
         assert_eq!(kind("sidecar"), 0);
 
         assert_eq!(before, snapshot(&setup.library), "the scan changed the library");
@@ -676,7 +676,7 @@ mod tests {
         assert_eq!(loose.id, before.id, "the same row");
         let off: Vec<(String, i64)> = setup.cache.issue_counts().unwrap();
         assert!(
-            !off.iter().any(|(kind, _)| kind == "off the convention"),
+            !off.iter().any(|(kind, _)| kind == "off the layout"),
             "the loose file fits now: {off:?}"
         );
     }

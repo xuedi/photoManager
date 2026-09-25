@@ -116,10 +116,11 @@ pub enum Kind {
     Tagged(Vec<String>),
     /// Photos in a folder below their event's.
     SubFolder,
-    /// Files directly in a country folder or in the library root.
+    /// Files in a folder of the layout's levels, or in the library root, not in any event.
     Loose,
-    /// Folders where an event should be, but whose name carries no date.
-    OffConvention,
+    /// Events in folders that are not the layout's, and folders where an event should be whose
+    /// name carries no date.
+    OffLayout,
     Issue(IssueKind),
 }
 
@@ -131,14 +132,14 @@ impl Kind {
             Kind::Tagged(_) => 1,
             Kind::SubFolder => 2,
             Kind::Loose => 3,
-            Kind::OffConvention => 4,
+            Kind::OffLayout => 4,
             Kind::Issue(_) => 5,
         }
     }
 
     /// Whether the kind is of files that may not be photos at all, asked of the issues.
     fn is_of_files(&self) -> bool {
-        matches!(self, Kind::Loose | Kind::OffConvention | Kind::Issue(_))
+        matches!(self, Kind::Loose | Kind::OffLayout | Kind::Issue(_))
     }
 
     /// The kind on its own, as the title of a set.
@@ -148,7 +149,7 @@ impl Kind {
             Kind::Tagged(paths) => format!("Photos tagged {}", paths.join(" or ")),
             Kind::SubFolder => "Photos in event sub-folders".to_string(),
             Kind::Loose => "Loose files".to_string(),
-            Kind::OffConvention => "Files in folders without a date".to_string(),
+            Kind::OffLayout => "Files off the layout".to_string(),
             Kind::Issue(kind) => format!("Files with the issue {}", kind.as_str()),
         }
     }
@@ -160,7 +161,7 @@ impl Kind {
             Kind::Tagged(paths) => format!("tagged {}", paths.join(" or ")),
             Kind::SubFolder => "in event sub-folders".to_string(),
             Kind::Loose => "loose".to_string(),
-            Kind::OffConvention => "in folders without a date".to_string(),
+            Kind::OffLayout => "off the layout".to_string(),
             Kind::Issue(kind) => format!("with the issue {}", kind.as_str()),
         }
     }
@@ -169,7 +170,7 @@ impl Kind {
         Ok(match text {
             "sub-folder" => Kind::SubFolder,
             "loose" => Kind::Loose,
-            "off-convention" => Kind::OffConvention,
+            "off-layout" => Kind::OffLayout,
             _ => {
                 if let Some(gap) = Gap::ALL.into_iter().find(|gap| gap.key() == text) {
                     Kind::Missing(gap)
@@ -181,7 +182,7 @@ impl Kind {
                     Kind::Tagged(paths)
                 } else if let Some(name) = text.strip_prefix("issue:") {
                     match IssueKind::named(name) {
-                        Some(IssueKind::OffConvention) => return Err("ask for loose or off-convention".to_string()),
+                        Some(IssueKind::OffLayout) => return Err("ask for loose or off-layout".to_string()),
                         Some(kind) => Kind::Issue(kind),
                         None => return Err("no such issue".to_string()),
                     }
@@ -194,8 +195,8 @@ impl Kind {
 
     /// The condition on one row, and the parameters it binds, numbered on from `params`.
     fn predicate(&self, params: &mut Vec<String>) -> String {
-        let off_convention = IssueKind::OffConvention.as_str();
-        let loose = [Fit::LooseInCountry.as_str(), Fit::LooseAtRoot.as_str()];
+        let off_layout = IssueKind::OffLayout.as_str();
+        let loose = [Fit::LooseInFolder.as_str(), Fit::LooseAtRoot.as_str()];
         let issue = |condition: String| format!("x.rel_path IN (SELECT rel_path FROM issue WHERE {condition})");
         match self {
             Kind::Missing(gap) => gap.predicate(),
@@ -211,11 +212,11 @@ impl Kind {
             }
             Kind::SubFolder => "p.event_dir IS NOT NULL AND p.sub_path IS NOT NULL".to_string(),
             Kind::Loose => issue(format!(
-                "kind = '{off_convention}' AND detail IN ('{}', '{}')",
+                "kind = '{off_layout}' AND detail IN ('{}', '{}')",
                 loose[0], loose[1]
             )),
-            Kind::OffConvention => issue(format!(
-                "kind = '{off_convention}' AND detail NOT IN ('{}', '{}')",
+            Kind::OffLayout => issue(format!(
+                "kind = '{off_layout}' AND detail NOT IN ('{}', '{}')",
                 loose[0], loose[1]
             )),
             Kind::Issue(kind) => {
@@ -466,7 +467,7 @@ impl std::fmt::Display for Filter {
                 Kind::Tagged(paths) => write!(f, "tag:{}", paths.join("|"))?,
                 Kind::SubFolder => write!(f, "sub-folder")?,
                 Kind::Loose => write!(f, "loose")?,
-                Kind::OffConvention => write!(f, "off-convention")?,
+                Kind::OffLayout => write!(f, "off-layout")?,
                 Kind::Issue(kind) => write!(f, "issue:{}", kind.as_str())?,
             }
         }
@@ -554,7 +555,7 @@ pub(crate) mod tests {
             "tag:mixed/funny|mixed/Funny@Ireland",
             "sub-folder",
             "loose",
-            "off-convention",
+            "off-layout",
             "issue:sidecar",
             "issue:duplicate content",
         ] {
@@ -620,7 +621,7 @@ pub(crate) mod tests {
             "tag:",
             "tag:a||b",
             "issue:nonsense",
-            "issue:off the convention",
+            "issue:off the layout",
             "no-gps+no-date",
             "no-gps+",
             "all+no-gps",
@@ -748,7 +749,30 @@ pub(crate) mod tests {
         assert_eq!(count("sub-folder"), 2);
         assert_eq!(count("loose"), 1);
         assert_eq!(count("loose@China"), 1);
-        assert_eq!(count("off-convention"), 0);
+        assert_eq!(count("off-layout"), 0);
+    }
+
+    #[test]
+    fn off_the_layout_is_every_event_another_layout_does_not_fit() {
+        let mut cache = scanned("layout");
+        let all = crate::fixtures::photo_count() as i64;
+        let count = |cache: &Cache, text: &str| filter(text).count(cache).unwrap();
+        cache
+            .follow_layout(&crate::layout::Layout::read("year/country").unwrap())
+            .unwrap();
+        assert_eq!(count(&cache, "loose"), 0, "China/ is no year");
+        assert_eq!(
+            count(&cache, "off-layout"),
+            all,
+            "every event, and the photo in a folder that is no year"
+        );
+        let (off, events) = cache
+            .events_off(&crate::layout::Layout::read("year/country").unwrap())
+            .unwrap();
+        assert_eq!(off, events);
+        cache.follow_layout(&crate::layout::Layout::default()).unwrap();
+        assert_eq!(count(&cache, "off-layout"), 0);
+        assert_eq!(count(&cache, "loose"), 1);
     }
 
     #[test]

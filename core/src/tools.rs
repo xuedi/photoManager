@@ -690,10 +690,14 @@ pub fn date_answer(text: &str) -> Result<Answer, String> {
     Ok(Answer::Date(crate::dates::format(crate::dates::parse(text)?)))
 }
 
-/// A folder typed by hand, from its parts: `Country/City/YYYY-MM-DD Name`, the city and the name
-/// optional.
-pub fn folder_answer(country: &str, city: &str, date: &str, name: &str) -> Result<Answer, String> {
-    Ok(Answer::Folder(folders::assembled(country, city, date, name)?))
+/// A folder typed by hand, from its parts as the layout puts them.
+pub fn folder_answer(layout: &crate::layout::Layout, parts: &folders::Parts) -> Result<Answer, String> {
+    Ok(Answer::Folder(folders::assembled(
+        layout,
+        &parts.named,
+        &parts.date,
+        &parts.name,
+    )?))
 }
 
 /// A tag typed by hand, its levels separated by `/`.

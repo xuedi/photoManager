@@ -1,7 +1,8 @@
-//! Preferences: where Immich is, the key to read it with, and where the library lies inside it.
-//! The address and the path are kept in `app.db`; the key goes to the keyring and is never shown
-//! again.
+//! Preferences: how the library's folders are laid out, where Immich is, the key to read it
+//! with, and where the library lies inside it. The layout, the address and the path are kept in
+//! `app.db`; the key goes to the keyring and is never shown again.
 
+use std::cell::RefCell;
 use std::rc::Rc;
 
 use adw::prelude::*;
@@ -9,6 +10,7 @@ use gtk::glib;
 use photomanager_core::immich;
 use photomanager_core::settings;
 
+use crate::layout_editor::LayoutEditor;
 use crate::library::Library;
 use crate::secrets;
 
@@ -71,6 +73,25 @@ pub fn present(parent: &impl IsA<gtk::Widget>, library: Rc<Library>) {
     page.add(&path_hint);
     page.add(&testing);
     dialog.add(&page);
+    let folders = adw::PreferencesPage::builder()
+        .title("Library")
+        .icon_name("folder-symbolic")
+        .build();
+    let editor = LayoutEditor::new(library.clone());
+    for group in editor.groups() {
+        folders.add(&group);
+    }
+    editor.connect_saved(glib::clone!(
+        #[weak]
+        dialog,
+        move |told| dialog.add_toast(adw::Toast::new(told))
+    ));
+    // The editor lives as long as the dialog does.
+    let holding = RefCell::new(Some(editor));
+    dialog.connect_closed(move |_| {
+        holding.borrow_mut().take();
+    });
+    dialog.add(&folders);
 
     let show_kept = glib::clone!(
         #[weak]
@@ -182,6 +203,9 @@ pub fn present(parent: &impl IsA<gtk::Widget>, library: Rc<Library>) {
     ));
 
     dialog.present(Some(parent));
+    // With a second page the page switcher would take the first focus; the address is where
+    // typing goes, as it did before.
+    address.grab_focus();
 }
 
 /// What went wrong, as a row says it: with a capital.
