@@ -2,172 +2,187 @@ using Gtk 4.0;
 using Adw 1;
 
 template $PmDashboard: Adw.Bin {
-  child: Stack pages {
-    transition-type: crossfade;
+  child: Adw.ToastOverlay toasts {
+    child: Stack pages {
+      transition-type: crossfade;
 
-    StackPage {
-      name: "empty";
+      StackPage {
+        name: "empty";
 
-      child: Adw.StatusPage {
-        icon-name: "view-grid-symbolic";
-        title: "Dashboard";
-        description: "What the library holds and what it is missing.";
+        child: Adw.StatusPage {
+          icon-name: "view-grid-symbolic";
+          title: "Dashboard";
+          description: "What the library holds and what it is missing.";
 
-        child: Box empty_slot {
-          orientation: vertical;
-          halign: center;
-
-          Box controls {
+          child: Box empty_slot {
             orientation: vertical;
-            spacing: 12;
+            halign: center;
 
-            Adw.WrapBox {
-              child-spacing: 12;
-              line-spacing: 12;
-              halign: center;
-
-              Button scan_button {
-                label: "Scan the Library";
-                action-name: "win.scan";
-
-                styles [
-                  "suggested-action",
-                  "pill",
-                ]
-
-                accessibility {
-                  label: "Scan the Library";
-                }
-              }
-
-              Button fill_button {
-                label: "Make Missing Thumbnails";
-                visible: false;
-                action-name: "win.fill-thumbnails";
-
-                styles [
-                  "pill",
-                ]
-
-                accessibility {
-                  label: "Make Missing Thumbnails";
-                }
-              }
-
-              Button places_button {
-                label: "Get Place Data";
-                action-name: "win.get-places";
-
-                styles [
-                  "pill",
-                ]
-
-                accessibility {
-                  label: "Get Place Data";
-                }
-              }
-
-              Button cancel_button {
-                label: "Cancel";
-                visible: false;
-                action-name: "win.cancel-scan";
-
-                styles [
-                  "pill",
-                ]
-
-                accessibility {
-                  label: "Cancel";
-                }
-              }
-            }
-
-            ProgressBar progress {
-              visible: false;
-              show-text: true;
-              width-request: 300;
-              halign: center;
-            }
-          }
-        };
-      };
-    }
-
-    StackPage {
-      name: "filled";
-
-      child: ScrolledWindow {
-        hscrollbar-policy: never;
-
-        child: Adw.Clamp {
-          maximum-size: 860;
-          tightening-threshold: 600;
-
-          child: Box {
-            orientation: vertical;
-            spacing: 24;
-            margin-top: 24;
-            margin-bottom: 24;
-            margin-start: 12;
-            margin-end: 12;
-
-            Box filled_slot {
-              orientation: vertical;
-            }
-
-            Box {
+            Box controls {
               orientation: vertical;
               spacing: 12;
 
-              Label {
-                label: "At a Glance";
-                xalign: 0;
+              Adw.WrapBox {
+                child-spacing: 12;
+                line-spacing: 12;
+                halign: center;
 
-                styles [
-                  "heading",
-                ]
-              }
+                Button scan_button {
+                  label: "Scan the Library";
+                  action-name: "win.scan";
 
-              FlowBox glance {
-                selection-mode: none;
-                homogeneous: true;
-                min-children-per-line: 1;
-                max-children-per-line: 3;
-                column-spacing: 12;
-                row-spacing: 12;
-              }
-            }
+                  styles [
+                    "suggested-action",
+                    "pill",
+                  ]
 
-            Adw.PreferencesGroup coverage {
-              title: "Coverage";
-              description: "How many photos carry each field. Select one to see the photos without it.";
-            }
-
-            Adw.PreferencesGroup places {
-              title: "Where the Gaps Are";
-              description: "Countries and events, the most missing first.";
-
-              header-suffix: DropDown field {
-                valign: center;
-                tooltip-text: "The field to look at";
-
-                accessibility {
-                  label: "Field";
+                  accessibility {
+                    label: "Scan the Library";
+                  }
                 }
-              };
-            }
 
-            Adw.PreferencesGroup tidy {
-              title: "Tidy Up";
-              description: "Things that are untidy rather than missing. Each is fixed by a tool.";
-            }
+                Button fill_button {
+                  label: "Make Missing Thumbnails";
+                  visible: false;
+                  action-name: "win.fill-thumbnails";
 
-            Adw.PreferencesGroup data {
-              title: "Behind the Scenes";
+                  styles [
+                    "pill",
+                  ]
+
+                  accessibility {
+                    label: "Make Missing Thumbnails";
+                  }
+                }
+
+                Button places_button {
+                  label: "Get Place Data";
+                  action-name: "win.get-places";
+
+                  styles [
+                    "pill",
+                  ]
+
+                  accessibility {
+                    label: "Get Place Data";
+                  }
+                }
+
+                Button people_button {
+                  label: "Get People from Immich";
+                  action-name: "win.get-people";
+
+                  styles [
+                    "pill",
+                  ]
+
+                  accessibility {
+                    label: "Get People from Immich";
+                  }
+                }
+
+                Button cancel_button {
+                  label: "Cancel";
+                  visible: false;
+                  action-name: "win.cancel-scan";
+
+                  styles [
+                    "pill",
+                  ]
+
+                  accessibility {
+                    label: "Cancel";
+                  }
+                }
+              }
+
+              ProgressBar progress {
+                visible: false;
+                show-text: true;
+                width-request: 300;
+                halign: center;
+              }
             }
           };
         };
-      };
-    }
+      }
+
+      StackPage {
+        name: "filled";
+
+        child: ScrolledWindow {
+          hscrollbar-policy: never;
+
+          child: Adw.Clamp {
+            maximum-size: 860;
+            tightening-threshold: 600;
+
+            child: Box {
+              orientation: vertical;
+              spacing: 24;
+              margin-top: 24;
+              margin-bottom: 24;
+              margin-start: 12;
+              margin-end: 12;
+
+              Box filled_slot {
+                orientation: vertical;
+              }
+
+              Box {
+                orientation: vertical;
+                spacing: 12;
+
+                Label {
+                  label: "At a Glance";
+                  xalign: 0;
+
+                  styles [
+                    "heading",
+                  ]
+                }
+
+                FlowBox glance {
+                  selection-mode: none;
+                  homogeneous: true;
+                  min-children-per-line: 1;
+                  max-children-per-line: 3;
+                  column-spacing: 12;
+                  row-spacing: 12;
+                }
+              }
+
+              Adw.PreferencesGroup coverage {
+                title: "Coverage";
+                description: "How many photos carry each field. Select one to see the photos without it.";
+              }
+
+              Adw.PreferencesGroup places {
+                title: "Where the Gaps Are";
+                description: "Countries and events, the most missing first.";
+
+                header-suffix: DropDown field {
+                  valign: center;
+                  tooltip-text: "The field to look at";
+
+                  accessibility {
+                    label: "Field";
+                  }
+                };
+              }
+
+              Adw.PreferencesGroup tidy {
+                title: "Tidy Up";
+                description: "Things that are untidy rather than missing. Each is fixed by a tool.";
+              }
+
+              Adw.PreferencesGroup data {
+                title: "Behind the Scenes";
+              }
+            };
+          };
+        };
+      }
+    };
   };
 }

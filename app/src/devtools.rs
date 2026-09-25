@@ -55,7 +55,16 @@ pub fn install(app: &adw::Application, window: &Window, paths: &Paths, library: 
                 .form_rating((stars >= 0).then_some(i64::from(stars)));
         })
         .build();
-    window.add_action_entries([rating]);
+    // A headless session has no keyring; this gives the key for this run only.
+    let immich_key = gio::ActionEntry::builder("immich-key")
+        .parameter_type(Some(glib::VariantTy::STRING))
+        .activate(|_: &Window, _, parameter| {
+            if let Some(key) = parameter.and_then(|value| value.str()) {
+                crate::secrets::use_for_this_run(key);
+            }
+        })
+        .build();
+    window.add_action_entries([rating, immich_key]);
 }
 
 fn state(window: &Window, paths: &Paths, library: Option<&Library>) -> String {

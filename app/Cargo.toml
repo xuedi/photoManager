@@ -24,6 +24,7 @@ tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 serde_json = { version = "1", optional = true }
 async-channel = "2.5.0"
 glycin = { version = "4.0.0", features = ["gdk4"] }
+oo7 = { version = "0.6", default-features = false, features = ["async-std", "native_crypto"] }
 shumate = { version = "0.8.1", package = "libshumate", features = ["v1_6"] }
 
 [dev-dependencies]

@@ -16,6 +16,7 @@ use photomanager_core::geo::import::Imported;
 use photomanager_core::geo::lookup::Candidate;
 use photomanager_core::geo::reverse::At;
 use photomanager_core::history;
+use photomanager_core::immich::{self, Fetched, Snapshot};
 use photomanager_core::journal::{Journal, Kind, Pass, Recorded};
 use photomanager_core::metadata::Exiv2;
 use photomanager_core::paths::Paths;
@@ -36,6 +37,8 @@ pub enum Event {
     Filled(Thumbnails),
     /// The place data is in, with what the import found.
     Places(Imported),
+    /// Who is in the photos was fetched from Immich.
+    People(Fetched),
     /// A line to show while something long is running.
     Note(String),
     /// A change set is ready to be looked at. Nothing has been written.
@@ -501,6 +504,103 @@ impl Library {
         });
     }
 
+    /// Where Immich is, as the person set it.
+    pub fn immich_address(&self) -> Option<String> {
+        self.setting(settings::IMMICH_URL)
+    }
+
+    /// Where the library lies inside Immich, when it is not read from Immich itself.
+    pub fn immich_prefix(&self) -> Option<String> {
+        self.setting(settings::IMMICH_PREFIX)
+            .filter(|prefix| !prefix.trim().is_empty())
+    }
+
+    /// How many persons the last snapshot names, and when it was fetched.
+    pub fn people_known(&self) -> Option<(usize, String)> {
+        let snapshot = Snapshot::open(&self.paths.immich_db()).ok().flatten()?;
+        let named = snapshot.people().ok()?.iter().filter(|person| person.named()).count();
+        Some((named, snapshot.about("fetched-at").ok().flatten().unwrap_or_default()))
+    }
+
+    /// Whether the address and the key work, asked off the main thread. Nothing is kept.
+    pub fn check_immich<F: FnOnce(Result<String, String>) + 'static>(&self, url: &str, key: String, done: F) {
+        let url = url.to_string();
+        let (sender, receiver) = async_channel::bounded(1);
+        std::thread::spawn(move || {
+            let checked = immich::Client::new(&url, &key)
+                .and_then(|mut client| client.check().map_err(|error| error.to_string()));
+            let _ = sender.send_blocking(checked);
+        });
+        gtk::glib::spawn_future_local(async move {
+            if let Ok(checked) = receiver.recv().await {
+                done(checked);
+            }
+        });
+    }
+
+    /// Reads who is in the photos from Immich into the snapshot. Only reads, and only because the
+    /// button was pressed.
+    pub fn get_people<F: Fn(Event) + 'static>(self: &Rc<Self>, key: String, report: F) {
+        if self.scanning.get() {
+            return;
+        }
+        let Some(url) = self.immich_address() else {
+            report(Event::Failed("there is no Immich address yet".to_string()));
+            return;
+        };
+        let mut client = match immich::Client::new(&url, &key) {
+            Ok(client) => client,
+            Err(why) => {
+                report(Event::Failed(why));
+                return;
+            }
+        };
+        self.scanning.set(true);
+        self.cancel.store(false, Ordering::Relaxed);
+
+        let (sender, receiver) = async_channel::unbounded();
+        let file = self.paths.immich_db();
+        let prefix = self.immich_prefix();
+        let cancel = self.cancel.clone();
+        let progress = sender.clone();
+        std::thread::spawn(move || {
+            let fetched = immich::fetch(
+                &mut client,
+                &file,
+                prefix.as_deref(),
+                &|step| {
+                    let _ = progress.send_blocking(match step {
+                        immich::Step::Faces(done, of) if done % 25 == 0 => Message::Done(done, of),
+                        immich::Step::Faces(..) => return,
+                        other => Message::Note(other.tells()),
+                    });
+                },
+                &cancel,
+            );
+            let _ = sender.send_blocking(Message::People(fetched.map_err(|error| error.to_string())));
+        });
+
+        let this = self.clone();
+        gtk::glib::spawn_future_local(async move {
+            while let Ok(message) = receiver.recv().await {
+                let event = match message {
+                    Message::Note(line) => Event::Note(line),
+                    Message::Done(done, total) => Event::Done(done, total),
+                    Message::People(fetched) => {
+                        this.scanning.set(false);
+                        this.moved_on();
+                        match fetched {
+                            Ok(fetched) => Event::People(fetched),
+                            Err(why) => Event::Failed(why),
+                        }
+                    }
+                    _ => continue,
+                };
+                report(event);
+            }
+        });
+    }
+
     fn put_back(&self, geo: Geo) {
         *self.geo.borrow_mut() = Some(geo);
         self.scanning.set(false);
@@ -930,6 +1030,7 @@ enum Message {
     Filled(Thumbnails),
     Places(Imported, Geo),
     PlacesFailed(String, Geo),
+    People(std::result::Result<Fetched, String>),
     Note(String),
     Previewed(std::result::Result<ChangeSet, String>, Cache),
     Applied(Kind, std::result::Result<Applied, String>, Cache, Journal),

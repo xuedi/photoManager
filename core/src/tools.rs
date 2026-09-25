@@ -35,7 +35,7 @@ pub mod gps_from_places;
 pub mod offsets;
 pub mod tag_vocabulary;
 #[cfg(all(test, feature = "fixtures"))]
-mod testing;
+pub(crate) mod testing;
 pub mod time_zones;
 pub mod undated;
 

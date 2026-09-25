@@ -102,6 +102,11 @@ impl Paths {
         self.cache.join("cache.db")
     }
 
+    /// What was last fetched from Immich: a snapshot, fetched again at will.
+    pub fn immich_db(&self) -> PathBuf {
+        self.cache.join(crate::immich::FILE)
+    }
+
     pub fn app_db(&self) -> PathBuf {
         self.data.join("app.db")
     }
@@ -120,6 +125,7 @@ impl Paths {
             self.cache_db(),
             self.app_db(),
             self.geo_db(),
+            self.immich_db(),
         ]
     }
 }

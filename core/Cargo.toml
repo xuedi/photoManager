@@ -30,4 +30,5 @@ fixtures = []
 demo = []
 
 [dev-dependencies]
+tracing-subscriber = { version = "0.3", features = ["fmt"] }
 zip = { version = "8.6.0", default-features = false, features = ["deflate"] }

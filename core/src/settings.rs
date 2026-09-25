@@ -25,6 +25,11 @@ pub const BACKUP_ACKNOWLEDGED: &str = "backup-acknowledged";
 /// Where they said the backup is. Help for them, never proof for us.
 pub const BACKUP_LOCATION: &str = "backup-location";
 
+/// Where Immich is. Its API key is never here: it is in the keyring.
+pub const IMMICH_URL: &str = "immich-url";
+/// Where the library lies inside Immich, when its own import paths are not to be used.
+pub const IMMICH_PREFIX: &str = "immich-prefix";
+
 pub type Result<T> = rusqlite::Result<T>;
 
 #[derive(Debug)]

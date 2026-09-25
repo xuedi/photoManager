@@ -8,6 +8,7 @@ pub mod filter;
 pub mod geo;
 pub mod history;
 pub mod identity;
+pub mod immich;
 pub mod journal;
 pub mod layout;
 pub mod metadata;

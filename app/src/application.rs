@@ -47,6 +47,19 @@ fn setup_actions(app: &adw::Application, window: &Window, library: Option<Rc<Lib
     let quit = gio::ActionEntry::builder("quit")
         .activate(|app: &adw::Application, _, _| app.quit())
         .build();
+    let preferences = gio::ActionEntry::builder("preferences")
+        .activate(glib::clone!(
+            #[weak]
+            window,
+            #[strong]
+            library,
+            move |_: &adw::Application, _, _| {
+                if let Some(library) = library.clone() {
+                    crate::preferences::present(&window, library);
+                }
+            }
+        ))
+        .build();
     let rebuild = gio::ActionEntry::builder("rebuild-cache")
         .activate(glib::clone!(
             #[weak]
@@ -54,8 +67,9 @@ fn setup_actions(app: &adw::Application, window: &Window, library: Option<Rc<Lib
             move |_: &adw::Application, _, _| ask_to_rebuild(&window, library.clone())
         ))
         .build();
-    app.add_action_entries([about, quit, rebuild]);
+    app.add_action_entries([about, quit, preferences, rebuild]);
     app.set_accels_for_action("app.quit", &["<primary>q"]);
+    app.set_accels_for_action("app.preferences", &["<primary>comma"]);
 }
 
 /// The cache is thrown away and filled again. The photos are never touched.

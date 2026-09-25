@@ -334,6 +334,9 @@ impl Window {
         let places = gtk::gio::ActionEntry::builder("get-places")
             .activate(|window: &Window, _, _| window.imp().dashboard.get_places())
             .build();
+        let people = gtk::gio::ActionEntry::builder("get-people")
+            .activate(|window: &Window, _, _| window.imp().dashboard.get_people())
+            .build();
         let cancel = gtk::gio::ActionEntry::builder("cancel-scan")
             .activate(|window: &Window, _, _| window.imp().dashboard.cancel())
             .build();
@@ -432,6 +435,7 @@ impl Window {
             scan,
             fill,
             places,
+            people,
             cancel,
             select_all,
             select_none,

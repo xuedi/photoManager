@@ -20,6 +20,8 @@ mod imp {
     #[template(resource = "/org/beijingcode/PhotoManager/dashboard.ui")]
     pub struct Dashboard {
         #[template_child]
+        pub toasts: TemplateChild<adw::ToastOverlay>,
+        #[template_child]
         pub pages: TemplateChild<gtk::Stack>,
         #[template_child]
         pub empty_slot: TemplateChild<gtk::Box>,
@@ -33,6 +35,8 @@ mod imp {
         pub fill_button: TemplateChild<gtk::Button>,
         #[template_child]
         pub places_button: TemplateChild<gtk::Button>,
+        #[template_child]
+        pub people_button: TemplateChild<gtk::Button>,
         #[template_child]
         pub cancel_button: TemplateChild<gtk::Button>,
         #[template_child]
@@ -54,6 +58,7 @@ mod imp {
         /// The rows each group was given, so they can be taken out again.
         pub rows: RefCell<Vec<(adw::PreferencesGroup, gtk::Widget)>>,
         pub place_rows: RefCell<Vec<gtk::Widget>>,
+        pub said: RefCell<String>,
     }
 
     #[glib::object_subclass]
@@ -150,6 +155,61 @@ impl Dashboard {
         library.get_places(move |event| dashboard.report(event));
     }
 
+    /// Reads who is in the photos from Immich, with the key from the keyring. Immich is only
+    /// read.
+    pub fn get_people(&self) {
+        let Some(library) = self.imp().library.borrow().clone() else {
+            return;
+        };
+        if library.is_scanning() {
+            return;
+        }
+        if library.immich_address().is_none() {
+            self.ask_for_preferences("Set where Immich is and its API key first");
+            return;
+        }
+        self.running(true);
+        self.imp().progress.set_fraction(0.0);
+        self.imp().progress.set_text(Some("Asking Immich"));
+
+        let dashboard = self.clone();
+        gtk::glib::spawn_future_local(async move {
+            match crate::secrets::immich_key().await {
+                Ok(Some(key)) => {
+                    let reporter = dashboard.clone();
+                    library.get_people(key, move |event| reporter.report(event));
+                }
+                Ok(None) => {
+                    dashboard.running(false);
+                    dashboard.ask_for_preferences("There is no Immich API key yet");
+                }
+                Err(why) => {
+                    dashboard.running(false);
+                    dashboard.report(Event::Failed(why));
+                }
+            }
+        });
+    }
+
+    fn ask_for_preferences(&self, text: &str) {
+        let toast = adw::Toast::builder()
+            .title(text)
+            .button_label("Preferences")
+            .action_name("app.preferences")
+            .build();
+        self.say_toast(toast);
+    }
+
+    fn say_toast(&self, toast: adw::Toast) {
+        *self.imp().said.borrow_mut() = toast.title().map(|title| title.to_string()).unwrap_or_default();
+        self.imp().toasts.add_toast(toast);
+    }
+
+    /// What the last toast said.
+    pub fn said(&self) -> String {
+        self.imp().said.borrow().clone()
+    }
+
     pub fn cancel(&self) {
         if let Some(library) = self.imp().library.borrow().as_ref() {
             library.cancel();
@@ -224,6 +284,14 @@ impl Dashboard {
                     "place data imported"
                 );
             }
+            Event::People(fetched) => {
+                self.running(false);
+                self.show_data();
+                self.say_toast(adw::Toast::new(&format!(
+                    "{} named persons in {} photos, {} faces",
+                    fetched.named, fetched.with_named, fetched.faces
+                )));
+            }
             Event::Failed(why) => {
                 self.running(false);
                 self.refresh();
@@ -240,6 +308,7 @@ impl Dashboard {
         self.imp().cancel_button.set_visible(busy);
         self.imp().progress.set_visible(busy);
         self.imp().places_button.set_visible(!busy);
+        self.imp().people_button.set_visible(!busy);
         if busy {
             self.imp().fill_button.set_visible(false);
         }
@@ -442,9 +511,14 @@ impl Dashboard {
             .filter(|_| counts.places > 0)
             .map(|date| format!("from the GeoNames dumps of {date}"))
             .unwrap_or_else(|| "not fetched yet".to_string());
+        let (persons, people) = match library.people_known() {
+            Some((named, at)) => (named as i64, format!("named persons, fetched from Immich on {at}")),
+            None => (0, "not fetched from Immich yet".to_string()),
+        };
         for (title, value, subtitle) in [
             ("Thumbnails", counts.thumbnails, "made while scanning".to_string()),
             ("Places", counts.places, places),
+            ("People", persons, people),
         ] {
             let row = adw::ActionRow::builder().title(title).subtitle(subtitle).build();
             let label = gtk::Label::builder().label(value.to_string()).build();
