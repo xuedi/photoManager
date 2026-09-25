@@ -41,6 +41,20 @@ template $PmTools: Adw.Bin {
               title: "Tools";
             }
 
+            Adw.PreferencesGroup together_group {
+              Adw.ActionRow together_row {
+                title: "Run Together";
+                subtitle: "Several tools as one pass, so each photo is written once";
+                activatable: true;
+
+                [suffix]
+                Image {
+                  icon-name: "go-next-symbolic";
+                  accessible-role: presentation;
+                }
+              }
+            }
+
             Adw.StatusPage empty {
               visible: false;
               icon-name: "applications-engineering-symbolic";
@@ -76,6 +90,13 @@ template $PmTools: Adw.Bin {
       tag: "questions";
 
       child: $PmQuestions questions {};
+    }
+
+    Adw.NavigationPage {
+      title: "Tag Vocabulary";
+      tag: "vocabulary";
+
+      child: $PmVocabulary vocabulary {};
     }
 
     Adw.NavigationPage {

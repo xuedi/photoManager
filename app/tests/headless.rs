@@ -154,6 +154,7 @@ fn the_app_can_be_clicked_through_headless() {
     gives_places_from_their_tag_and_takes_them_back(&ui, lib);
     gives_places_from_the_event_and_takes_them_back(&ui, lib);
     writes_time_zones_and_takes_them_back(&ui, lib);
+    merges_a_tag_and_takes_it_back(&ui, lib);
 
     ui.run(&["act", "win.show-view", "'suggestions'"], lib);
     let state = state(&ui, lib);
@@ -705,6 +706,100 @@ fn writes_time_zones_and_takes_them_back(ui: &Ui, library: &Path) {
         std::thread::sleep(std::time::Duration::from_millis(500));
     }
     assert_eq!(offset_of(&summer), None, "the offset is gone again");
+}
+
+/// The tag vocabulary, clicked through: its tree opens, one merge becomes a rule, the preview holds
+/// the event's photos, the write puts the merged tag into every field, and taking the pass back
+/// puts the old spelling back.
+fn merges_a_tag_and_takes_it_back(ui: &Ui, library: &Path) {
+    const TOOL: &str = "tag-vocabulary";
+    const GALWAY: &str = "Ireland/2008-10-03 Galway";
+    let kira = library.join(GALWAY).join("Kira/IMG_0002.JPG");
+    assert!(tags_of(&kira).contains(&"People/Kira".to_string()));
+
+    ui.run(&["act", "win.show-view", "'tools'"], library);
+    ui.run(&["act", "win.tools-scope", &format!("'{GALWAY}'")], library);
+    counted(ui, library, 2);
+    ui.run(&["act", "win.run-tool", &format!("'{TOOL}'")], library);
+    let looked = vocabulary(ui, library, |tags| tags["tree"].is_object());
+    assert_eq!(state(ui, library)["page"], "vocabulary");
+    assert_eq!(looked["tree"]["People"].as_u64(), Some(1), "{looked}");
+
+    ui.run(&["act", "win.tag-rule", "'rename People -> people'"], library);
+    let merged = vocabulary(ui, library, |tags| {
+        tags["rules"].as_array().is_some_and(|rules| rules.len() == 1)
+    });
+    assert!(merged["tree"]["People"].is_null(), "{merged}");
+
+    let before = state(ui, library)["applied"]["batch"].as_i64().unwrap_or(0);
+    ui.run(&["act", "win.preview-tags"], library);
+    let mut previewed = Value::Null;
+    for _ in 0..60 {
+        previewed = state(ui, library)["preview"].clone();
+        if previewed["title"] == "Tidy the tags with 1 rule" {
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(500));
+    }
+    assert_eq!(previewed["change"].as_u64(), Some(2), "{previewed}");
+    ui.run(&["click", "Apply", "--role", "button"], library);
+    let written = written(ui, library, "write", before);
+    assert_eq!(written["written"].as_u64(), Some(2), "{written}");
+    let batch = written["batch"].as_i64().unwrap();
+    let tags = tags_of(&kira);
+    assert!(tags.contains(&"people/Kira".to_string()), "{tags:?}");
+    assert!(tags.contains(&"people".to_string()), "every level is written: {tags:?}");
+    assert!(!tags.contains(&"People/Kira".to_string()), "{tags:?}");
+
+    let taken_before = state(ui, library)["history"]["taken"]["batch"].as_i64().unwrap_or(0);
+    ui.run(&["act", "win.undo-pass", &format!("int64 {batch}")], library);
+    ui.run(&["click", "Take It Back", "--role", "button"], library);
+    for _ in 0..120 {
+        let now = state(ui, library);
+        if now["history"]["taken"]["batch"].as_i64().unwrap_or(0) > taken_before
+            && now["writing"] == false
+            && now["scanning"] == false
+        {
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(500));
+    }
+    assert_eq!(
+        tags_of(&kira),
+        ["People/Kira", "mixed/disgusting", "places/inIreland/Galway"]
+    );
+}
+
+/// The TagsList of a photo, as ExifTool reads it.
+fn tags_of(photo: &Path) -> Vec<String> {
+    let out = Command::new("exiftool")
+        .args(["-j", "-XMP-digiKam:TagsList"])
+        .arg(photo)
+        .output()
+        .expect("run exiftool");
+    let read: Value = serde_json::from_slice(&out.stdout).expect("exiftool json");
+    let mut tags: Vec<String> = match &read[0]["TagsList"] {
+        Value::Array(items) => items
+            .iter()
+            .filter_map(|item| item.as_str().map(String::from))
+            .collect(),
+        Value::String(one) => vec![one.clone()],
+        _ => Vec::new(),
+    };
+    tags.sort();
+    tags
+}
+
+/// The tag page once it has looked and matches what is waited for.
+fn vocabulary(ui: &Ui, library: &Path, ready: impl Fn(&Value) -> bool) -> Value {
+    for _ in 0..60 {
+        let tags = state(ui, library)["vocabulary"].clone();
+        if tags["busy"] == false && ready(&tags) {
+            return tags;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(500));
+    }
+    panic!("the tag page never settled");
 }
 
 fn offset_of(photo: &Path) -> Option<String> {

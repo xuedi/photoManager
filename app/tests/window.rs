@@ -161,6 +161,141 @@ fn scans_into_its_cache() {
     answers_by_event_and_on_the_map(&window);
     answers_a_question_about_a_camera(&window);
     reads_the_history(&window, &opened);
+    keeps_a_tag_vocabulary(&window, &opened);
+    runs_tools_together(&window, &opened);
+}
+
+/// The tag tool opens its tree instead of questions. A rename merges two nodes and the merged
+/// one counts both; taking the rule out brings the other back; a rule that would undo an earlier
+/// one says why; a suggestion is a click; and the preview holds exactly the photos the rules
+/// touch plus the untidy ones. Nothing is written here.
+fn keeps_a_tag_vocabulary(window: &Window, opened: &Rc<Library>) {
+    use photomanager_core::cache::Cache;
+    use photomanager_core::tools::Settings;
+    use photomanager_core::tools::tag_vocabulary::Vocabulary;
+    const TOOL: &str = "tag-vocabulary";
+    let tools = window.tools();
+    let page = tools.vocabulary();
+    let act = |name: &str, target: gtk::glib::Variant| WidgetExt::activate_action(window, name, Some(&target)).unwrap();
+    let looked = || {
+        until(
+            || !page.is_busy() && page.overview().is_some(),
+            "the tags were looked at",
+        );
+        page.overview().unwrap()
+    };
+    window.show_view("tools");
+    act("win.tools-scope", "all".to_variant());
+    act("win.run-tool", TOOL.to_variant());
+    assert_eq!(tools.showing(), "vocabulary", "a tree, not questions");
+    let before = looked();
+    let people = before.tree.count("people").unwrap();
+    let other = before.tree.count("People").unwrap();
+    assert!(
+        labels(page.upcast_ref()).iter().any(|label| label == "Suggestions"),
+        "the suggestions are on top"
+    );
+
+    act("win.tag-rule", "rename People -> people".to_variant());
+    let merged = looked();
+    assert_eq!(merged.tree.count("People"), None);
+    assert_eq!(
+        merged.tree.count("people"),
+        Some(people + other),
+        "the merged node counts both"
+    );
+    assert!(
+        rows(page.upcast_ref())
+            .iter()
+            .any(|row| row.title() == "Rename People to people"),
+        "the rule is listed"
+    );
+
+    act("win.tag-rule", "rename people -> People".to_variant());
+    let why = page.refused().expect("the rule was refused");
+    assert!(why.contains("back to where it was"), "{why}");
+    assert_eq!(page.vocabulary().rules.0.len(), 1, "a refused rule is not kept");
+
+    act("win.tag-forget-rule", 0.to_variant());
+    let back = looked();
+    assert_eq!(back.tree.count("People"), Some(other), "without the rule it is back");
+
+    let twin = back
+        .suggestions
+        .iter()
+        .find(|suggestion| suggestion.key == "twin:people")
+        .expect("the twins are suggested");
+    assert_eq!(twin.offer, "Merge Into people");
+    act("win.tag-suggestion", ("twin:people", "confirm").to_variant());
+    let confirmed = looked();
+    assert_eq!(confirmed.tree.count("People"), None, "confirm makes it a rule");
+    act("win.tag-suggestion", ("mixed:food", "leave").to_variant());
+    let left = looked();
+    assert!(left.suggestions.iter().all(|suggestion| suggestion.key != "mixed:food"));
+
+    act("win.tag-generated", "kept".to_variant());
+    looked();
+    let settings = page.settings().unwrap();
+    assert_eq!(Vocabulary::read(&settings).unwrap().generated.key(), "kept");
+    assert_eq!(opened.tool_settings(TOOL), Some(settings.clone()), "kept at once");
+
+    act("win.tag-rename", "mixed/wired".to_variant());
+    assert_eq!(
+        page.editing().as_deref(),
+        Some("mixed/wired"),
+        "the rename dialog is open"
+    );
+
+    let cache = Cache::read_only(&opened.paths().cache_db()).unwrap().unwrap();
+    let expected = photomanager_core::tools::find(TOOL)
+        .unwrap()
+        .change_set(&cache, None, &window.scope(), Some(&settings))
+        .unwrap();
+    WidgetExt::activate_action(window, "win.preview-tags", None).unwrap();
+    let preview = window.preview();
+    until(
+        || preview.title().as_deref() == Some("Tidy the tags with 1 rule") && !opened.is_busy(),
+        "the rules were previewed",
+    );
+    let counts = preview.counts().unwrap();
+    assert_eq!(counts.change, expected.counts().change);
+    assert!(counts.change > 0);
+    assert_eq!(tools.showing(), "preview");
+    window.show_view("dashboard");
+}
+
+/// Two tools chosen together are one preview, named after both, with one row per photo.
+fn runs_tools_together(window: &Window, opened: &Rc<Library>) {
+    window.show_view("tools");
+    WidgetExt::activate_action(
+        window,
+        "win.tools-scope",
+        Some(&"Germany/2015-00-00 Seasons".to_variant()),
+    )
+    .unwrap();
+    WidgetExt::activate_action(
+        window,
+        "win.run-together",
+        Some(&"time-zones,tag-vocabulary".to_variant()),
+    )
+    .unwrap();
+    let preview = window.preview();
+    until(
+        || {
+            preview
+                .title()
+                .is_some_and(|title| title.starts_with("Write time zones and XMP dates and tidy the tags"))
+                && !opened.is_busy()
+        },
+        "the two tools were previewed as one",
+    );
+    let counts = preview.counts().unwrap();
+    assert_eq!(
+        (counts.photos, counts.change),
+        (2, 2),
+        "one row per photo with a date to zone, the third states its offset and its tags are tidy"
+    );
+    window.show_view("dashboard");
 }
 
 /// A tool that asks shows one row per tag with its photos, the row on the list says what waits,

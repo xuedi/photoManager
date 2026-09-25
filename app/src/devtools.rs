@@ -233,6 +233,29 @@ fn state(window: &Window, paths: &Paths, library: Option<&Library>) -> String {
             "picking": page.picking().map(|(question, _)| question),
         })
     });
+    let vocabulary = window.tools().vocabulary();
+    let tags = vocabulary.key().map(|key| {
+        let overview = vocabulary.overview();
+        serde_json::json!({
+            "tool": key,
+            "busy": vocabulary.is_busy(),
+            "settings": vocabulary.settings(),
+            "rules": overview.as_ref().map(|overview| overview.rules.iter().map(|(rule, photos)| serde_json::json!({
+                "rule": rule.written(),
+                "photos": photos,
+            })).collect::<Vec<_>>()),
+            "suggestions": overview.as_ref().map(|overview| overview.suggestions.iter().map(|suggestion| serde_json::json!({
+                "key": suggestion.key,
+                "title": suggestion.title,
+                "offer": suggestion.offer,
+                "photos": suggestion.photos,
+            })).collect::<Vec<_>>()),
+            "tree": overview.as_ref().map(|overview| overview.tree.nodes().map(|(path, count)| (path.to_string(), serde_json::json!(count))).collect::<serde_json::Map<String, serde_json::Value>>()),
+            "editing": vocabulary.editing(),
+            "refused": vocabulary.refused(),
+            "toast": vocabulary.toast(),
+        })
+    });
     let history = window.tools().history();
     let passes: Vec<serde_json::Value> = history
         .passes()
@@ -272,6 +295,7 @@ fn state(window: &Window, paths: &Paths, library: Option<&Library>) -> String {
         "scope": scope,
         "tools": tools,
         "questions": questions,
+        "vocabulary": tags,
         "page": window.tools().showing(),
         "preview": previewed,
         "applied": applied,

@@ -13,6 +13,7 @@ pub mod preview;
 pub mod questions;
 pub mod thumbnails;
 pub mod tools;
+pub mod vocabulary;
 pub mod window;
 
 use gtk::gio;

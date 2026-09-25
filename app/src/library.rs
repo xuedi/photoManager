@@ -24,6 +24,7 @@ use photomanager_core::scope::Scope;
 use photomanager_core::settings::{self, Settings};
 use photomanager_core::survey::Survey;
 use photomanager_core::thumbs::{Size, Thumbs};
+use photomanager_core::tools::tag_vocabulary::{self, Overview, Vocabulary};
 use photomanager_core::tools::{self, Question};
 use photomanager_core::write::{Engine, Summary as Applied};
 
@@ -293,6 +294,12 @@ impl Library {
                 done(asked);
             }
         });
+    }
+
+    /// The tag tree after a vocabulary's rules, what each rule changes and what is still worth
+    /// suggesting, worked out off the main thread from the whole library.
+    pub fn vocabulary<F: FnOnce(Result<Overview, String>) + 'static>(&self, vocabulary: Vocabulary, done: F) {
+        self.read_off_thread(move |cache| tag_vocabulary::overview(cache, &vocabulary), done);
     }
 
     /// The settings a tool was last run or answered with, as text.
@@ -599,6 +606,33 @@ impl Library {
             move |cache| {
                 let geo = Geo::read_only(&geo_db).ok().flatten();
                 tool.change_set(cache, geo.as_ref(), &scope, settings.as_deref())
+            },
+            report,
+        );
+    }
+
+    /// Several tools as one pass over the scope, each with the settings it was last given.
+    pub fn run_together<F: Fn(Event) + 'static>(self: &Rc<Self>, keys: &[&str], scope: &Scope, report: F) {
+        let mut chosen = Vec::new();
+        for key in keys {
+            match tools::find(key) {
+                Some(tool) => chosen.push((tool, self.tool_settings(key))),
+                None => {
+                    report(Event::Failed(format!("there is no tool {key}")));
+                    return;
+                }
+            }
+        }
+        let scope = scope.clone();
+        let geo_db = self.paths.geo_db();
+        self.build(
+            move |cache| {
+                let geo = Geo::read_only(&geo_db).ok().flatten();
+                let chosen: Vec<(&dyn tools::AnyTool, Option<&str>)> = chosen
+                    .iter()
+                    .map(|(tool, settings)| (*tool, settings.as_deref()))
+                    .collect();
+                tools::together(&chosen, cache, geo.as_ref(), &scope)
             },
             report,
         );

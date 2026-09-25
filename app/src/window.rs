@@ -276,6 +276,36 @@ impl Window {
         let preview_answers = gtk::gio::ActionEntry::builder("preview-answers")
             .activate(|window: &Window, _, _| window.imp().tools.preview_answers())
             .build();
+        let text = |name: &str, act: fn(&Tools, &str)| {
+            gtk::gio::ActionEntry::builder(name)
+                .parameter_type(Some(glib::VariantTy::STRING))
+                .activate(move |window: &Window, _, parameter| {
+                    if let Some(text) = parameter.and_then(|value| value.str()) {
+                        act(&window.imp().tools, text);
+                    }
+                })
+                .build()
+        };
+        let tag_forget_rule = gtk::gio::ActionEntry::builder("tag-forget-rule")
+            .parameter_type(Some(glib::VariantTy::INT32))
+            .activate(|window: &Window, _, parameter| {
+                if let Some(index) = parameter.and_then(|value| value.get::<i32>()) {
+                    window.imp().tools.tag_forget_rule(index.max(0) as usize);
+                }
+            })
+            .build();
+        let tag_suggestion = gtk::gio::ActionEntry::builder("tag-suggestion")
+            .parameter_type(Some(glib::VariantTy::new("(ss)").expect("a tuple of two texts")))
+            .activate(|window: &Window, _, parameter| {
+                match parameter.and_then(|value| value.get::<(String, String)>()) {
+                    Some((key, answer)) => window.imp().tools.tag_suggestion(&key, &answer),
+                    None => tracing::warn!("a suggestion is answered with its key and the answer"),
+                }
+            })
+            .build();
+        let preview_tags = gtk::gio::ActionEntry::builder("preview-tags")
+            .activate(|window: &Window, _, _| window.imp().tools.preview_tags())
+            .build();
         let show_history = gtk::gio::ActionEntry::builder("show-history")
             .activate(|window: &Window, _, _| window.imp().tools.show_history())
             .build();
@@ -387,6 +417,15 @@ impl Window {
             answer,
             answer_exact,
             preview_answers,
+            text("tag-rule", Tools::tag_rule),
+            text("tag-generated", Tools::tag_generated),
+            text("tag-rename", |tools, path| tools.vocabulary().rename(path)),
+            text("tag-merge", |tools, path| tools.vocabulary().merge(path)),
+            text("tag-delete", |tools, path| tools.vocabulary().delete(path)),
+            text("run-together", Tools::run_together),
+            tag_forget_rule,
+            tag_suggestion,
+            preview_tags,
             show_history,
             history_details,
             undo_pass,
