@@ -16,6 +16,7 @@ use std::sync::atomic::AtomicBool;
 
 use crate::cache::{Cache, Said, Stated};
 use crate::journal::{self, Journal, Kind};
+use crate::metadata::Regions;
 use crate::write::{self, Assignment, Change, Engine, Field, Outcome, Summary, Target, change};
 
 /// How far back the undo looks for the pass it can take back.
@@ -443,19 +444,14 @@ fn difference(field: &Field, said: Option<&Said>) -> Difference {
                 }
             },
         },
-        Field::Faces(faces) => Difference {
-            what: "people",
-            before: None,
-            after: match faces {
-                None => NONE.to_string(),
-                Some(faces) => faces
-                    .faces
-                    .iter()
-                    .map(|face| face.name.trim())
-                    .collect::<Vec<&str>>()
-                    .join(", "),
-            },
-        },
+        Field::Faces(faces) => {
+            let after = shown_faces(faces.as_ref().map(|faces| faces.faces.as_slice()).unwrap_or_default());
+            Difference {
+                what: "people",
+                before: said.map(|said| shown_regions(said.regions.as_ref(), faces.as_ref(), &after)),
+                after,
+            }
+        }
         Field::DropLabel => Difference {
             what: "label",
             before: said.filter(|said| !said.tags_untidy).map(|_| NONE.to_string()),
@@ -467,6 +463,59 @@ fn difference(field: &Field, said: Option<&Said>) -> Difference {
             after: NONE.to_string(),
         },
     }
+}
+
+/// The names of the regions, in the order the file lists them.
+fn shown_faces(faces: &[change::Face]) -> String {
+    match faces.is_empty() {
+        true => NONE.to_string(),
+        false => faces
+            .iter()
+            .map(|face| face.name.trim())
+            .collect::<Vec<&str>>()
+            .join(", "),
+    }
+}
+
+/// What the photo's regions say, and when they name the same people as the change but differ in
+/// anything else, what: so a row never reads as settled when a box would still move.
+fn shown_regions(said: Option<&Regions>, wanted: Option<&change::Faces>, after: &str) -> String {
+    let names = shown_faces(said.map(|said| said.faces.as_slice()).unwrap_or_default());
+    let persons_differ = || {
+        let mut named: Vec<String> = said.map(|said| said.persons.clone()).unwrap_or_default();
+        let mut wanted: Vec<String> = wanted
+            .map(|wanted| wanted.faces.iter().map(|face| face.name.trim().to_string()).collect())
+            .unwrap_or_default();
+        for list in [&mut named, &mut wanted] {
+            list.sort();
+            list.dedup();
+        }
+        named != wanted
+    };
+    if names != after {
+        return names;
+    }
+    match (said, wanted) {
+        (Some(said), Some(wanted)) if said.width != Some(wanted.width) || said.height != Some(wanted.height) => {
+            format!("{names} (measured on another size)")
+        }
+        (Some(said), Some(wanted)) if !same_boxes(&said.faces, &wanted.faces) => format!("{names} (other boxes)"),
+        _ if persons_differ() => format!("{names} (other persons named)"),
+        _ => names,
+    }
+}
+
+/// The engine's own tolerance for a number that went through a file.
+fn same_boxes(one: &[change::Face], other: &[change::Face]) -> bool {
+    let near = |a: f64, b: f64| (a - b).abs() < 1e-6;
+    one.len() == other.len()
+        && one.iter().zip(other).all(|(one, other)| {
+            one.name.trim() == other.name.trim()
+                && near(one.x, other.x)
+                && near(one.y, other.y)
+                && near(one.width, other.width)
+                && near(one.height, other.height)
+        })
 }
 
 fn shown_rating(rating: Option<i64>) -> String {

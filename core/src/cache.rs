@@ -6,10 +6,10 @@ use std::path::{Path, PathBuf};
 use rusqlite::{Connection, OptionalExtension, params};
 
 use crate::layout::Placement;
-use crate::metadata::Metadata;
+use crate::metadata::{Metadata, Regions};
 use crate::scan::Issue;
 
-const SCHEMA_VERSION: i64 = 5;
+const SCHEMA_VERSION: i64 = 6;
 
 /// SQLite takes a few hundred parameters happily; a library's worth of paths is asked for in
 /// chunks of this size.
@@ -46,6 +46,7 @@ CREATE TABLE photo (
     height      INTEGER,
     location_city TEXT,
     tags_untidy INTEGER NOT NULL DEFAULT 0,
+    regions     TEXT,
     raw         TEXT NOT NULL
 );
 CREATE INDEX photo_content ON photo (content_id);
@@ -102,6 +103,8 @@ pub struct Said {
     pub tags: Vec<String>,
     /// Its tag fields disagree or hold leftovers; see [`crate::metadata::Metadata::tags_untidy`].
     pub tags_untidy: bool,
+    /// The face regions and persons it names.
+    pub regions: Option<Regions>,
 }
 
 /// A photo as a change set needs it: where it is, how big it is, what it is, and what it says.
@@ -111,6 +114,14 @@ pub struct Stated {
     pub size: u64,
     pub content_id: Option<String>,
     pub said: Said,
+}
+
+/// How a photo is stored: the size of its pixels before any turn, and the turn.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct Shape {
+    pub width: Option<i64>,
+    pub height: Option<i64>,
+    pub orientation: Option<i64>,
 }
 
 /// A photo as the date tools need it: its date, where it was, which camera, and what its folder
@@ -364,7 +375,7 @@ impl Cache {
         for chunk in rel_paths.chunks(CHUNK) {
             let sql = format!(
                 "SELECT id, rel_path, size, content_id, taken_at, taken_offset, gps_lat, gps_lon, rating,
-                    gps_method, tags_untidy
+                    gps_method, tags_untidy, regions
                  FROM photo WHERE rel_path IN ({})",
                 holes(chunk.len())
             );
@@ -385,6 +396,7 @@ impl Cache {
                             gps_method: row.get(9)?,
                             tags: Vec::new(),
                             tags_untidy: row.get(10)?,
+                            regions: row.get::<_, Option<String>>(11)?.as_deref().and_then(Regions::read),
                         },
                     },
                 ))
@@ -436,6 +448,33 @@ impl Cache {
             let rows = statement.query_map(rusqlite::params_from_iter(chunk), |row| row.get::<_, String>(0))?;
             for row in rows {
                 found.insert(row?);
+            }
+        }
+        Ok(found)
+    }
+
+    /// How each of these photos is stored: its size in pixels and its orientation.
+    pub fn shapes(&self, rel_paths: &[String]) -> Result<std::collections::HashMap<String, Shape>> {
+        let mut found = std::collections::HashMap::new();
+        for chunk in rel_paths.chunks(CHUNK) {
+            let sql = format!(
+                "SELECT rel_path, width, height, orientation FROM photo WHERE rel_path IN ({})",
+                holes(chunk.len())
+            );
+            let mut statement = self.connection.prepare(&sql)?;
+            let rows = statement.query_map(rusqlite::params_from_iter(chunk), |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    Shape {
+                        width: row.get(1)?,
+                        height: row.get(2)?,
+                        orientation: row.get(3)?,
+                    },
+                ))
+            })?;
+            for row in rows {
+                let (rel_path, shape) = row?;
+                found.insert(rel_path, shape);
             }
         }
         Ok(found)
@@ -670,9 +709,9 @@ impl Writer<'_> {
             "INSERT INTO photo (rel_path, size, mtime_ns, inode, content_id, country, city, event_text,
                 event_year, event_month, event_day, event_name, sub_path, taken_at, taken_offset,
                 xmp_taken_at, gps_lat, gps_lon, camera_make, camera_model, orientation, rating,
-                width, height, raw, event_dir, location_city, gps_method, tags_untidy)
+                width, height, raw, event_dir, location_city, gps_method, tags_untidy, regions)
              VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17,
-                ?18, ?19, ?20, ?21, ?22, ?23, ?24, ?25, ?26, ?27, ?28, ?29)",
+                ?18, ?19, ?20, ?21, ?22, ?23, ?24, ?25, ?26, ?27, ?28, ?29, ?30)",
             params![
                 rel_path,
                 fingerprint.size as i64,
@@ -703,6 +742,7 @@ impl Writer<'_> {
                 metadata.location_city,
                 metadata.gps_method,
                 metadata.tags_untidy,
+                metadata.regions.as_ref().map(Regions::written),
             ],
         )?;
         let id = self.transaction.last_insert_rowid();

@@ -6,6 +6,8 @@ use std::path::Path;
 use std::process::Command;
 use std::sync::Once;
 
+use crate::write::Face;
+
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct Metadata {
     pub taken_at: Option<String>,
@@ -28,7 +30,72 @@ pub struct Metadata {
     pub tags_untidy: bool,
     /// The city the location text names, from the XMP or the IPTC field.
     pub location_city: Option<String>,
+    /// The face regions and the persons it names, when it says anything about either.
+    pub regions: Option<Regions>,
     pub raw: String,
+}
+
+/// Who a photo says is in it: the MWG face regions with the size they were measured against, and
+/// the IPTC persons. The same shape a write gives them, so the two compare.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct Regions {
+    pub width: Option<i64>,
+    pub height: Option<i64>,
+    /// In the order the file lists them. A region without a name has an empty one.
+    pub faces: Vec<Face>,
+    pub persons: Vec<String>,
+}
+
+impl Regions {
+    /// `None` for a photo that says nothing about who is in it.
+    fn said(self) -> Option<Regions> {
+        (!self.faces.is_empty() || !self.persons.is_empty()).then_some(self)
+    }
+
+    /// As one line of JSON, the way the cache keeps it.
+    pub fn written(&self) -> String {
+        serde_json::json!({
+            "w": self.width,
+            "h": self.height,
+            "faces": self.faces.iter().map(|face| serde_json::json!({
+                "name": face.name, "x": face.x, "y": face.y, "w": face.width, "h": face.height,
+            })).collect::<Vec<serde_json::Value>>(),
+            "persons": self.persons,
+        })
+        .to_string()
+    }
+
+    pub fn read(text: &str) -> Option<Regions> {
+        let value: serde_json::Value = serde_json::from_str(text).ok()?;
+        let number = |value: &serde_json::Value, name: &str| value.get(name).and_then(serde_json::Value::as_f64);
+        Some(Regions {
+            width: value.get("w").and_then(serde_json::Value::as_i64),
+            height: value.get("h").and_then(serde_json::Value::as_i64),
+            faces: value
+                .get("faces")?
+                .as_array()?
+                .iter()
+                .map(|face| Face {
+                    name: face
+                        .get("name")
+                        .and_then(serde_json::Value::as_str)
+                        .unwrap_or_default()
+                        .to_string(),
+                    x: number(face, "x").unwrap_or_default(),
+                    y: number(face, "y").unwrap_or_default(),
+                    width: number(face, "w").unwrap_or_default(),
+                    height: number(face, "h").unwrap_or_default(),
+                })
+                .collect(),
+            persons: value
+                .get("persons")?
+                .as_array()?
+                .iter()
+                .filter_map(serde_json::Value::as_str)
+                .map(String::from)
+                .collect(),
+        })
+    }
 }
 
 #[derive(Debug)]
@@ -119,9 +186,106 @@ impl Reader for Exiv2 {
             tags,
             tags_untidy,
             location_city: string("Xmp.photoshop.City").or_else(|| string("Iptc.Application2.City")),
+            regions: exiv2_regions(&source),
             raw: raw_json(&source),
         })
     }
+}
+
+const REGIONS: &str = "Xmp.mwg-rs.Regions/";
+const REGION_LIST: &str = "Xmp.mwg-rs.Regions/mwg-rs:RegionList[";
+
+/// exiv2 flattens the structure into one tag per value:
+/// `Xmp.mwg-rs.Regions/mwg-rs:RegionList[2]/mwg-rs:Area/stArea:x`.
+fn exiv2_regions(source: &rexiv2::Metadata) -> Option<Regions> {
+    let text = |tag: &str| source.get_tag_string(tag).ok().map(|value| value.trim().to_string());
+    let number = |tag: &str| text(tag).and_then(|value| value.parse::<f64>().ok());
+    let mut count = 0;
+    for tag in source.get_xmp_tags().unwrap_or_default() {
+        if let Some(rest) = tag.strip_prefix(REGION_LIST)
+            && let Some((index, _)) = rest.split_once(']')
+            && let Ok(index) = index.parse::<usize>()
+        {
+            count = count.max(index);
+        }
+    }
+    let faces = (1..=count)
+        .map(|index| {
+            let field = |name: &str| format!("{REGION_LIST}{index}]/{name}");
+            Face {
+                name: text(&field("mwg-rs:Name")).unwrap_or_default(),
+                x: number(&field("mwg-rs:Area/stArea:x")).unwrap_or_default(),
+                y: number(&field("mwg-rs:Area/stArea:y")).unwrap_or_default(),
+                width: number(&field("mwg-rs:Area/stArea:w")).unwrap_or_default(),
+                height: number(&field("mwg-rs:Area/stArea:h")).unwrap_or_default(),
+            }
+        })
+        .collect();
+    let dimension =
+        |name: &str| number(&format!("{REGIONS}mwg-rs:AppliedToDimensions/stDim:{name}")).map(|value| value as i64);
+    Regions {
+        width: dimension("w"),
+        height: dimension("h"),
+        faces,
+        persons: source
+            .get_tag_multiple_strings("Xmp.iptcExt.PersonInImage")
+            .unwrap_or_default()
+            .into_iter()
+            .map(|name| name.trim().to_string())
+            .filter(|name| !name.is_empty())
+            .collect(),
+    }
+    .said()
+}
+
+/// ExifTool reads the structure whole with `-struct`.
+fn exiftool_regions(fields: &serde_json::Map<String, serde_json::Value>) -> Option<Regions> {
+    let info = fields.get("RegionInfo");
+    let number = |value: Option<&serde_json::Value>| match value {
+        Some(serde_json::Value::Number(number)) => number.as_f64(),
+        Some(serde_json::Value::String(text)) => text.trim().parse().ok(),
+        _ => None,
+    };
+    let faces = info
+        .and_then(|info| info.get("RegionList"))
+        .map(|list| match list {
+            serde_json::Value::Array(items) => items.clone(),
+            one => vec![one.clone()],
+        })
+        .unwrap_or_default()
+        .iter()
+        .map(|region| Face {
+            name: region
+                .get("Name")
+                .map(|name| crate::write::change::shown(Some(name)))
+                .unwrap_or_default()
+                .trim()
+                .to_string(),
+            x: number(region.pointer("/Area/X")).unwrap_or_default(),
+            y: number(region.pointer("/Area/Y")).unwrap_or_default(),
+            width: number(region.pointer("/Area/W")).unwrap_or_default(),
+            height: number(region.pointer("/Area/H")).unwrap_or_default(),
+        })
+        .collect();
+    let persons = match fields.get("PersonInImage") {
+        Some(serde_json::Value::Array(names)) => names
+            .iter()
+            .map(|name| crate::write::change::shown(Some(name)))
+            .collect(),
+        Some(name) => vec![crate::write::change::shown(Some(name))],
+        None => Vec::new(),
+    };
+    Regions {
+        width: number(info.and_then(|info| info.pointer("/AppliedToDimensions/W"))).map(|value| value as i64),
+        height: number(info.and_then(|info| info.pointer("/AppliedToDimensions/H"))).map(|value| value as i64),
+        faces,
+        persons: persons
+            .into_iter()
+            .map(|name: String| name.trim().to_string())
+            .filter(|name| !name.is_empty())
+            .collect(),
+    }
+    .said()
 }
 
 fn raw_json(source: &rexiv2::Metadata) -> String {
@@ -207,6 +371,7 @@ impl Reader for ExifTool {
             tags,
             tags_untidy,
             location_city: string("City").filter(|city| !city.is_empty()),
+            regions: exiftool_regions(fields),
             raw: serde_json::Value::Object(fields.clone()).to_string(),
         })
     }
@@ -351,6 +516,34 @@ mod tests {
                 (one, other) => assert_eq!(one.is_some(), other.is_some(), "{path}: latitude"),
             }
         }
+    }
+
+    #[test]
+    fn both_readers_read_the_same_regions() {
+        let root = library("regions");
+        let file = root.join("Germany/2019-07-13 Sommerfest/img_0657.jpg");
+        let status = Command::new("exiftool")
+            .args([
+                "-q",
+                "-overwrite_original",
+                "-XMP-mwg-rs:RegionInfo={AppliedToDimensions={W=24,H=16,Unit=pixel},RegionList=[\
+                 {Area={X=0.5,Y=0.4,W=0.2,H=0.3,Unit=normalized},Name=Ben,Type=Face},\
+                 {Area={X=0.123456,Y=0.4,W=0.2,H=0.3,Unit=normalized},Name=Anna Maria,Type=Face}]}",
+                "-XMP-iptcExt:PersonInImage=Ben",
+                "-XMP-iptcExt:PersonInImage=Anna Maria",
+            ])
+            .arg(&file)
+            .status()
+            .unwrap();
+        assert!(status.success());
+        let fast = read(&Exiv2, &file).regions.expect("regions");
+        assert_eq!(fast, read(&ExifTool, &file).regions.expect("regions"));
+        assert_eq!((fast.width, fast.height), (Some(24), Some(16)));
+        assert_eq!(fast.persons, ["Ben", "Anna Maria"]);
+        assert_eq!(fast.faces[1].name, "Anna Maria");
+        assert_eq!(fast.faces[1].x, 0.123456);
+        assert_eq!(Regions::read(&fast.written()), Some(fast));
+        assert_eq!(read(&Exiv2, &root.join("China/IMG_3140.JPG")).regions, None);
     }
 
     #[test]

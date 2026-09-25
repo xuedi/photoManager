@@ -652,3 +652,63 @@ fn a_later_pass_taken_back_no_longer_counts_as_a_change_since() {
         assert_eq!(setup.rating_of(path), None, "{path}");
     }
 }
+
+#[test]
+fn a_region_written_is_read_back_by_the_scan_and_then_settled() {
+    let mut setup = Setup::new("regions");
+    let faces = crate::write::Faces {
+        width: 24,
+        height: 16,
+        faces: vec![
+            crate::write::Face {
+                name: "Anna".to_string(),
+                x: 0.208333,
+                y: 0.8125,
+                width: 0.25,
+                height: 0.25,
+            },
+            crate::write::Face {
+                name: "Ben".to_string(),
+                x: 0.5,
+                y: 0.5,
+                width: 0.1,
+                height: 0.2,
+            },
+        ],
+    };
+    let wanted = [Wanted::new(LOCATED, Change::of([Field::Faces(Some(faces.clone()))]))];
+    let set = setup.set("Name the faces", &wanted);
+    assert_eq!(set.rows[0].tells(), "people: none -> Anna, Ben");
+    assert_eq!(set.rows[0].verdict, Verdict::Change);
+    let summary = setup.apply(&set);
+    assert_eq!(summary.written, 1, "{summary:?}");
+
+    setup.rescan();
+    let read = setup.cache.stated(&[LOCATED.to_string()]).unwrap()[LOCATED]
+        .said
+        .regions
+        .clone()
+        .expect("the scan keeps the regions");
+    assert_eq!((read.width, read.height), (Some(24), Some(16)));
+    assert_eq!(read.faces, faces.faces, "equal to what was written");
+    assert_eq!(read.persons, ["Anna", "Ben"]);
+    let again = setup.set("Name the faces", &wanted);
+    assert_eq!(again.rows[0].verdict, Verdict::Nothing, "{}", again.rows[0].tells());
+
+    let moved = crate::write::Faces {
+        faces: vec![
+            crate::write::Face {
+                x: 0.3,
+                ..faces.faces[0].clone()
+            },
+            faces.faces[1].clone(),
+        ],
+        ..faces.clone()
+    };
+    let other = setup.set(
+        "Move a box",
+        &[Wanted::new(LOCATED, Change::of([Field::Faces(Some(moved))]))],
+    );
+    assert_eq!(other.rows[0].tells(), "people: Anna, Ben (other boxes) -> Anna, Ben");
+    assert_eq!(other.rows[0].verdict, Verdict::Change);
+}
