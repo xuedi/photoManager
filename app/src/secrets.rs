@@ -21,9 +21,14 @@ pub fn use_for_this_run(key: &str) {
     SESSION.with(|session| *session.borrow_mut() = Some(key.to_string()));
 }
 
+/// A keyring that is there answers at once; one that is not would keep the page waiting for the
+/// bus to give up.
+const REACH: std::time::Duration = std::time::Duration::from_secs(5);
+
 async fn keyring() -> Result<oo7::Keyring, String> {
-    let keyring = oo7::Keyring::new()
+    let keyring = gtk::glib::future_with_timeout(REACH, oo7::Keyring::new())
         .await
+        .map_err(|_| "no keyring answers, so no key can be kept".to_string())?
         .map_err(|error| format!("the keyring cannot be reached: {error}"))?;
     keyring
         .unlock()

@@ -80,7 +80,7 @@ pub fn present(parent: &impl IsA<gtk::Widget>, library: Rc<Library>) {
                 kept.set_subtitle(&match secrets::immich_key().await {
                     Ok(Some(_)) => "An API key is kept in the keyring".to_string(),
                     Ok(None) => "No API key kept yet".to_string(),
-                    Err(why) => why,
+                    Err(why) => sentence(&why),
                 });
             });
         }
@@ -94,12 +94,14 @@ pub fn present(parent: &impl IsA<gtk::Widget>, library: Rc<Library>) {
         library,
         move |row| match immich::address(&row.text()) {
             Ok(url) => {
-                row.set_text(&url);
+                if row.text() != url {
+                    row.set_text(&url);
+                }
                 library.put_setting(settings::IMMICH_URL, &url);
                 tracing::info!(url, "immich address set");
                 dialog.add_toast(adw::Toast::new("The address is kept"));
             }
-            Err(why) => dialog.add_toast(adw::Toast::new(&why)),
+            Err(why) => dialog.add_toast(adw::Toast::new(&sentence(&why))),
         }
     ));
     key.connect_apply(glib::clone!(
@@ -120,7 +122,7 @@ pub fn present(parent: &impl IsA<gtk::Widget>, library: Rc<Library>) {
                         tracing::info!("immich key kept in the keyring");
                         dialog.add_toast(adw::Toast::new("The key is kept in the keyring"));
                     }
-                    Err(why) => dialog.add_toast(adw::Toast::new(&why)),
+                    Err(why) => dialog.add_toast(adw::Toast::new(&sentence(&why))),
                 }
                 show_kept();
             });
@@ -133,7 +135,9 @@ pub fn present(parent: &impl IsA<gtk::Widget>, library: Rc<Library>) {
         library,
         move |row| {
             let typed = row.text().trim().trim_end_matches('/').to_string();
-            row.set_text(&typed);
+            if row.text() != typed {
+                row.set_text(&typed);
+            }
             library.put_setting(settings::IMMICH_PREFIX, &typed);
             dialog.add_toast(adw::Toast::new(match typed.is_empty() {
                 true => "The library path is taken from Immich",
@@ -161,14 +165,14 @@ pub fn present(parent: &impl IsA<gtk::Widget>, library: Rc<Library>) {
                         return;
                     }
                     Err(why) => {
-                        told.set_subtitle(&why);
+                        told.set_subtitle(&sentence(&why));
                         return;
                     }
                 };
                 library.check_immich(&url, key, move |checked| {
                     let text = match checked {
                         Ok(found) => found,
-                        Err(why) => why,
+                        Err(why) => sentence(&why),
                     };
                     tracing::info!(result = text, "immich connection tested");
                     told.set_subtitle(&glib::markup_escape_text(&text));
@@ -178,4 +182,13 @@ pub fn present(parent: &impl IsA<gtk::Widget>, library: Rc<Library>) {
     ));
 
     dialog.present(Some(parent));
+}
+
+/// What went wrong, as a row says it: with a capital.
+fn sentence(why: &str) -> String {
+    let mut chars = why.chars();
+    match chars.next() {
+        Some(first) => first.to_uppercase().chain(chars).collect(),
+        None => String::new(),
+    }
 }

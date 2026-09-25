@@ -28,6 +28,8 @@ flowchart LR
         scan --> layout
         scan --> thumbs[(thumbnails)]
         geo[(places)]
+        immich[(immich snapshot)]
+        tools --> immich
         write[write engine] --> journal[(journal)]
         fixtures[fixtures<br/>test data]
     end
@@ -50,11 +52,14 @@ flowchart LR
     preview --> changeset
     library --> scan
     library --> geo
+    library --> immich
     library --> changeset
     library --> settings
     photos[(photo library)] -. read .-> scan
     write -. the only writer .-> photos
     geonames[GeoNames dumps] -. downloaded on request .-> geo
+    immichapi[Immich, read only] -. read on request .-> immich
+    keyring[(GNOME keyring)] -. the Immich key .-> library
     osm[OpenStreetMap tiles] -. on request, through libshumate .-> photo
 ```
 
@@ -74,8 +79,10 @@ the scope they work on and the history of every pass: [tools.md](tools.md).
 
 `app` holds the GTK application: the window, its views, and the actions they expose. Two more
 GNOME libraries serve the photo page: glycin decodes a photo at full size in its sandbox, and
-libshumate draws a map, the only thing besides getting the place data that uses the network, and
-only when asked. The user
+libshumate draws a map. Three things use the network, each only when asked: getting the place
+data, the map, and getting the people from Immich. Immich is only ever read: its address is kept
+in the settings, and its API key in the GNOME keyring through the Secret Service, never in a file
+of this application and never in a log. The user
 interface is written in Blueprint, compiled to GtkBuilder XML by the build script and bundled
 as a GResource, so the binary carries its own interface.
 
@@ -87,6 +94,8 @@ as a GResource, so the binary carries its own interface.
 | cache | `$XDG_CACHE_HOME/org.beijingcode.PhotoManager` | disposable, rebuilt from the photos |
 | thumbnails | `…/thumbs` in the cache | disposable, made again while scanning |
 | GeoNames dumps | `…/geonames` in the cache | disposable, downloaded on request |
+| what Immich knows about people | `…/immich.db` in the cache | disposable, fetched again on request |
+| the Immich API key | the GNOME keyring | kept until replaced |
 | place data | `$XDG_DATA_HOME/…/geo.db` | disposable, built from the dumps |
 | journal of every write | `$XDG_DATA_HOME/…/app.db` | kept, never discarded: an undo has to outlive a cache rebuild |
 | settings, presets, each tool's last settings and answers | `$XDG_DATA_HOME/…/app.db`, next to the journal | kept, for the same reason |
@@ -112,7 +121,7 @@ shortcuts and tests all use:
 | `win.use-as-scope` | make what the gallery shows or has selected the scope of the tools |
 | `win.tools-scope` | set the scope: `all`, a country or event folder, or `picked` for the gallery's |
 | `win.run-tool` | open a tool by its key, or `key:settings`, for the scope: its questions if it asks, else its change set in the preview; without settings, the ones it was last given |
-| `win.answer` | answer one question: a tool, a question and `best`, `offer:N`, `leave`, `forget`, `choose` for the place search, `map` for the map, or a place or a pin as the settings write it |
+| `win.answer` | answer one question: a tool, a question and `best`, `offer:N`, `leave`, `forget`, `choose` for the place search, `map` for the map, `shift`, `date` or `tag` to type one, or any answer as the settings write it |
 | `win.answer-exact` | the tool's bulk button: Confirm Exact Matches, Confirm Where the Rest Is |
 | `win.preview-answers` | the change set of the tool whose questions are shown, with the answers so far |
 | `win.show-history` | the list of every pass |
@@ -121,6 +130,7 @@ shortcuts and tests all use:
 | `win.scan` | read what changed in the library into the cache |
 | `win.fill-thumbnails` | make the thumbnails the scan could not make |
 | `win.get-places` | fetch the GeoNames dumps and import them |
+| `win.get-people` | read the persons and their faces from Immich into the snapshot |
 | `win.cancel-scan` | stop a running scan |
 | `win.preview-select-all` | select every row of the preview that would change |
 | `win.preview-select-none` | select none of them |
@@ -133,12 +143,14 @@ shortcuts and tests all use:
 | `win.photo-close`, `win.photo-panel`, `win.photo-open-with` | back to the grid, the panel, the system's image viewer |
 | `win.photo-show-map` | the map around the photo, from OpenStreetMap |
 | `win.photo-edit`, `win.photo-review`, `win.photo-apply` | edit one photo, review its exact change, write it |
+| `app.preferences` | the Immich address, its API key and where the library lies inside it |
 | `app.rebuild-cache` | throw the cache away and read everything again, after confirmation |
 | `app.about` | the about dialog |
 | `app.quit` | quit |
 | `app.dump-state` | write the current state as JSON (only with `devtools`) |
 | `app.snapshot` | write the window as a PNG (only with `devtools`) |
 | `win.photo-form-rating` | pick a rating in the photo form, which a test cannot click (only with `devtools`) |
+| `win.immich-key` | an Immich key for this run only, for a session without a keyring (only with `devtools`) |
 
 ## Running and testing
 
@@ -148,6 +160,9 @@ shortcuts and tests all use:
 - widget tests that build the window and drive its actions,
 - a smoke test that starts the real binary in a private headless GNOME session, clicks through
   the view switcher and reads the state back.
+
+Nothing is ever tested against a real Immich: the tests serve a small one of their own, on a free
+local port, with persons and faces over the stand-in library.
 
 The last two need a display of their own: `just test-ui` runs the suite inside a headless
 session and `just smoke` drives the binary in one. `just fixture` writes a small stand-in

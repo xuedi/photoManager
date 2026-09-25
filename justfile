@@ -37,6 +37,10 @@ test:
 fixture dir=fixture_dir:
     cargo run -q -p photomanager-core --features fixtures --example fixture -- {{dir}}
 
+# serve a stand-in Immich over the stand-in library, printing its address and key
+fake-immich dir=fixture_dir:
+    cargo run -q -p photomanager-core --features fixtures --example fake_immich -- {{dir}}
+
 # every test, inside a private headless session
 test-ui: build
     #!/usr/bin/env bash

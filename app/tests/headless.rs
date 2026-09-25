@@ -155,6 +155,7 @@ fn the_app_can_be_clicked_through_headless() {
     gives_places_from_the_event_and_takes_them_back(&ui, lib);
     writes_time_zones_and_takes_them_back(&ui, lib);
     merges_a_tag_and_takes_it_back(&ui, lib);
+    gives_people_from_immich_and_takes_them_back(&ui, lib);
 
     ui.run(&["act", "win.show-view", "'suggestions'"], lib);
     let state = state(&ui, lib);
@@ -768,6 +769,115 @@ fn merges_a_tag_and_takes_it_back(ui: &Ui, library: &Path) {
         tags_of(&kira),
         ["People/Kira", "mixed/disgusting", "places/inIreland/Galway"]
     );
+}
+
+/// People from Immich against a fake Immich served from this test: the address set in the
+/// preferences, the people fetched on the dashboard, a person answered, the preview applied, and
+/// taken back.
+fn gives_people_from_immich_and_takes_them_back(ui: &Ui, library: &Path) {
+    use photomanager_core::immich::fake::{self, Data, FakeImmich};
+    const TOOL: &str = "people-from-immich";
+    let immich = FakeImmich::serve(Data::over(library));
+    let turned = library.join(fake::TURNED);
+
+    ui.run(&["act", "app.preferences"], library);
+    ui.run(&["wait-for", "Server Address"], library);
+    ui.run(
+        &["set", "Server Address", "--role", "text box", "--value", &immich.url],
+        library,
+    );
+    ui.run(&["key", "Return"], library);
+    ui.run(&["key", "Escape"], library);
+    ui.run(&["act", "win.immich-key", &format!("'{}'", fake::KEY)], library);
+
+    ui.run(&["act", "win.show-view", "'dashboard'"], library);
+    ui.run(&["click", "Get People from Immich", "--role", "button"], library);
+    let mut fetched = Value::Null;
+    for _ in 0..60 {
+        fetched = state(ui, library);
+        if fetched["scanning"] == false && fetched["people"]["named"].as_u64() == Some(4) {
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(500));
+    }
+    assert_eq!(fetched["people"]["named"].as_u64(), Some(4), "{}", fetched["dashboard_toast"]);
+    assert!(
+        fetched["dashboard_toast"].as_str().unwrap_or_default().starts_with("4 named persons"),
+        "{}",
+        fetched["dashboard_toast"]
+    );
+
+    ui.run(&["act", "win.show-view", "'tools'"], library);
+    ui.run(&["act", "win.tools-scope", "'all'"], library);
+    ui.run(&["act", "win.run-tool", &format!("'{TOOL}'")], library);
+    let asked = questions(ui, library, |questions| {
+        questions["tool"] == TOOL && questions["questions"].as_array().unwrap().len() == 4
+    });
+    assert_eq!(asked["questions"][0]["title"], "Ben", "{asked}");
+    assert_eq!(asked["questions"][0]["kind"], "person");
+    assert!(
+        asked["findings"].as_array().unwrap().iter().any(|finding| finding["title"] == "From Immich"),
+        "{asked}"
+    );
+    ui.run(&["act", "win.answer-exact", &format!("'{TOOL}'")], library);
+    ui.run(&["act", "win.answer", &format!("('{TOOL}', 'p-ann', 'best')")], library);
+    let answered = questions(ui, library, |questions| {
+        questions["questions"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter(|question| !question["answer"].is_null())
+            .count()
+            == 3
+    });
+    assert!(answered["settings"].as_str().unwrap().contains("people/family/Anna"), "{answered}");
+
+    let before = state(ui, library)["applied"]["batch"].as_i64().unwrap_or(0);
+    ui.run(&["act", "win.preview-answers"], library);
+    let mut previewed = Value::Null;
+    for _ in 0..60 {
+        previewed = state(ui, library)["preview"].clone();
+        if previewed["title"] == "Write people from Immich" {
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(500));
+    }
+    assert_eq!(previewed["change"].as_u64(), Some(5), "{previewed}");
+    ui.run(&["click", "Apply", "--role", "button"], library);
+    let written = written(ui, library, "write", before);
+    assert_eq!(written["written"].as_u64(), Some(5), "{written}");
+    let batch = written["batch"].as_i64().unwrap();
+    let out = Command::new("exiftool")
+        .args(["-j", "-struct", "-XMP-mwg-rs:RegionInfo"])
+        .arg(&turned)
+        .output()
+        .expect("run exiftool");
+    let read: Value = serde_json::from_slice(&out.stdout).expect("exiftool json");
+    assert_eq!(read[0]["RegionInfo"]["RegionList"][0]["Name"], "Anna", "{read}");
+    assert_eq!(read[0]["RegionInfo"]["AppliedToDimensions"]["W"], 24, "{read}");
+    assert!(tags_of(&turned).contains(&"people/family/Anna".to_string()));
+
+    let taken_before = state(ui, library)["history"]["taken"]["batch"].as_i64().unwrap_or(0);
+    ui.run(&["act", "win.undo-pass", &format!("int64 {batch}")], library);
+    ui.run(&["click", "Take It Back", "--role", "button"], library);
+    for _ in 0..120 {
+        let now = state(ui, library);
+        if now["history"]["taken"]["batch"].as_i64().unwrap_or(0) > taken_before
+            && now["writing"] == false
+            && now["scanning"] == false
+        {
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(500));
+    }
+    assert!(!tags_of(&turned).contains(&"people/family/Anna".to_string()), "the tag is gone again");
+    let out = Command::new("exiftool")
+        .args(["-j", "-struct", "-XMP-mwg-rs:RegionInfo"])
+        .arg(&turned)
+        .output()
+        .expect("run exiftool");
+    let read: Value = serde_json::from_slice(&out.stdout).expect("exiftool json");
+    assert!(read[0]["RegionInfo"].is_null(), "and the region: {read}");
 }
 
 /// The TagsList of a photo, as ExifTool reads it.
