@@ -9,7 +9,7 @@ use crate::layout::Placement;
 use crate::metadata::Metadata;
 use crate::scan::Issue;
 
-const SCHEMA_VERSION: i64 = 4;
+const SCHEMA_VERSION: i64 = 5;
 
 /// SQLite takes a few hundred parameters happily; a library's worth of paths is asked for in
 /// chunks of this size.
@@ -45,6 +45,7 @@ CREATE TABLE photo (
     width       INTEGER,
     height      INTEGER,
     location_city TEXT,
+    tags_untidy INTEGER NOT NULL DEFAULT 0,
     raw         TEXT NOT NULL
 );
 CREATE INDEX photo_content ON photo (content_id);
@@ -99,6 +100,8 @@ pub struct Said {
     pub gps_method: Option<String>,
     pub rating: Option<i64>,
     pub tags: Vec<String>,
+    /// Its tag fields disagree or hold leftovers; see [`crate::metadata::Metadata::tags_untidy`].
+    pub tags_untidy: bool,
 }
 
 /// A photo as a change set needs it: where it is, how big it is, what it is, and what it says.
@@ -124,6 +127,24 @@ pub struct Dated {
     pub event_year: Option<i64>,
     pub event_month: Option<i64>,
     pub event_day: Option<i64>,
+}
+
+/// A photo as the tag tools need it: its tags, whether its tag fields are tidy, and what its
+/// date, its place words and its folder say, which the generated tags are made from.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct Tagged {
+    pub rel_path: String,
+    pub tags: Vec<String>,
+    pub untidy: bool,
+    pub taken_at: Option<String>,
+    /// The city and the country the place words name.
+    pub city: Option<String>,
+    pub country_named: Option<String>,
+    /// The country folder.
+    pub country: Option<String>,
+    pub event_dir: Option<String>,
+    pub event_year: Option<i64>,
+    pub event_name: Option<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -343,7 +364,7 @@ impl Cache {
         for chunk in rel_paths.chunks(CHUNK) {
             let sql = format!(
                 "SELECT id, rel_path, size, content_id, taken_at, taken_offset, gps_lat, gps_lon, rating,
-                    gps_method
+                    gps_method, tags_untidy
                  FROM photo WHERE rel_path IN ({})",
                 holes(chunk.len())
             );
@@ -363,6 +384,7 @@ impl Cache {
                             rating: row.get(8)?,
                             gps_method: row.get(9)?,
                             tags: Vec::new(),
+                            tags_untidy: row.get(10)?,
                         },
                     },
                 ))
@@ -511,6 +533,86 @@ impl Cache {
         Ok(found)
     }
 
+    /// The tag side of these photos, in path order.
+    pub fn tagged(&self, rel_paths: &[String]) -> Result<Vec<Tagged>> {
+        let country = crate::details::PLACE_FIELDS[2]
+            .iter()
+            .map(|name| format!("nullif(trim(json_extract(raw, '$.\"{name}\"')), '')"))
+            .collect::<Vec<String>>()
+            .join(", ");
+        let mut found = Vec::new();
+        let mut ids: std::collections::HashMap<i64, usize> = std::collections::HashMap::new();
+        for chunk in rel_paths.chunks(CHUNK) {
+            let sql = format!(
+                "SELECT id, rel_path, tags_untidy, taken_at, nullif(trim(location_city), ''), coalesce({country}),
+                    country, event_dir, event_year, event_name
+                 FROM photo WHERE rel_path IN ({})",
+                holes(chunk.len())
+            );
+            let mut statement = self.connection.prepare(&sql)?;
+            let rows = statement.query_map(rusqlite::params_from_iter(chunk), |row| {
+                Ok((
+                    row.get::<_, i64>(0)?,
+                    Tagged {
+                        rel_path: row.get(1)?,
+                        tags: Vec::new(),
+                        untidy: row.get(2)?,
+                        taken_at: row.get(3)?,
+                        city: row.get(4)?,
+                        country_named: row.get(5)?,
+                        country: row.get(6)?,
+                        event_dir: row.get(7)?,
+                        event_year: row.get(8)?,
+                        event_name: row.get(9)?,
+                    },
+                ))
+            })?;
+            for row in rows {
+                let (id, tagged) = row?;
+                ids.insert(id, found.len());
+                found.push(tagged);
+            }
+        }
+        let keys: Vec<i64> = ids.keys().copied().collect();
+        for chunk in keys.chunks(CHUNK) {
+            let sql = format!(
+                "SELECT photo_id, path FROM tag WHERE photo_id IN ({}) ORDER BY path",
+                holes(chunk.len())
+            );
+            let mut statement = self.connection.prepare(&sql)?;
+            let rows = statement.query_map(rusqlite::params_from_iter(chunk), |row| {
+                Ok((row.get::<_, i64>(0)?, row.get::<_, String>(1)?))
+            })?;
+            for row in rows {
+                let (id, path) = row?;
+                if let Some(at) = ids.get(&id) {
+                    found[*at].tags.push(path);
+                }
+            }
+        }
+        found.sort_by(|one, other| one.rel_path.cmp(&other.rel_path));
+        Ok(found)
+    }
+
+    /// The tags of every photo that has any, one list per photo.
+    pub fn tag_sets(&self) -> Result<Vec<Vec<String>>> {
+        let mut statement = self
+            .connection
+            .prepare("SELECT photo_id, path FROM tag ORDER BY photo_id, path")?;
+        let rows = statement.query_map([], |row| Ok((row.get::<_, i64>(0)?, row.get::<_, String>(1)?)))?;
+        let mut sets: Vec<Vec<String>> = Vec::new();
+        let mut last = None;
+        for row in rows {
+            let (id, path) = row?;
+            if last != Some(id) {
+                sets.push(Vec::new());
+                last = Some(id);
+            }
+            sets.last_mut().expect("just pushed").push(path);
+        }
+        Ok(sets)
+    }
+
     pub fn transaction(&mut self) -> Result<Writer<'_>> {
         Ok(Writer {
             transaction: self.connection.transaction()?,
@@ -568,9 +670,9 @@ impl Writer<'_> {
             "INSERT INTO photo (rel_path, size, mtime_ns, inode, content_id, country, city, event_text,
                 event_year, event_month, event_day, event_name, sub_path, taken_at, taken_offset,
                 xmp_taken_at, gps_lat, gps_lon, camera_make, camera_model, orientation, rating,
-                width, height, raw, event_dir, location_city, gps_method)
+                width, height, raw, event_dir, location_city, gps_method, tags_untidy)
              VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17,
-                ?18, ?19, ?20, ?21, ?22, ?23, ?24, ?25, ?26, ?27, ?28)",
+                ?18, ?19, ?20, ?21, ?22, ?23, ?24, ?25, ?26, ?27, ?28, ?29)",
             params![
                 rel_path,
                 fingerprint.size as i64,
@@ -600,6 +702,7 @@ impl Writer<'_> {
                 placement.event_dir,
                 metadata.location_city,
                 metadata.gps_method,
+                metadata.tags_untidy,
             ],
         )?;
         let id = self.transaction.last_insert_rowid();

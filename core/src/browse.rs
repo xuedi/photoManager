@@ -92,6 +92,23 @@ impl TagTree {
         TagTree { nodes }
     }
 
+    /// Each photo's tags counted once per level, however many tags below it the photo carries.
+    pub fn counted(photos: impl IntoIterator<Item = Vec<String>>) -> TagTree {
+        let mut nodes: BTreeMap<String, i64> = BTreeMap::new();
+        for tags in photos {
+            let seen: BTreeSet<&str> = tags.iter().flat_map(|path| levels(path)).collect();
+            for level in seen {
+                *nodes.entry(level.to_string()).or_default() += 1;
+            }
+        }
+        TagTree { nodes }
+    }
+
+    /// Every tag path of the tree, with how many photos carry it or a tag below it.
+    pub fn nodes(&self) -> impl Iterator<Item = (&str, i64)> {
+        self.nodes.iter().map(|(path, count)| (path.as_str(), *count))
+    }
+
     /// The tags of the library, each counted once per photo however many tags below it the
     /// photo carries.
     pub fn take(cache: &Cache) -> Result<TagTree> {
@@ -326,7 +343,10 @@ mod fixture_tests {
         assert_eq!(tags.count("People"), Some(1), "the other spelling is its own root");
         let roots = tags.tree();
         let roots: Vec<&str> = roots.iter().map(|tag| tag.path.as_str()).collect();
-        assert_eq!(roots, ["People", "events", "mixed", "people", "places", "timeline"]);
+        assert_eq!(
+            roots,
+            ["Apartmens", "People", "events", "mixed", "people", "places", "timeline"]
+        );
     }
 
     #[test]

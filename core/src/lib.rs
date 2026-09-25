@@ -16,6 +16,7 @@ pub mod scan;
 pub mod scope;
 pub mod settings;
 pub mod survey;
+pub mod tags;
 pub mod thumbs;
 pub mod tools;
 pub mod write;

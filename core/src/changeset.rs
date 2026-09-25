@@ -22,6 +22,8 @@ use crate::write::{self, Assignment, Change, Engine, Field, Outcome, Summary, Ta
 const RECENT: i64 = 50;
 
 const NONE: &str = "none";
+/// What a photo's tags say when its tag fields disagree or hold leftovers.
+const UNTIDY: &str = "the tag fields disagree";
 /// What the cache cannot answer. The exact diff of the row is the only honest answer there.
 pub const UNKNOWN: &str = "unknown";
 
@@ -412,7 +414,10 @@ fn difference(field: &Field, said: Option<&Said>) -> Difference {
         },
         Field::Tags(paths) => Difference {
             what: "tags",
-            before: said.map(|said| shown_tags(&said.tags)),
+            before: said.map(|said| match said.tags_untidy {
+                true => format!("{} ({UNTIDY})", shown_tags(&said.tags)),
+                false => shown_tags(&said.tags),
+            }),
             after: shown_tags(&change::expand(paths).unwrap_or_else(|_| paths.to_vec())),
         },
         Field::Place(place) => Difference {
@@ -453,12 +458,12 @@ fn difference(field: &Field, said: Option<&Said>) -> Difference {
         },
         Field::DropLabel => Difference {
             what: "label",
-            before: None,
+            before: said.filter(|said| !said.tags_untidy).map(|_| NONE.to_string()),
             after: NONE.to_string(),
         },
         Field::DropCatalogSets => Difference {
             what: "catalog sets",
-            before: None,
+            before: said.filter(|said| !said.tags_untidy).map(|_| NONE.to_string()),
             after: NONE.to_string(),
         },
     }

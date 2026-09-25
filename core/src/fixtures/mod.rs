@@ -2,7 +2,9 @@
 //! loose file in a country folder, sub-folders, photos without GPS but with a place tag, a
 //! photo without any date, XMP dates that disagree with EXIF, and one without tags at all. The
 //! tags are as untidy as real ones: a second spelling of a root, case twins, a typo, a city
-//! misspelled, a place that is no place, and one photo with two places tags. Some events are
+//! misspelled, a place that is no place, one photo with two places tags, a misspelled root, a bare
+//! root, a tag in only one of the tag fields, a keyword left in the label and a catalog set. No
+//! tagged photo writes every level into every tag field, as none in the real library does. Some events are
 //! partly placed: one whose located photos all stand in one city and one photo does not, one
 //! whose photos were placed in two cities, and one named `Wedding` in another city's folder. The
 //! dates have the real shapes too: a winter and a summer photo of one event, an XMP date two hours
@@ -91,6 +93,7 @@ const PHOTOS: &[Photo] = &[
             "-Model=Panasonic DMC-LS1",
             PLACES_CHINA,
             "-TagsList=people/groupChina/Ben",
+            "-XMP-mediapro:CatalogSets=Holiday",
         ],
     },
     Photo {
@@ -143,6 +146,7 @@ const PHOTOS: &[Photo] = &[
             "-TagsList=people/family/Anna",
             "-TagsList=people/me",
             "-TagsList=places/inGermany",
+            "-XMP-microsoft:LastKeywordXMP=people/family/Tom",
         ],
     },
     Photo {
@@ -160,6 +164,7 @@ const PHOTOS: &[Photo] = &[
             "-DateTimeOriginal=2008:10:03 12:47:00",
             "-TagsList=places/inNetherland/Amsterdam",
             "-TagsList=mixed/Funny",
+            "-TagsList=mixed/disgusting",
             "-XMP-photoshop:City=Galway",
             "-IPTC:City=Galway",
         ],
@@ -252,11 +257,19 @@ const PHOTOS: &[Photo] = &[
     },
     Photo {
         path: "China/2012-04-00 Rail Trip/IMG_5003.JPG",
-        metadata: &["-DateTimeOriginal=2012:04:05 12:00:00", "-TagsList=places/inChina"],
+        metadata: &[
+            "-DateTimeOriginal=2012:04:05 12:00:00",
+            "-TagsList=places/inChina",
+            "-TagsList=events",
+        ],
     },
     Photo {
         path: "Germany/Hamburg/2014-08-00 Wedding/IMG_2001.JPG",
-        metadata: &["-DateTimeOriginal=2014:08:16 14:00:00", "-TagsList=places/inGermany"],
+        metadata: &[
+            "-DateTimeOriginal=2014:08:16 14:00:00",
+            "-TagsList=places/inGermany",
+            "-TagsList=Apartmens/Harbour Flat",
+        ],
     },
     Photo {
         path: "Germany/2015-00-00 Seasons/IMG_8001.JPG",

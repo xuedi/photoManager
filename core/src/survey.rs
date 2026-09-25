@@ -414,7 +414,7 @@ mod fixture_tests {
                 ("Not yet sorted out of mixed", 4),
                 ("mixed/Funny and mixed/funny", 2),
                 ("People and people", 3),
-                ("mixed/discusting and mixed/disgusting", 2),
+                ("mixed/discusting and mixed/disgusting", 3),
                 ("places/inGreece/Atens and places/inGreece/athens", 3),
                 ("Loose files", 1),
                 ("In event sub-folders", 2),

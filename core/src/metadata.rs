@@ -1,6 +1,7 @@
 //! What a photo says about itself. Read in process while scanning; ExifTool is the reference
 //! the fast reader is measured against, and the fallback if the system library moves on.
 
+use std::collections::BTreeSet;
 use std::path::Path;
 use std::process::Command;
 use std::sync::Once;
@@ -20,7 +21,11 @@ pub struct Metadata {
     pub rating: Option<i64>,
     pub width: Option<i64>,
     pub height: Option<i64>,
+    /// Every tag path any tag field holds, and each flat keyword that is no level of one.
     pub tags: Vec<String>,
+    /// The five tag fields do not say the same thing with every level, or a keyword is left in
+    /// the label or the catalog sets.
+    pub tags_untidy: bool,
     /// The city the location text names, from the XMP or the IPTC field.
     pub location_city: Option<String>,
     pub raw: String,
@@ -68,6 +73,7 @@ pub(crate) fn start() {
 #[derive(Debug, Default, Clone, Copy)]
 pub struct Exiv2;
 
+/// The three fields that hold whole paths, then the two that hold only the names.
 const TAG_FIELDS: [&str; 5] = [
     "Xmp.digiKam.TagsList",
     "Xmp.lr.hierarchicalSubject",
@@ -75,6 +81,7 @@ const TAG_FIELDS: [&str; 5] = [
     "Xmp.dc.subject",
     "Iptc.Application2.Keywords",
 ];
+const LEFTOVERS: [&str; 2] = ["Xmp.xmp.Label", "Xmp.mediapro.CatalogSets"];
 
 impl Reader for Exiv2 {
     fn read(&self, _path: &Path, bytes: &[u8]) -> Result<Metadata> {
@@ -84,13 +91,15 @@ impl Reader for Exiv2 {
         let number = |tag: &str| source.has_tag(tag).then(|| i64::from(source.get_tag_numeric(tag)));
 
         let gps = source.get_gps_info();
-        let tags = TAG_FIELDS
-            .iter()
-            .find_map(|field| {
-                let values = source.get_tag_multiple_strings(field).ok()?;
-                (!values.is_empty()).then(|| values.iter().map(|value| normalise_tag(value)).collect::<Vec<_>>())
-            })
-            .unwrap_or_default();
+        let fields = TAG_FIELDS.map(|field| {
+            source
+                .get_tag_multiple_strings(field)
+                .unwrap_or_default()
+                .iter()
+                .map(|value| normalise_tag(value))
+                .collect::<Vec<String>>()
+        });
+        let (tags, tags_untidy) = tags_of(&fields, LEFTOVERS.iter().any(|field| source.has_tag(field)));
 
         Ok(Metadata {
             taken_at: string("Exif.Photo.DateTimeOriginal").map(|value| as_timestamp(&value)),
@@ -108,6 +117,7 @@ impl Reader for Exiv2 {
             width: (source.get_pixel_width() > 0).then(|| i64::from(source.get_pixel_width())),
             height: (source.get_pixel_height() > 0).then(|| i64::from(source.get_pixel_height())),
             tags,
+            tags_untidy,
             location_city: string("Xmp.photoshop.City").or_else(|| string("Iptc.Application2.City")),
             raw: raw_json(&source),
         })
@@ -170,6 +180,16 @@ impl Reader for ExifTool {
             Some(serde_json::Value::String(value)) => Some(vec![normalise_tag(value)]),
             _ => None,
         };
+        let tag_fields = [
+            "TagsList",
+            "HierarchicalSubject",
+            "LastKeywordXMP",
+            "Subject",
+            "Keywords",
+        ]
+        .map(|key| list(key).unwrap_or_default());
+        let leftovers = ["Label", "CatalogSets"].iter().any(|key| fields.contains_key(*key));
+        let (tags, tags_untidy) = tags_of(&tag_fields, leftovers);
 
         Ok(Metadata {
             taken_at: string("DateTimeOriginal").map(|value| as_timestamp(&value)),
@@ -184,16 +204,8 @@ impl Reader for ExifTool {
             rating: number("Rating"),
             width: number("ImageWidth"),
             height: number("ImageHeight"),
-            tags: [
-                "TagsList",
-                "HierarchicalSubject",
-                "LastKeywordXMP",
-                "Subject",
-                "Keywords",
-            ]
-            .iter()
-            .find_map(|key| list(key))
-            .unwrap_or_default(),
+            tags,
+            tags_untidy,
             location_city: string("City").filter(|city| !city.is_empty()),
             raw: serde_json::Value::Object(fields.clone()).to_string(),
         })
@@ -209,6 +221,43 @@ fn method(value: &str) -> Option<String> {
     };
     let text = text.trim_matches(|c: char| c == '\0' || c.is_whitespace());
     (!text.is_empty()).then(|| text.to_string())
+}
+
+/// The tags of a photo from its five tag fields, and whether they disagree. Every path of the
+/// three hierarchical fields counts, so a tag written to only one of them is not lost, and so
+/// does a flat keyword that names no level of any path. Tidy is what a write leaves: every path
+/// with all its levels in the hierarchical fields, every level's name in the flat ones, and
+/// nothing in the label or the catalog sets.
+fn tags_of(fields: &[Vec<String>; 5], leftovers: bool) -> (Vec<String>, bool) {
+    let set =
+        |field: &[String]| -> BTreeSet<String> { field.iter().filter(|value| !value.is_empty()).cloned().collect() };
+    let mut paths: BTreeSet<String> = fields[..3].iter().flat_map(|field| set(field)).collect();
+    let orphans: Vec<String> = {
+        let names: BTreeSet<&str> = paths.iter().flat_map(|path| path.split('/')).collect();
+        fields[3..]
+            .iter()
+            .flat_map(|field| set(field))
+            .filter(|keyword| !names.contains(keyword.as_str()))
+            .collect()
+    };
+    paths.extend(orphans);
+
+    let every_level: BTreeSet<String> = paths
+        .iter()
+        .flat_map(|path| {
+            path.match_indices('/')
+                .map(|(at, _)| path[..at].to_string())
+                .chain(std::iter::once(path.clone()))
+        })
+        .collect();
+    let names: BTreeSet<String> = every_level
+        .iter()
+        .map(|path| path.rsplit('/').next().unwrap_or(path).to_string())
+        .collect();
+    let tidy = !leftovers
+        && fields[..3].iter().all(|field| set(field) == every_level)
+        && fields[3..].iter().all(|field| set(field) == names);
+    (paths.into_iter().collect(), !tidy)
 }
 
 /// Lightroom separates the levels with a pipe, everyone else with a slash.
@@ -295,12 +344,50 @@ mod tests {
             assert_eq!(fast.camera_model, reference.camera_model, "{path}: model");
             assert_eq!(fast.orientation, reference.orientation, "{path}: orientation");
             assert_eq!(fast.tags, reference.tags, "{path}: tags");
+            assert_eq!(fast.tags_untidy, reference.tags_untidy, "{path}: tidy");
             assert_eq!(fast.location_city, reference.location_city, "{path}: city");
             match (fast.gps_lat, reference.gps_lat) {
                 (Some(one), Some(other)) => assert!((one - other).abs() < 0.0001, "{path}: latitude"),
                 (one, other) => assert_eq!(one.is_some(), other.is_some(), "{path}: latitude"),
             }
         }
+    }
+
+    #[test]
+    fn tidy_is_every_level_in_every_field_and_no_leftovers() {
+        let paths = |items: &[&str]| items.iter().map(|item| item.to_string()).collect::<Vec<String>>();
+        let full = paths(&["places", "places/inChina", "places/inChina/Beijing"]);
+        let names = paths(&["Beijing", "inChina", "places"]);
+        let written = [full.clone(), full.clone(), full.clone(), names.clone(), names.clone()];
+        assert_eq!(tags_of(&written, false), (full.clone(), false));
+        assert!(tags_of(&written, true).1, "a keyword in the label is untidy");
+
+        let shotwell = [
+            paths(&["places/inChina/Beijing"]),
+            vec![],
+            paths(&["places/inChina/Beijing"]),
+            paths(&["Beijing"]),
+            paths(&["Beijing"]),
+        ];
+        assert_eq!(tags_of(&shotwell, false), (paths(&["places/inChina/Beijing"]), true));
+
+        let apart = [
+            paths(&["people/Anna"]),
+            vec![],
+            paths(&["people/Anna", "people/Tom"]),
+            paths(&["Anna", "Kira"]),
+            vec![],
+        ];
+        assert_eq!(
+            tags_of(&apart, false).0,
+            paths(&["Kira", "people/Anna", "people/Tom"]),
+            "a tag in one field only is kept, and so is a keyword that is no level"
+        );
+        assert_eq!(
+            tags_of(&Default::default(), false),
+            (vec![], false),
+            "no tags at all is tidy"
+        );
     }
 
     #[test]

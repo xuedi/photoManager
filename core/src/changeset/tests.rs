@@ -237,12 +237,23 @@ fn a_position_and_a_date_read_the_way_a_person_thinks_about_them() {
 #[test]
 fn a_field_the_cache_does_not_keep_says_so_instead_of_guessing() {
     let setup = Setup::new("unknown");
-    let set = setup.set("Drop the label", &[Wanted::new(BARE, Change::of([Field::DropLabel]))]);
+    let set = setup.set(
+        "Drop the label",
+        &[
+            Wanted::new(TAGGED, Change::of([Field::DropLabel])),
+            Wanted::new(BARE, Change::of([Field::DropLabel])),
+        ],
+    );
     assert_eq!(set.rows[0].tells(), "label: unknown -> none");
     assert_eq!(
         set.rows[0].verdict,
         Verdict::Change,
         "what the cache cannot answer is left to the write, which skips it"
+    );
+    assert_eq!(
+        set.rows[1].verdict,
+        Verdict::Nothing,
+        "tidy tag fields mean there is no label to take away"
     );
 }
 

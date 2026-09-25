@@ -326,7 +326,10 @@ mod on_the_fixture {
                 .unwrap();
             assert!(status.success());
         });
-        assert_eq!(Details::of(&cache, PEOPLE).unwrap().unwrap().people, ["Anna", "me"]);
+        assert_eq!(
+            Details::of(&cache, PEOPLE).unwrap().unwrap().people,
+            ["Anna", "Tom", "me"]
+        );
         assert_eq!(Details::of(&cache, KIRA).unwrap().unwrap().people, ["Kira"]);
         assert_eq!(
             Details::of(&cache, LOCATED).unwrap().unwrap().people,

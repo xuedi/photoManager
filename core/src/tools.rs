@@ -28,10 +28,12 @@ use crate::write;
 use crate::write::change::Derived;
 use crate::write::{Change, Field, Gps};
 
+pub mod add_tag;
 pub mod dates_folder;
 pub mod gps_from_event;
 pub mod gps_from_places;
 pub mod offsets;
+pub mod tag_vocabulary;
 #[cfg(all(test, feature = "fixtures"))]
 mod testing;
 pub mod time_zones;
@@ -655,6 +657,22 @@ impl Question {
     }
 }
 
+/// What the Tools page opens for a tool. The page is chosen by what it is, never by which tool.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Page {
+    /// Straight to the preview.
+    Preview,
+    /// Its questions first.
+    Questions,
+    /// The tag tree with its rules and suggestions.
+    Vocabulary,
+    /// One line of text first, which becomes the settings.
+    Entry {
+        title: &'static str,
+        description: &'static str,
+    },
+}
+
 pub trait Tool: Sync {
     type Settings: Settings;
 
@@ -698,6 +716,12 @@ pub trait Tool: Sync {
     /// Whether it needs the place data to know what to ask, not only for the offers.
     fn asks_with_place_data(&self) -> bool {
         false
+    }
+
+    /// A page of its own; without one a tool that asks shows its questions and any other its
+    /// preview.
+    fn page(&self) -> Option<Page> {
+        None
     }
 
     /// What its row says while questions wait for an answer.
@@ -763,6 +787,14 @@ pub trait AnyTool: Sync {
     fn key(&self) -> &'static str;
     fn title(&self) -> &'static str;
     fn fixes(&self) -> &'static str;
+    /// What a pass with these settings is called, and what each photo of the scope should say.
+    fn wanted(
+        &self,
+        cache: &Cache,
+        geo: Option<&Geo>,
+        scope: &Scope,
+        settings: Option<&str>,
+    ) -> Result<(String, Vec<Wanted>), String>;
     /// `None` is the tool's own defaults.
     fn change_set(
         &self,
@@ -787,6 +819,9 @@ pub trait AnyTool: Sync {
     fn answered(&self, settings: Option<&str>, question: &str) -> Result<Option<Answer>, String>;
     fn waiting(&self, open: usize) -> String;
     fn wording(&self) -> Wording;
+    fn page(&self) -> Page;
+    /// Whether these settings can be read, and why not.
+    fn check(&self, settings: &str) -> Result<(), String>;
 }
 
 fn settings_of<S: Settings>(text: Option<&str>) -> Result<S, String> {
@@ -809,6 +844,18 @@ impl<T: Tool> AnyTool for T {
         Tool::fixes(self)
     }
 
+    fn wanted(
+        &self,
+        cache: &Cache,
+        geo: Option<&Geo>,
+        scope: &Scope,
+        settings: Option<&str>,
+    ) -> Result<(String, Vec<Wanted>), String> {
+        let settings = settings_of::<T::Settings>(settings)?;
+        let wanted = Tool::wanted(self, cache, geo, scope, &settings).map_err(|error| error.to_string())?;
+        Ok((self.named(&settings), wanted))
+    }
+
     fn change_set(
         &self,
         cache: &Cache,
@@ -816,11 +863,8 @@ impl<T: Tool> AnyTool for T {
         scope: &Scope,
         settings: Option<&str>,
     ) -> Result<ChangeSet, String> {
-        let settings = settings_of::<T::Settings>(settings)?;
-        let wanted = self
-            .wanted(cache, geo, scope, &settings)
-            .map_err(|error| error.to_string())?;
-        let mut set = ChangeSet::build(cache, &self.named(&settings), &wanted).map_err(|error| error.to_string())?;
+        let (named, wanted) = AnyTool::wanted(self, cache, geo, scope, settings)?;
+        let mut set = ChangeSet::build(cache, &named, &wanted).map_err(|error| error.to_string())?;
         set.tool = Some(Tool::key(self).to_string());
         Ok(set)
     }
@@ -862,6 +906,18 @@ impl<T: Tool> AnyTool for T {
     fn wording(&self) -> Wording {
         Tool::wording(self)
     }
+
+    fn check(&self, settings: &str) -> Result<(), String> {
+        T::Settings::read(settings).map(|_| ())
+    }
+
+    fn page(&self) -> Page {
+        match Tool::page(self) {
+            Some(page) => page,
+            None if AnyTool::asks(self) => Page::Questions,
+            None => Page::Preview,
+        }
+    }
 }
 
 /// Every tool there is, in the order they are listed: the date tools in the order they are best
@@ -872,12 +928,123 @@ pub const ALL: &[&dyn AnyTool] = &[
     &dates_folder::DatesAgainstTheFolder,
     &undated::PhotosWithoutADate,
     &time_zones::TimeZones,
+    &tag_vocabulary::TagVocabulary,
+    &add_tag::AddATag,
     #[cfg(feature = "demo")]
     &demo::Rating,
 ];
 
 pub fn find(key: &str) -> Option<&'static dyn AnyTool> {
     ALL.iter().copied().find(|tool| tool.key() == key)
+}
+
+/// Several tools as one pass, so a photo is written once: each photo's changes of every tool
+/// merged into one, in the order the tools are given. Two tools that would set the same field
+/// of one photo are a refusal naming both. A tool that refuses a photo leaves it to the others;
+/// only a photo every tool refuses is refused, with each reason.
+pub fn together(
+    chosen: &[(&dyn AnyTool, Option<&str>)],
+    cache: &Cache,
+    geo: Option<&Geo>,
+    scope: &Scope,
+) -> Result<ChangeSet, String> {
+    struct Merged {
+        change: Change,
+        by: Vec<&'static str>,
+        refused: Vec<String>,
+        clash: Option<String>,
+    }
+    let mut order: Vec<String> = Vec::new();
+    let mut merged: BTreeMap<String, Merged> = BTreeMap::new();
+    let mut names = Vec::new();
+    for (tool, settings) in chosen {
+        let (named, wanted) = tool.wanted(cache, geo, scope, *settings)?;
+        names.push(named);
+        for one in wanted {
+            let entry = merged.entry(one.rel_path.clone()).or_insert_with(|| {
+                order.push(one.rel_path.clone());
+                Merged {
+                    change: Change::default(),
+                    by: Vec::new(),
+                    refused: Vec::new(),
+                    clash: None,
+                }
+            });
+            if let Some(why) = one.refused {
+                entry.refused.push(format!("{}: {why}", tool.title()));
+                continue;
+            }
+            for field in one.change.fields {
+                let kind = std::mem::discriminant(&field);
+                if let Some(at) = entry
+                    .change
+                    .fields
+                    .iter()
+                    .position(|had| std::mem::discriminant(had) == kind)
+                {
+                    entry.clash.get_or_insert(format!(
+                        "{} and {} would both set the {}",
+                        entry.by[at],
+                        tool.title(),
+                        field_name(&field)
+                    ));
+                    continue;
+                }
+                entry.change.fields.push(field);
+                entry.by.push(tool.title());
+            }
+        }
+    }
+    let wanted: Vec<Wanted> = order
+        .into_iter()
+        .map(|rel_path| {
+            let one = merged.remove(&rel_path).expect("every path was merged");
+            match (one.clash, one.change.is_empty()) {
+                (Some(clash), _) => Wanted::refused(rel_path, clash),
+                (None, true) => Wanted::refused(rel_path, one.refused.join("; ")),
+                (None, false) => Wanted::new(rel_path, one.change),
+            }
+        })
+        .collect();
+    let mut set = ChangeSet::build(cache, &joined(&names), &wanted).map_err(|error| error.to_string())?;
+    set.tool = Some(
+        chosen
+            .iter()
+            .map(|(tool, _)| tool.key())
+            .collect::<Vec<&str>>()
+            .join("+"),
+    );
+    Ok(set)
+}
+
+fn field_name(field: &Field) -> &'static str {
+    match field {
+        Field::Tags(_) => "tags",
+        Field::Rating(_) => "rating",
+        Field::Gps(_) => "position",
+        Field::Place(_) => "place words",
+        Field::Taken(_) => "date",
+        Field::Faces(_) => "faces",
+        Field::DropLabel => "label",
+        Field::DropCatalogSets => "catalog sets",
+    }
+}
+
+/// `A`, `A and B`, `A, B and C`.
+fn joined(names: &[String]) -> String {
+    match names {
+        [] => String::new(),
+        [one] => one.clone(),
+        [rest @ .., last] => format!("{} and {}", rest.join(", "), lowercase_first(last)),
+    }
+}
+
+fn lowercase_first(text: &str) -> String {
+    let mut chars = text.chars();
+    match chars.next() {
+        Some(first) => first.to_lowercase().chain(chars).collect(),
+        None => String::new(),
+    }
 }
 
 /// How many photos of the scope the tool would change right now, with these settings or its
@@ -1081,5 +1248,101 @@ mod answer_tests {
         assert!(Answer::read(r#"{"zone": "Nowhere/Atlantis"}"#).is_err());
         assert!(Answer::read(r#"{"shift": []}"#).is_err());
         assert!(Answer::read(r#"{"shift": [{"camera": "X", "by": "soon", "from": "2011-09-02 15:00:00"}]}"#).is_err());
+    }
+}
+
+#[cfg(all(test, feature = "fixtures"))]
+mod together_tests {
+    use super::*;
+    use crate::changeset::Verdict;
+    use crate::filter::Filter;
+    use crate::tools::testing::{Library, geo};
+
+    const SEASONS: &str = "Germany/2015-00-00 Seasons";
+    const SUMMER: &str = "Germany/2015-00-00 Seasons/IMG_8002.JPG";
+
+    fn zones() -> &'static dyn AnyTool {
+        find("time-zones").unwrap()
+    }
+
+    fn tags() -> &'static dyn AnyTool {
+        find("tag-vocabulary").unwrap()
+    }
+
+    #[test]
+    fn two_tools_are_one_row_and_one_write_per_photo_and_one_undo() {
+        let mut library = Library::new("together");
+        let scope = Scope::Filter(Filter::all().within(SEASONS));
+        let geo = geo();
+        let one = zones().change_set(&library.cache, Some(&geo), &scope, None).unwrap();
+        let other = tags().change_set(&library.cache, Some(&geo), &scope, None).unwrap();
+        let set = together(&[(zones(), None), (tags(), None)], &library.cache, Some(&geo), &scope).unwrap();
+        assert_eq!(set.title, "Write time zones and XMP dates and tidy the tags");
+        assert_eq!(set.tool.as_deref(), Some("time-zones+tag-vocabulary"));
+
+        let paths = |set: &ChangeSet| {
+            let mut all: Vec<String> = set.rows.iter().map(|row| row.rel_path.clone()).collect();
+            all.sort();
+            all.dedup();
+            all
+        };
+        let mut either = paths(&one);
+        either.extend(paths(&other));
+        either.sort();
+        either.dedup();
+        assert_eq!(paths(&set), either, "one row per photo, none counted twice");
+        assert_eq!(set.rows.len(), either.len());
+        assert_eq!(set.counts().change, either.len());
+
+        let summer = set.rows.iter().find(|row| row.rel_path == SUMMER).unwrap();
+        let kinds: Vec<&str> = summer.change.fields.iter().map(field_name).collect();
+        assert_eq!(kinds, ["date", "tags", "label", "catalog sets"]);
+
+        let before = library.dates(SUMMER);
+        let summary = library.apply(&set);
+        assert_eq!(summary.written, either.len(), "one write per photo: {summary:?}");
+        let after = library.dates(SUMMER);
+        assert_eq!(after["ExifIFD:OffsetTimeOriginal"], "+02:00");
+
+        library.rescan();
+        let tidy = library.cache.stated(&[SUMMER.to_string()]).unwrap()[SUMMER].clone();
+        assert!(!tidy.said.tags_untidy);
+        assert_eq!(
+            tidy.said.tags,
+            ["events", "events/2015 Seasons", "timeline", "timeline/2015"]
+        );
+
+        let undone = library.undo();
+        assert_eq!(undone.written, either.len(), "{undone:?}");
+        assert_eq!(library.dates(SUMMER), before, "the dates are back");
+        library.rescan();
+        let back = library.cache.stated(&[SUMMER.to_string()]).unwrap()[SUMMER].clone();
+        assert!(
+            back.said.tags.is_empty(),
+            "and the tags are gone again: {:?}",
+            back.said.tags
+        );
+    }
+
+    #[test]
+    fn two_tools_setting_one_field_are_refused_with_both_named() {
+        let library = Library::new("together-clash");
+        let scope = Scope::Photos {
+            title: "one".to_string(),
+            paths: vec![SUMMER.to_string()],
+        };
+        let add = find("add-a-tag").unwrap();
+        let set = together(
+            &[(tags(), None), (add, Some("people/family/Anna"))],
+            &library.cache,
+            None,
+            &scope,
+        )
+        .unwrap();
+        assert_eq!(set.rows.len(), 1);
+        assert_eq!(
+            set.rows[0].verdict,
+            Verdict::Refused("Tag Vocabulary and Add a Tag would both set the tags".to_string())
+        );
     }
 }
