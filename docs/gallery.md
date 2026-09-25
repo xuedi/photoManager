@@ -1,6 +1,6 @@
 # Gallery
 
-Where the photos a tool should work on are found. Pick a country or an event, a tag, a field that
+Where the photos a tool should work on are found. Pick a folder or an event, a tag, a field that
 is missing, or any combination, and the grid shows exactly those photos. Select some or all of
 them and hand them on as the **scope** of the next tool. Viewing is here to support finding, and
 nothing on the grid writes. One photo opens on a [page of its own](photo.md).
@@ -14,7 +14,7 @@ filter is set, the controls follow it, the grid is filled again.
 
 | Control | Owns | Written as |
 |---------|------|------------|
-| place sidebar | the country or event folder | `@Germany`, `@Germany/2019-07-13 Sommerfest` |
+| place sidebar | a top folder or an event folder | `@Germany`, `@Germany/2019-07-13 Sommerfest` |
 | tag sidebar | one tag, everything below it included | `tag:people` |
 | missing field dropdown | one gap, or none | `no-gps` |
 | a chip | anything else the dashboard handed over: a folder finding, an issue, a pair of tags spelled alike | `loose`, `tag:mixed/funny\|mixed/Funny` |
@@ -36,8 +36,11 @@ flowchart LR
 ```
 
 The sidebars count the photos of the whole library, not of the current filter, so the numbers do
-not move while the other controls are changed. A country's count includes its loose photos, which
-belong to no event. Tags are shown as they are spelled: `People` and `people` are two roots, the
+not move while the other controls are changed. The place sidebar is the library's top folders -
+countries, years or whatever the [folder layout](cache.md#folder-names) starts with - each with
+the events below it; an event right in the library root is an entry of its own. It follows the
+folders as they are on disk, so a library halfway into another layout shows both. A top folder's
+count includes its loose photos, which belong to no event. Tags are shown as they are spelled: `People` and `people` are two roots, the
 same way the filter tells them apart.
 
 Photos are sorted by their own date, undated ones last, or by path, so an event reads in folder
@@ -125,7 +128,7 @@ switch. A scope only describes photos: a tool still goes through the change set,
 | Action | Does |
 |--------|------|
 | `win.show-photos` | show a filter, named in its written form |
-| `win.gallery-place` | choose a country or event folder, or widen back from the chosen one |
+| `win.gallery-place` | choose a top folder or an event folder, or widen back from the chosen one |
 | `win.gallery-tag` | choose a tag, or widen back from the chosen one |
 | `win.gallery-gap` | set the missing field, a gap's key or `none` |
 | `win.gallery-sort` | `date` or `name` |

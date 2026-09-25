@@ -142,7 +142,7 @@ and live only in the cache:
 | Kind | Means |
 |------|-------|
 | `no date` | the photo carries no date of its own |
-| `off the convention` | the path is not `Country/[City/]YYYY-MM-DD Event/...` |
+| `off the layout` | the path is not in the [folder layout](#folder-names), or holds no event |
 | `unreadable` | the file could not be read or its metadata not parsed |
 | `not a photo` | a file in the library that is not a JPEG, or has no image data |
 | `sidecar` | an `.xmp` file next to the photos |
@@ -152,7 +152,33 @@ They are what the tools in later phases work from, and the dashboard counts them
 
 ## Folder names
 
-`Country/[City/]YYYY-MM-DD Event name/[sub-folder/]file.jpg`. A date may have holes:
-`2006-09-00` is September 2006 without a day, `0000-00-00` is an unknown date. The holes are
-kept as they are, never filled in with a guess. What cannot be read this way becomes an issue
-and keeps whatever part could be read, usually the country.
+A path is read against the **folder layout** the user chose in Preferences: the levels above the
+event folder, from the top of the library down. The default is `Country/[City/]`, and a layout
+can be put together from country, region, city, year, month and a tag under a chosen root, each
+optional or not - `Year/Country/`, `Country/Year/`, `Topic/`, or no level at all. Below the
+levels always comes the event folder, `YYYY-MM-DD Event name`, then any sub-folders.
+
+The event folder is found by its date wherever it is, not by its depth, so an event is an event
+in any layout. A date may have holes: `2006-09-00` is September 2006 without a day, `0000-00-00`
+is an unknown date. The holes are kept as they are, never filled in with a guess. A year or
+month level has to say the event's own year or month.
+
+What the folders above the event say is read as the layout's levels. When they do not fit, the
+event keeps its date and name and is **off the layout**; a file in a folder of the layout but in
+no event is **loose**. A layout that could read one path in two ways - an optional country next
+to an optional city, both plain names - is refused before it is kept.
+
+The layout is a setting, not photo information, so it lives in `app.db`. The cache remembers
+which layout its rows were placed with; when it changes, every row is placed again from its path,
+without reading a file, and the issues follow. Nothing on disk moves - that is
+[Folder Migration](tools.md#folder-migration).
+
+```mermaid
+flowchart LR
+    path[a photo's path] --> find[find the event folder by its date]
+    find --> above[the folders above it]
+    layout[(the layout, from app.db)] --> read{read as its levels?}
+    above --> read
+    read -- yes --> fits[in the layout:<br/>country, city, ... in the cache]
+    read -- no --> off[off the layout: an issue]
+```

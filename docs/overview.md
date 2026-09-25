@@ -25,7 +25,8 @@ flowchart LR
         scan --> cache[(cache)]
         scan --> metadata
         scan --> identity
-        scan --> layout
+        scan --> layout[layout<br/>the folders, read]
+        settings --> layout
         scan --> thumbs[(thumbnails)]
         geo[(places)]
         immich[(immich snapshot)]
@@ -64,8 +65,8 @@ flowchart LR
 ```
 
 `core` holds everything that does not need a display: where things live on disk, reading a
-photo's metadata, identifying it by its image data, reading its folder names, the scan and the
-cache it fills, the thumbnails, the place data, and the one engine that writes to a photo. It has
+photo's metadata, identifying it by its image data, reading its folder names against the folder
+layout the user chose, the scan and the cache it fills, the thumbnails, the place data, and the one engine that writes to a photo. It has
 no GTK dependency, so it can be tested without a session. What the cache holds and how a scan
 works: [cache.md](cache.md); the small pictures: [thumbnails.md](thumbnails.md); names and
 coordinates: [places.md](places.md); changing what a photo says: [writing.md](writing.md); what
@@ -98,7 +99,7 @@ as a GResource, so the binary carries its own interface.
 | the Immich API key | the GNOME keyring | kept until replaced |
 | place data | `$XDG_DATA_HOME/…/geo.db` | disposable, built from the dumps |
 | journal of every write | `$XDG_DATA_HOME/…/app.db` | kept, never discarded: an undo has to outlive a cache rebuild |
-| settings, presets, each tool's last settings and answers | `$XDG_DATA_HOME/…/app.db`, next to the journal | kept, for the same reason |
+| settings, the folder layout, presets, each tool's last settings and answers | `$XDG_DATA_HOME/…/app.db`, next to the journal | kept, for the same reason |
 
 Every location is resolved in one place, from the environment. Pointing `HOME`, `XDG_*` and
 `PHOTOMANAGER_LIBRARY` somewhere else moves the whole application, which is how tests keep away
@@ -143,7 +144,7 @@ shortcuts and tests all use:
 | `win.photo-close`, `win.photo-panel`, `win.photo-open-with` | back to the grid, the panel, the system's image viewer |
 | `win.photo-show-map` | the map around the photo, from OpenStreetMap |
 | `win.photo-edit`, `win.photo-review`, `win.photo-apply` | edit one photo, review its exact change, write it |
-| `app.preferences` | the Immich address, its API key and where the library lies inside it |
+| `app.preferences` | the folder layout, the Immich address, its API key and where the library lies inside it |
 | `app.rebuild-cache` | throw the cache away and read everything again, after confirmation |
 | `app.about` | the about dialog |
 | `app.quit` | quit |

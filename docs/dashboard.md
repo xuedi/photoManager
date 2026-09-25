@@ -15,7 +15,7 @@ connection to the cache, so it can run while the cache itself is busy with somet
 |------|-------|
 | at a glance | photos, events, size on disk, the first and last date, cameras, file types as they are spelled |
 | coverage | per field, how many photos could carry it and how many do not |
-| where the gaps are | the same per country and per event, one field at a time, the most missing first |
+| where the gaps are | the same per top folder of the [layout](cache.md#folder-names) and per event, one field at a time, the most missing first |
 | tidy up | things that are untidy rather than missing; a finding with nothing in it is not shown |
 
 ## What each field means
@@ -52,9 +52,9 @@ narrowed to a folder. It has a written form, which is what a click hands to the
 | Written | Means |
 |---------|-------|
 | `no-gps`, `no-date`, `date-off-folder`, `no-tag`, `no-people`, `no-location` | the photos missing that field |
-| `no-gps@Germany`, `no-gps@Germany/2019-07-13 Sommerfest` | the same, inside a country or an event folder |
+| `no-gps@Germany`, `no-gps@Germany/2019-07-13 Sommerfest` | the same, inside a folder or an event folder |
 | `tag:mixed`, `tag:mixed/funny\|mixed/Funny` | photos with any of these tags or a tag below them, compared as spelled |
-| `loose`, `sub-folder`, `off-convention` | the folder findings |
+| `loose`, `sub-folder`, `off-layout` | the folder findings |
 | `issue:sidecar`, `issue:duplicate content` | files with that issue |
 | `all` | every photo |
 | `no-gps+tag:people@Germany` | parts joined by `+` must all hold: here, photos tagged under `people` in that folder, without GPS |

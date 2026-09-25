@@ -425,42 +425,55 @@ flowchart TD
 
 ## Folder Migration
 
-The convention is `Country/City/YYYY-MM-DD Event`, and a library that grew up as
-`Country/YYYY-MM-DD Event` gets there one event or a handful at a time. This tool proposes where
-each event belongs from what its photos already say, and moves it there - only the folder, never a
-byte of a photo ([writing.md](writing.md#moving-a-folder)).
+The [folder layout](cache.md#folder-names) is chosen in Preferences - by default
+`Country/[City/]YYYY-MM-DD Event` - and a library that grew up in another shape gets there one
+event or a handful at a time. This tool proposes where each event belongs in the layout from what
+its photos already say, and moves it there - only the folder, never a byte of a photo
+([writing.md](writing.md#moving-a-folder)).
 
-- **Who is asked about.** Every event of the scope that is not in a city folder yet, one question
-  each, titled with its whole path; and every photo lying directly in a country folder.
-- **What the page offers**, best first: the city the places tag of every photo names; the cities
-  some of them name, by how many; the city of the location text; the town where its positions are,
-  from the place data; a city of the library named in the event's name. A city is spelled the way
-  the library spells it already - its city folder if there is one, else the last level of its
-  places tag - so folders and tags agree.
-- **Sure** is only the city the places tag of every photo names, exactly one and the same on each,
-  in the folder's country. **Confirm Sure Cities** answers those.
+- **Who is asked about.** Every event of the scope that is off the layout, that lacks one of its
+  optional levels, or whose tag or country folder says what none of its photos do; one question
+  each, titled with its whole path. And every photo lying in a folder of the layout but in no
+  event.
+- **Each level is filled** from what the photos say. The country: the folder it is in, else the
+  country its places tags name. The city, best first: the city folder it is in already; the city
+  the places tag of every photo names; the cities some of them name, by how many; the city of the
+  location text; the town where its positions are, from the place data; a city of the library
+  named in the event's name. A city is spelled the way the library spells it already - its city
+  folder if there is one, else the last level of its places tag - so folders and tags agree. The
+  region: the one the place data puts that city in, or where the positions are. The year and the
+  month: the event's own date. A tag level: the tag right below its root the photos carry, by how
+  many.
+- **Sure** is a proposal whose every level is sure: the city the places tag of every photo names
+  (exactly one and the same on each, in the event's country) or the city folder it is in, the
+  country of its folders, one tag on every photo, and a date with the year and month the layout
+  needs. **Confirm Sure Folders** answers those. An event without a year is offered `0000/...`,
+  never sure.
 - **Several cities** are all offered, by how many photos name each; the event goes to one of them
   or stays where it is. An event is never split.
 - **Another country.** Where photos name another country in their places tag than their folder,
-  the question says how many, and that country's city is offered with the other country's folder.
-- **Enter a Folder** shows the parts - country, city, date, event - with the path now and the path
-  after, said again with every letter. The date in an event's folder name is not changed here. The
-  city may be left empty, and **Leave Alone** keeps an event where it is: `Country/Event` stays
-  valid for an event that was nowhere in particular.
-- **A loose photo** is offered the events of its country nearest its date, and a new event on its
-  day; it goes into the one chosen.
-- **The answers** are kept by the folder asked about.
+  the question says how many, and that country is offered with its city if one is named.
+- **Enter a Folder** shows one entry per level of the layout the user names - the year and the
+  month come from the date - then the date and the event, with the path now and the path after,
+  said again with every letter. The date in an event's folder name is not changed here. An
+  optional level may be left empty, and **Leave Alone** keeps an event where it is.
+- **A loose photo** is offered the events in the folder it lies in, nearest its date, and a new
+  event on its day; it goes into the one chosen.
+- **The answers** are kept by the folder asked about, and outlive a change of the layout: whether
+  an answer is in the layout is asked when it is to be moved.
 
-**Refused, with why.** A target that is there already, in the cache or on disk; two events to one
-target; a changed date; a folder with a file the scan does not know, or without one it does. And
+**Refused, with why.** A target that is not in the layout, or is there already, in the cache or
+on disk; two events to one target; a changed date; a folder with a file the scan does not know, or
+without one it does. And
 **the people gate**: an event is not moved while Immich names people in its photos that the files
 do not say - no face region and no people tag of that name or one near it. A move makes Immich
 forget the photos and learn them again, faces included, so the people go into the files first
 ([People from Immich](#people-from-immich)); without a snapshot fetched the gate cannot look, and
 the page says so.
 
-**Above the questions** the page says where the events are: how many are in their city already,
-and of the others how many name one city on every photo, a city on some, several cities or none;
+**Above the questions** the page says where the events are: how many are in the layout already,
+how many not and how many of those are sure; with a city level, how many name one city on every
+photo, a city on some, several cities or none;
 the events in several cities, those another country names, those with folders inside, the loose
 photos, and the events waiting for their people.
 
@@ -470,9 +483,10 @@ back after it: its photos are found by their image data.
 
 ```mermaid
 flowchart TD
-    scope[the scope's events not in a city,<br/>and its loose photos] --> ask[one question each:<br/>the folder it belongs in]
+    scope[the scope's events off the layout,<br/>and its loose photos] --> ask[one question each:<br/>the folder it belongs in]
+    layout[(the folder layout)] --> ask
     cache[(cache: places tags, location,<br/>positions, folders)] --> ask
-    geo[(place data: the town of a position)] --> ask
+    geo[(place data: the town of a position,<br/>the region of a city)] --> ask
     ask --> answers[(the tool's settings in app.db)]
     answers --> set[one row per folder: before, after, photos]
     snap[(Immich snapshot:<br/>people the files lack)] --> gate{refused?}
