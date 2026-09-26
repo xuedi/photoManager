@@ -29,6 +29,8 @@ mod imp {
         pub none: adw::StatusPage,
         pub groups: RefCell<Vec<adw::PreferencesGroup>>,
         pub checks: RefCell<BTreeMap<String, gtk::CheckButton>>,
+        /// The Select All of each group, by finder, which turns to Unselect All once all are ticked.
+        pub everies: RefCell<Vec<(&'static str, &'static str, gtk::Button)>>,
         pub bar: gtk::ActionBar,
         pub chosen: gtk::Label,
         pub apply: gtk::Button,
@@ -301,6 +303,20 @@ impl Suggestions {
             count => format!("{count} fixes selected"),
         });
         imp.apply.set_sensitive(chosen > 0);
+
+        for (finder, title, every) in imp.everies.borrow().iter() {
+            let all = found
+                .iter()
+                .filter(|fix| fix.finder == *finder)
+                .all(|fix| ticked.contains(&fix.key));
+            let (label, action) = match all {
+                true => ("Unselect All", "win.fixes-select-none"),
+                false => ("Select All", "win.fixes-select-all"),
+            };
+            every.set_label(label);
+            every.set_action_name(Some(action));
+            every.update_property(&[gtk::accessible::Property::Label(&format!("{label} of {title}"))]);
+        }
     }
 
     fn show(&self) {
@@ -309,6 +325,7 @@ impl Suggestions {
             imp.content.remove(&group);
         }
         imp.checks.borrow_mut().clear();
+        imp.everies.borrow_mut().clear();
         let found = imp.found.borrow().clone();
         imp.loading.set_visible(found.is_none());
         let found = found.unwrap_or_default();
@@ -326,17 +343,12 @@ impl Suggestions {
                 .description(finder.fixes)
                 .build();
             let every = gtk::Button::builder()
-                .label("Select All")
                 .valign(gtk::Align::Center)
-                .action_name("win.fixes-select-all")
                 .action_target(&finder.key.to_variant())
                 .build();
             every.add_css_class("flat");
-            every.update_property(&[gtk::accessible::Property::Label(&format!(
-                "Select All of {}",
-                finder.title
-            ))]);
             group.set_header_suffix(Some(&every));
+            imp.everies.borrow_mut().push((finder.key, finder.title, every));
             for fix in own {
                 group.add(&self.row(fix));
             }

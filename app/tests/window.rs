@@ -211,8 +211,13 @@ fn suggests_fixes_to_tick(window: &Window, opened: &Rc<Library>) {
     act("win.tick-fix", Some((BEIJING, true).to_variant()));
     assert_eq!(page.ticked(), [BEIJING]);
     assert!(labels(page.upcast_ref()).iter().any(|label| label == "1 fix selected"));
+    assert!(!labels(page.upcast_ref()).iter().any(|label| label == "Unselect All"));
     act("win.fixes-select-all", Some("folders".to_variant()));
     assert_eq!(page.ticked().len(), 2);
+    assert!(
+        labels(page.upcast_ref()).iter().any(|label| label == "Unselect All"),
+        "a group with every fix ticked offers to take the ticks away"
+    );
     act("win.fixes-select-none", Some("all".to_variant()));
     assert!(page.ticked().is_empty());
     act("win.tick-fix", Some((FOLDER, true).to_variant()));
