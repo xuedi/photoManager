@@ -3,8 +3,10 @@
 //! photo without any date, XMP dates that disagree with EXIF, and one without tags at all. The
 //! tags are as untidy as real ones: a second spelling of a root, case twins, a typo, a city
 //! misspelled, a place that is no place, one photo with two places tags, a misspelled root, a bare
-//! root, a tag in only one of the tag fields, a keyword left in the label and a catalog set. No
-//! tagged photo writes every level into every tag field, as none in the real library does. Some events are
+//! root, a tag in only one of the tag fields, a keyword left in the label and a catalog set, and an
+//! old photo with flat keywords only: one tag of the tree has its name, one a tag spelled two ways,
+//! two tags another and none the last. No tagged photo writes every level into every tag field, as
+//! none in the real library does. Some events are
 //! partly placed: one whose located photos all stand in one city and one photo does not, one
 //! whose photos were placed in two cities, and one named `Wedding` in another city's folder. The
 //! dates have the real shapes too: a winter and a summer photo of one event, an XMP date two hours
@@ -435,6 +437,10 @@ const PHOTOS: &[Photo] = &[
             "-GPSLatitudeRef=N",
             "-GPSLongitude=9.9930",
             "-GPSLongitudeRef=E",
+            "-IPTC:Keywords=inChina",
+            "-IPTC:Keywords=Funny",
+            "-IPTC:Keywords=food",
+            "-IPTC:Keywords=landscape",
         ],
     },
     Photo {
@@ -445,6 +451,7 @@ const PHOTOS: &[Photo] = &[
             "-GPSLatitudeRef=N",
             "-GPSLongitude=9.9930",
             "-GPSLongitudeRef=E",
+            "-TagsList=topics/food",
         ],
     },
 ];

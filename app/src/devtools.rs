@@ -265,10 +265,25 @@ fn state(window: &Window, paths: &Paths, library: Option<&Library>) -> String {
                 "photos": suggestion.photos,
             })).collect::<Vec<_>>()),
             "tree": overview.as_ref().map(|overview| overview.tree.nodes().map(|(path, count)| (path.to_string(), serde_json::json!(count))).collect::<serde_json::Map<String, serde_json::Value>>()),
+            "pending": vocabulary.pending().iter().map(|rule| rule.written()).collect::<Vec<_>>(),
             "editing": vocabulary.editing(),
             "refused": vocabulary.refused(),
             "toast": vocabulary.toast(),
         })
+    });
+    let listed = window.suggestions();
+    let suggestions = serde_json::json!({
+        "busy": listed.is_busy(),
+        "open": listed.open().iter().map(|suggestion| serde_json::json!({
+            "key": suggestion.key,
+            "title": suggestion.title,
+            "tool": suggestion.tool,
+            "photos": suggestion.photos,
+            "sure": suggestion.sure,
+        })).collect::<Vec<_>>(),
+        "found": listed.found().len(),
+        "dashboard": dashboard.suggestions_line(),
+        "toast": listed.toast(),
     });
     let history = window.tools().history();
     let passes: Vec<serde_json::Value> = history
@@ -310,6 +325,7 @@ fn state(window: &Window, paths: &Paths, library: Option<&Library>) -> String {
         "tools": tools,
         "questions": questions,
         "vocabulary": tags,
+        "suggestions": suggestions,
         "page": window.tools().showing(),
         "preview": previewed,
         "applied": applied,

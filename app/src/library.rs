@@ -1,6 +1,7 @@
 //! The library as the window sees it: the cache, and a scan running off the main thread.
 
 use std::cell::{Cell, RefCell};
+use std::collections::BTreeSet;
 use std::path::Path;
 use std::rc::Rc;
 use std::sync::Arc;
@@ -27,7 +28,7 @@ use photomanager_core::settings::{self, Settings};
 use photomanager_core::survey::Survey;
 use photomanager_core::thumbs::{Size, Thumbs};
 use photomanager_core::tools::tag_vocabulary::{self, Overview, Vocabulary};
-use photomanager_core::tools::{self, Finding, Question};
+use photomanager_core::tools::{self, Finding, Question, Suggestion};
 use photomanager_core::write::{Engine, Summary as Applied};
 
 #[derive(Debug)]
@@ -318,6 +319,54 @@ impl Library {
                 done(asked);
             }
         });
+    }
+
+    /// What every tool would fix in the library, each with the settings it was last given, asked
+    /// off the main thread through read-only looks at the cache and the place data. A tool that
+    /// cannot say is left out, and the log says why.
+    pub fn suggestions<F: FnOnce(Result<Vec<Suggestion>, String>) + 'static>(&self, done: F) {
+        let remembered: Vec<Option<String>> = tools::ALL.iter().map(|tool| self.tool_settings(tool.key())).collect();
+        let geo_db = self.paths.geo_db();
+        self.read_off_thread(
+            move |cache| {
+                let started = std::time::Instant::now();
+                let geo = Geo::read_only(&geo_db).ok().flatten();
+                let mut found = Vec::new();
+                for (tool, settings) in tools::ALL.iter().zip(&remembered) {
+                    match tool.suggestions(cache, geo.as_ref(), settings.as_deref()) {
+                        Ok(suggested) => found.extend(suggested),
+                        Err(why) => tracing::warn!(tool = tool.key(), why, "the tool could not suggest"),
+                    }
+                }
+                tracing::info!(
+                    suggestions = found.len(),
+                    seconds = started.elapsed().as_secs_f64(),
+                    "suggestions asked"
+                );
+                Ok(found)
+            },
+            done,
+        );
+    }
+
+    /// The keys of the suggestions the user dismissed.
+    pub fn dismissed(&self) -> BTreeSet<String> {
+        self.settings
+            .borrow()
+            .as_ref()
+            .map(settings::dismissed)
+            .unwrap_or_default()
+    }
+
+    /// Dismisses a suggestion, or brings it back.
+    pub fn set_dismissed(&self, key: &str, dismissed: bool) {
+        let mut settings = self.settings.borrow_mut();
+        let Some(settings) = settings.as_mut() else {
+            return;
+        };
+        if let Err(error) = settings::set_dismissed(settings, key, dismissed) {
+            tracing::error!(%error, key, "the dismissed suggestion could not be kept");
+        }
     }
 
     /// The tag tree after a vocabulary's rules, what each rule changes and what is still worth

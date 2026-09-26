@@ -129,6 +129,23 @@ template $PmDashboard: Adw.Bin {
                 orientation: vertical;
               }
 
+              Adw.PreferencesGroup suggested {
+                visible: false;
+
+                Adw.ActionRow suggested_row {
+                  subtitle: "Ready-made fixes, each opened in its tool";
+                  activatable: true;
+                  action-name: "win.show-view";
+                  action-target: "'suggestions'";
+
+                  [suffix]
+                  Image {
+                    icon-name: "go-next-symbolic";
+                    accessible-role: presentation;
+                  }
+                }
+              }
+
               Box {
                 orientation: vertical;
                 spacing: 12;

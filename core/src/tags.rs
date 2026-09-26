@@ -235,16 +235,7 @@ pub fn suggestions(tree: &TagTree, rules: &Rules, left: &BTreeSet<String>) -> Ve
 
     for spellings in tree.case_twins() {
         let lower = spellings[0].to_lowercase();
-        let into = spellings
-            .iter()
-            .find(|spelling| **spelling == lower)
-            .unwrap_or_else(|| {
-                spellings
-                    .iter()
-                    .max_by(|one, other| count(one).cmp(&count(other)).then(other.cmp(one)))
-                    .expect("twins are two at least")
-            })
-            .clone();
+        let into = twin_into(tree, &spellings);
         let moved: Vec<&String> = spellings.iter().filter(|spelling| **spelling != into).collect();
         found.push(Suggestion {
             key: format!("twin:{lower}"),
@@ -293,8 +284,174 @@ pub fn suggestions(tree: &TagTree, rules: &Rules, left: &BTreeSet<String>) -> Ve
         .collect()
 }
 
+/// The spelling twins are merged into: the one in lower case, or else the one most photos carry.
+fn twin_into(tree: &TagTree, spellings: &[String]) -> String {
+    let count = |path: &str| tree.count(path).unwrap_or_default();
+    let lower = spellings[0].to_lowercase();
+    spellings
+        .iter()
+        .find(|spelling| **spelling == lower)
+        .unwrap_or_else(|| {
+            spellings
+                .iter()
+                .max_by(|one, other| count(one).cmp(&count(other)).then(other.cmp(one)))
+                .expect("twins are two at least")
+        })
+        .clone()
+}
+
+/// The rules that merge every pair of case twins, as their suggestions would.
+fn twin_rules(tree: &TagTree) -> Rules {
+    let mut rules = Rules::default();
+    for spellings in tree.case_twins() {
+        let into = twin_into(tree, &spellings);
+        for from in spellings.iter().filter(|spelling| **spelling != into) {
+            if let Ok(rule) = Rule::rename(from, &into) {
+                let _ = rules.add(rule);
+            }
+        }
+    }
+    rules
+}
+
 fn leaf(path: &str) -> &str {
     path.rsplit('/').next().unwrap_or(path)
+}
+
+fn depth(path: &str) -> usize {
+    path.split('/').count()
+}
+
+/// A root with tags below it, and how deep its leaves sit most often: `places` 3 for
+/// `places/inChina/Beijing`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Branch {
+    pub root: String,
+    pub depth: usize,
+    pub photos: i64,
+}
+
+/// The roots with tags below them, learned from the tree: the shape the tags follow.
+pub fn branches(tree: &TagTree) -> Vec<Branch> {
+    tree.children("")
+        .into_iter()
+        .filter(|root| !tree.children(root).is_empty())
+        .map(|root| {
+            let mut depths: std::collections::BTreeMap<usize, usize> = std::collections::BTreeMap::new();
+            for (path, _) in tree.nodes() {
+                if within(path, root) && path != root && tree.children(path).is_empty() {
+                    *depths.entry(depth(path)).or_default() += 1;
+                }
+            }
+            let usual = depths
+                .iter()
+                .max_by(|one, other| one.1.cmp(other.1).then(one.0.cmp(other.0)))
+                .map(|(depth, _)| *depth)
+                .unwrap_or(2);
+            Branch {
+                root: root.to_string(),
+                depth: usual,
+                photos: tree.count(root).unwrap_or_default(),
+            }
+        })
+        .collect()
+}
+
+/// Where the flat keywords belong: a tag without a level that is no branch root, and the paths of
+/// the tree whose last level has its name, compared case-folded and after the case twins merge.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct Flat {
+    /// Into the one path that has its name.
+    pub into: Vec<(String, String)>,
+    /// Two paths or more have its name.
+    pub several: Vec<(String, Vec<String>)>,
+    /// No path has its name.
+    pub nowhere: Vec<String>,
+}
+
+pub fn flat(tree: &TagTree) -> Flat {
+    let twins = twin_rules(tree);
+    let mut found = Flat::default();
+    for bare in tree.children("") {
+        if !tree.children(bare).is_empty() {
+            continue;
+        }
+        let folded = bare.to_lowercase();
+        let mut paths: Vec<String> = tree
+            .nodes()
+            .filter(|(path, _)| path.contains('/') && leaf(path).to_lowercase() == folded)
+            .filter_map(|(path, _)| twins.follow(path))
+            .collect();
+        paths.sort();
+        paths.dedup();
+        match paths.len() {
+            0 => found.nowhere.push(bare.to_string()),
+            1 => found.into.push((bare.to_string(), paths.remove(0))),
+            _ => found.several.push((bare.to_string(), paths)),
+        }
+    }
+    found
+}
+
+/// Leaves that sit higher than the rest of their branch, each with the one path at the usual
+/// depth of the same branch that has its name: `places/Beijing` into `places/inChina/Beijing`.
+pub fn misplaced(tree: &TagTree, branches: &[Branch]) -> Vec<(String, String)> {
+    let mut found = Vec::new();
+    for branch in branches {
+        let below: Vec<&str> = tree
+            .nodes()
+            .map(|(path, _)| path)
+            .filter(|path| within(path, &branch.root) && *path != branch.root)
+            .collect();
+        for path in &below {
+            if depth(path) >= branch.depth || !tree.children(path).is_empty() {
+                continue;
+            }
+            let folded = leaf(path).to_lowercase();
+            let usual: Vec<&&str> = below
+                .iter()
+                .filter(|other| depth(other) == branch.depth && leaf(other).to_lowercase() == folded)
+                .collect();
+            if let [only] = usual.as_slice() {
+                found.push((path.to_string(), only.to_string()));
+            }
+        }
+    }
+    found
+}
+
+/// Roots with tags below them that stand apart from the others: spelled in another case than
+/// most roots are, and carried by far fewer photos than the biggest. Case twins are not among
+/// them; they are merged.
+pub fn strays(tree: &TagTree, branches: &[Branch]) -> Vec<String> {
+    let twins: BTreeSet<String> = tree
+        .case_twins()
+        .into_iter()
+        .flatten()
+        .filter(|path| !path.contains('/'))
+        .collect();
+    let others: Vec<&Branch> = branches.iter().filter(|branch| !twins.contains(&branch.root)).collect();
+    let lower = |root: &str| root == root.to_lowercase();
+    let in_lower = others.iter().filter(|branch| lower(&branch.root)).count();
+    let most_lower = in_lower * 2 > others.len();
+    let biggest = branches.iter().map(|branch| branch.photos).max().unwrap_or_default();
+    others
+        .iter()
+        .filter(|branch| lower(&branch.root) != most_lower && branch.photos * 5 < biggest)
+        .map(|branch| branch.root.clone())
+        .collect()
+}
+
+/// The roots spelled two ways, each with the spelling they merge into.
+pub fn twin_roots(tree: &TagTree) -> Vec<(Vec<String>, String)> {
+    tree.case_twins()
+        .into_iter()
+        .filter(|spellings| !spellings[0].contains('/'))
+        .map(|spellings| {
+            let into = twin_into(tree, &spellings);
+            (spellings, into)
+        })
+        .collect()
 }
 
 /// The tree after the rules, counted from every photo's tags.
@@ -425,6 +582,80 @@ mod tests {
         assert_eq!(
             without_bare_roots(tags(&["events", "wired", "places/inChina"]), &tree),
             tags(&["wired", "places/inChina"])
+        );
+    }
+
+    fn shaped() -> TagTree {
+        TagTree::counted(
+            [
+                tags(&["places/inChina/Beijing", "people/groupChina/Ben", "timeline/2006"]),
+                tags(&["places/inChina/Dalian", "places/Hamburg", "events/2006 Trip"]),
+                tags(&["places/inGermany/Hamburg", "People/groupChina/Ben", "timeline/2007"]),
+                tags(&["places/inIreland/Galway", "People/groupChina/Kira", "events/2008 Walk"]),
+                tags(&["topics/food", "mixed/food", "Apartmens/Flat"]),
+                tags(&["Ben", "2007", "inChina", "food", "landscape"]),
+                tags(&["Kira", "places/inDenmark/Copenhagen"]),
+            ]
+            .into_iter()
+            .chain((0..20).map(|_| tags(&["places/inChina/Beijing", "timeline/2006"]))),
+        )
+    }
+
+    #[test]
+    fn the_shape_is_learned_from_the_tree() {
+        let tree = shaped();
+        let found = branches(&tree);
+        let depths: Vec<(&str, usize)> = found
+            .iter()
+            .map(|branch| (branch.root.as_str(), branch.depth))
+            .collect();
+        assert_eq!(
+            depths,
+            [
+                ("Apartmens", 2),
+                ("People", 3),
+                ("events", 2),
+                ("mixed", 2),
+                ("people", 3),
+                ("places", 3),
+                ("timeline", 2),
+                ("topics", 2),
+            ]
+        );
+        assert_eq!(
+            strays(&tree, &found),
+            ["Apartmens"],
+            "spelled unlike the others, and small"
+        );
+        assert_eq!(twin_roots(&tree), [(tags(&["People", "people"]), "people".to_string())]);
+    }
+
+    #[test]
+    fn a_flat_keyword_goes_into_the_one_branch_that_has_its_name() {
+        let found = flat(&shaped());
+        assert_eq!(
+            found.into,
+            [
+                ("2007".to_string(), "timeline/2007".to_string()),
+                ("Ben".to_string(), "people/groupChina/Ben".to_string()),
+                ("Kira".to_string(), "people/groupChina/Kira".to_string()),
+                ("inChina".to_string(), "places/inChina".to_string()),
+            ],
+            "Ben is under both spellings of people, which are one after the twins merge"
+        );
+        assert_eq!(
+            found.several,
+            [("food".to_string(), tags(&["mixed/food", "topics/food"]))]
+        );
+        assert_eq!(found.nowhere, ["landscape"]);
+    }
+
+    #[test]
+    fn a_leaf_above_its_usual_depth_goes_where_its_name_is() {
+        let tree = shaped();
+        assert_eq!(
+            misplaced(&tree, &branches(&tree)),
+            [("places/Hamburg".to_string(), "places/inGermany/Hamburg".to_string())]
         );
     }
 

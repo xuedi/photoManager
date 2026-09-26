@@ -731,6 +731,87 @@ impl Question {
     }
 }
 
+/// A ready-made fix a tool found in the library. Opening it opens the tool with this scope and
+/// these settings, so the tool's own page, preview and apply do the rest: a suggestion never
+/// writes anything itself.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Suggestion {
+    /// Stays the same for as long as the same fix is found, so one dismissed stays dismissed.
+    pub key: String,
+    pub title: String,
+    pub detail: String,
+    /// The photos it is about.
+    pub photos: usize,
+    pub tool: &'static str,
+    pub scope: Scope,
+    /// What the tool is opened with. `None` is what it was last given.
+    pub settings: Option<String>,
+    /// Worked out to the end, so opening it and previewing is the whole fix. Otherwise it shows
+    /// what was found and leaves the decision to the person.
+    pub sure: bool,
+    /// What it is made of, a name and what is said about it: the rules it adds, the tags it
+    /// leaves apart, the questions it would answer.
+    pub rows: Vec<(String, String)>,
+}
+
+/// What a tool that asks suggests without being asked: the questions about the whole library its
+/// bulk button would answer, in one suggestion that opens its question page.
+pub fn sure_answers<T: Tool + ?Sized>(
+    tool: &T,
+    cache: &Cache,
+    geo: Option<&Geo>,
+    settings: &T::Settings,
+) -> Result<Vec<Suggestion>, String> {
+    let wording = tool.wording();
+    if wording.confirm.is_empty() || tool.answers(&mut T::Settings::default()).is_none() {
+        return Ok(Vec::new());
+    }
+    let scope = Scope::Filter(crate::filter::Filter::all());
+    let sure: Vec<Question> = tool
+        .questions(cache, geo, &scope, settings)?
+        .into_iter()
+        .filter(Question::confirmable)
+        .collect();
+    if sure.is_empty() {
+        return Ok(Vec::new());
+    }
+    let mut then = T::Settings::read(&settings.written())?;
+    if let Some(answers) = tool.answers(&mut then) {
+        for question in &sure {
+            answers.set(&question.key, question.sure().map(|offer| offer.answer.clone()));
+        }
+    }
+    let changed = |settings: &T::Settings| -> Result<usize, String> {
+        let wanted = tool
+            .wanted(cache, geo, &scope, settings)
+            .map_err(|error| error.to_string())?;
+        Ok(ChangeSet::build(cache, "", &wanted)
+            .map_err(|error| error.to_string())?
+            .counts()
+            .change)
+    };
+    // A photo can be in two questions of a tool that writes, so the change set counts it once. A
+    // tool that moves has a row per folder, and every photo in exactly one question.
+    let photos = match tool.moves() {
+        true => sure.iter().map(|question| question.photos).sum(),
+        false => changed(&then)?.saturating_sub(changed(settings)?),
+    };
+    Ok(vec![Suggestion {
+        key: format!("{}:sure", tool.key()),
+        title: wording.found(sure.len()),
+        detail: format!("{} answers them in one click", wording.confirm),
+        photos,
+        tool: tool.key(),
+        scope,
+        settings: None,
+        sure: true,
+        rows: sure
+            .iter()
+            .filter_map(|question| Some((question.title.clone(), question.sure()?.words.clone())))
+            .collect(),
+    }])
+}
+
 /// What the Tools page opens for a tool. The page is chosen by what it is, never by which tool.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Page {
@@ -826,6 +907,17 @@ pub trait Tool: Sync {
     fn moves(&self) -> bool {
         false
     }
+
+    /// What it would fix in the whole library, ready to be opened. A tool that asks suggests the
+    /// questions its bulk button answers.
+    fn suggestions(
+        &self,
+        cache: &Cache,
+        geo: Option<&Geo>,
+        settings: &Self::Settings,
+    ) -> Result<Vec<Suggestion>, String> {
+        sure_answers(self, cache, geo, settings)
+    }
 }
 
 /// What a tool's question page calls things. The page is the same for every tool; only the
@@ -861,6 +953,14 @@ impl Default for Wording {
 }
 
 impl Wording {
+    /// `3 tags match a place by its exact name`.
+    pub fn found(&self, count: usize) -> String {
+        match count {
+            1 => format!("1 {} {}", self.one, self.sure_one),
+            count => format!("{count} {} {}", self.many, self.sure_many),
+        }
+    }
+
     /// `3 tags match a place by its exact name. Every other tag is one click.`
     pub fn sure(&self, count: usize) -> String {
         let rest = format!("Every other {} is one click.", self.one);
@@ -918,6 +1018,7 @@ pub trait AnyTool: Sync {
     fn wording(&self) -> Wording;
     fn moves(&self) -> bool;
     fn page(&self) -> Page;
+    fn suggestions(&self, cache: &Cache, geo: Option<&Geo>, settings: Option<&str>) -> Result<Vec<Suggestion>, String>;
     /// Whether these settings can be read, and why not.
     fn check(&self, settings: &str) -> Result<(), String>;
 }
@@ -1021,6 +1122,10 @@ impl<T: Tool> AnyTool for T {
 
     fn check(&self, settings: &str) -> Result<(), String> {
         T::Settings::read(settings).map(|_| ())
+    }
+
+    fn suggestions(&self, cache: &Cache, geo: Option<&Geo>, settings: Option<&str>) -> Result<Vec<Suggestion>, String> {
+        Tool::suggestions(self, cache, geo, &settings_of::<T::Settings>(settings)?)
     }
 
     fn page(&self) -> Page {
@@ -1469,5 +1574,71 @@ mod together_tests {
             set.rows[0].verdict,
             Verdict::Refused("Tag Vocabulary and Add a Tag would both set the tags".to_string())
         );
+    }
+}
+
+#[cfg(all(test, feature = "fixtures"))]
+mod suggestion_tests {
+    use super::*;
+    use crate::filter::Filter;
+    use crate::tools::testing::{Library, geo};
+
+    fn whole() -> Scope {
+        Scope::Filter(Filter::all())
+    }
+
+    #[test]
+    fn a_tool_that_asks_suggests_what_its_bulk_button_answers() {
+        let library = Library::new("suggest-sure");
+        let geo = geo();
+        let places = find("gps-from-places-tag").unwrap();
+        let found = places.suggestions(&library.cache, Some(&geo), None).unwrap();
+        let [one] = found.as_slice() else {
+            panic!("one suggestion: {found:?}");
+        };
+        assert_eq!(one.key, "gps-from-places-tag:sure");
+        assert_eq!(one.title, "6 tags match a place by its exact name");
+        assert_eq!(
+            (one.tool, &one.scope, &one.settings, one.sure),
+            (places.key(), &whole(), &None, true)
+        );
+        assert_eq!(one.rows.len(), 6);
+        assert!(
+            one.rows
+                .contains(&("inChina/Beijing".to_string(), "Beijing, Beijing, China".to_string()))
+        );
+
+        let questions = places.questions(&library.cache, Some(&geo), &whole(), None).unwrap();
+        let confirmed = confirm_sure(places, &questions, None).unwrap();
+        assert_eq!(
+            one.photos,
+            count(places, &library.cache, Some(&geo), &whole(), Some(&confirmed)).unwrap(),
+            "the photos the preview will hold, a photo with two tags once"
+        );
+        assert!(
+            places
+                .suggestions(&library.cache, Some(&geo), Some(&confirmed))
+                .unwrap()
+                .is_empty(),
+            "once answered it is not suggested again"
+        );
+
+        let folders = find("folder-migration").unwrap();
+        let found = folders.suggestions(&library.cache, Some(&geo), None).unwrap();
+        let [one] = found.as_slice() else {
+            panic!("one suggestion: {found:?}");
+        };
+        assert_eq!(one.title, "1 event has one sure folder");
+        assert_eq!(one.photos, 2);
+        assert_eq!(one.rows[0].0, "China/2006-09-00 Besuch Ben");
+
+        for quiet in ["add-a-tag", "time-zones", "photos-without-a-date"] {
+            let tool = find(quiet).unwrap();
+            assert!(
+                tool.suggestions(&library.cache, Some(&geo), None).unwrap().is_empty(),
+                "{quiet} has no bulk button"
+            );
+        }
+        assert!(!library.journal.ever_written().unwrap(), "suggesting writes nothing");
     }
 }

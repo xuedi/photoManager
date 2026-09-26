@@ -13,7 +13,7 @@ use photomanager_core::browse;
 use photomanager_core::changeset::{ChangeSet, Wanted};
 use photomanager_core::filter::Filter;
 use photomanager_core::scope::Scope;
-use photomanager_core::tools::{self, Page};
+use photomanager_core::tools::{self, Page, Suggestion};
 
 use crate::history::History;
 use crate::library::{Counted, Event, Library};
@@ -245,6 +245,24 @@ impl Tools {
         });
     }
 
+    /// A suggestion's tool, on its scope and with its settings. A tag vocabulary is shown with
+    /// the suggested rules not kept yet; any other tool is run as if chosen from the list.
+    pub fn open_suggestion(&self, suggestion: &Suggestion) {
+        let Some(tool) = tools::find(suggestion.tool) else {
+            tracing::warn!(tool = suggestion.tool, "no such tool");
+            return;
+        };
+        self.set_scope(suggestion.scope.clone());
+        match (tool.page(), &suggestion.settings) {
+            (Page::Vocabulary, Some(settings)) => {
+                self.imp().vocabulary.open_with(suggestion.tool, settings);
+                self.push("vocabulary");
+            }
+            (_, Some(settings)) => self.run(&format!("{}:{settings}", suggestion.tool)),
+            (_, None) => self.run(suggestion.tool),
+        }
+    }
+
     pub fn questions(&self) -> Questions {
         self.imp().questions.clone()
     }
@@ -286,12 +304,22 @@ impl Tools {
         }
     }
 
-    /// The change set of the tag vocabulary on screen, with its rules so far.
+    /// Keeps the rules a suggestion added to the vocabulary on screen.
+    pub fn tag_keep(&self) {
+        if self.imp().vocabulary.keep_pending() {
+            self.recount();
+        }
+    }
+
+    /// The change set of the tag vocabulary on screen, with its rules so far, which are kept.
     pub fn preview_tags(&self) {
         let imp = self.imp();
         let (Some(library), Some(key)) = (imp.library.borrow().clone(), imp.vocabulary.key()) else {
             return;
         };
+        if imp.vocabulary.keep_pending() {
+            self.recount();
+        }
         tracing::info!(tool = key, scope = self.scope().title(), "tag rules previewed");
         let tools = self.downgrade();
         library.run_tool(&key, imp.vocabulary.settings(), &self.scope(), move |event| {

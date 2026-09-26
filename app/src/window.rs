@@ -12,6 +12,7 @@ use crate::dashboard::Dashboard;
 use crate::gallery::Gallery;
 use crate::library::Library;
 use crate::preview::Preview;
+use crate::suggestions::Suggestions;
 use crate::tools::Tools;
 
 pub const VIEWS: [&str; 4] = ["dashboard", "gallery", "tools", "suggestions"];
@@ -32,6 +33,10 @@ mod imp {
         pub tools: TemplateChild<Tools>,
         #[template_child]
         pub gallery: TemplateChild<Gallery>,
+        #[template_child]
+        pub suggestions: TemplateChild<Suggestions>,
+        #[template_child]
+        pub suggestions_page: TemplateChild<adw::ViewStackPage>,
         pub library: std::cell::RefCell<Option<Rc<Library>>>,
     }
 
@@ -45,6 +50,7 @@ mod imp {
             Dashboard::ensure_type();
             Gallery::ensure_type();
             Tools::ensure_type();
+            Suggestions::ensure_type();
             klass.bind_template();
         }
 
@@ -56,7 +62,25 @@ mod imp {
     impl ObjectImpl for Window {
         fn constructed(&self) {
             self.parent_constructed();
-            self.obj().setup_actions();
+            let window = self.obj();
+            window.setup_actions();
+            let weak = window.downgrade();
+            self.suggestions.connect_listed(move |count| {
+                if let Some(window) = weak.upgrade() {
+                    window.imp().suggestions_page.set_badge_number(count as u32);
+                    window.imp().dashboard.set_suggestions(count);
+                }
+            });
+            let weak = window.downgrade();
+            self.stack.connect_visible_child_name_notify(move |stack| {
+                let Some(window) = weak.upgrade() else {
+                    return;
+                };
+                let suggestions = &window.imp().suggestions;
+                if stack.visible_child_name().as_deref() == Some("suggestions") && !suggestions.is_busy() {
+                    suggestions.ask();
+                }
+            });
         }
     }
 
@@ -82,6 +106,7 @@ impl Window {
         self.imp().dashboard.set_library(library.clone());
         self.imp().tools.set_library(library.clone());
         self.imp().gallery.set_library(library.clone());
+        self.imp().suggestions.set_library(library.clone());
         *self.imp().library.borrow_mut() = library;
     }
 
@@ -99,6 +124,21 @@ impl Window {
 
     pub fn tools(&self) -> Tools {
         self.imp().tools.clone()
+    }
+
+    pub fn suggestions(&self) -> Suggestions {
+        self.imp().suggestions.clone()
+    }
+
+    /// Opens a suggestion in its tool, with its scope and settings. Nothing is written.
+    pub fn open_suggestion(&self, key: &str) {
+        let Some(suggestion) = self.imp().suggestions.find(key) else {
+            tracing::warn!(suggestion = key, "no such suggestion");
+            return;
+        };
+        tracing::info!(suggestion = key, tool = suggestion.tool, "suggestion opened");
+        self.show_view("tools");
+        self.imp().tools.open_suggestion(&suggestion);
     }
 
     pub fn preview(&self) -> Preview {
@@ -306,6 +346,27 @@ impl Window {
         let preview_tags = gtk::gio::ActionEntry::builder("preview-tags")
             .activate(|window: &Window, _, _| window.imp().tools.preview_tags())
             .build();
+        let open_suggestion = gtk::gio::ActionEntry::builder("open-suggestion")
+            .parameter_type(Some(glib::VariantTy::STRING))
+            .activate(|window: &Window, _, parameter| {
+                if let Some(key) = parameter.and_then(|value| value.str()) {
+                    window.open_suggestion(key);
+                }
+            })
+            .build();
+        let dismiss = |name: &str, dismissed: bool| {
+            gtk::gio::ActionEntry::builder(name)
+                .parameter_type(Some(glib::VariantTy::STRING))
+                .activate(move |window: &Window, _, parameter| {
+                    if let Some(key) = parameter.and_then(|value| value.str()) {
+                        window.imp().suggestions.dismiss(key, dismissed);
+                    }
+                })
+                .build()
+        };
+        let tag_keep = gtk::gio::ActionEntry::builder("tag-keep")
+            .activate(|window: &Window, _, _| window.imp().tools.tag_keep())
+            .build();
         let show_history = gtk::gio::ActionEntry::builder("show-history")
             .activate(|window: &Window, _, _| window.imp().tools.show_history())
             .build();
@@ -429,6 +490,10 @@ impl Window {
             tag_forget_rule,
             tag_suggestion,
             preview_tags,
+            tag_keep,
+            open_suggestion,
+            dismiss("dismiss-suggestion", true),
+            dismiss("restore-suggestion", false),
             show_history,
             history_details,
             undo_pass,

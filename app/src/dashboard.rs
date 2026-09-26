@@ -53,6 +53,10 @@ mod imp {
         pub tidy: TemplateChild<adw::PreferencesGroup>,
         #[template_child]
         pub data: TemplateChild<adw::PreferencesGroup>,
+        #[template_child]
+        pub suggested: TemplateChild<adw::PreferencesGroup>,
+        #[template_child]
+        pub suggested_row: TemplateChild<adw::ActionRow>,
         pub library: RefCell<Option<Rc<Library>>>,
         pub survey: RefCell<Option<Rc<Survey>>>,
         /// The rows each group was given, so they can be taken out again.
@@ -215,6 +219,24 @@ impl Dashboard {
             library.cancel();
             self.imp().progress.set_text(Some("Stopping"));
         }
+    }
+
+    /// The line that opens the suggestions, while there are any.
+    pub fn set_suggestions(&self, count: usize) {
+        let imp = self.imp();
+        imp.suggested.set_visible(count > 0);
+        imp.suggested_row.set_title(&match count {
+            1 => "1 Suggestion".to_string(),
+            count => format!("{count} Suggestions"),
+        });
+    }
+
+    /// What the suggestions line says, while it is shown.
+    pub fn suggestions_line(&self) -> Option<String> {
+        let imp = self.imp();
+        imp.suggested
+            .get_visible()
+            .then(|| imp.suggested_row.title().to_string())
     }
 
     /// The field the gaps by country and event are shown for.

@@ -157,6 +157,7 @@ fn the_app_can_be_clicked_through_headless() {
     merges_a_tag_and_takes_it_back(&ui, lib);
     gives_people_from_immich_and_takes_them_back(&ui, lib);
     moves_an_event_into_its_city_and_takes_it_back(&ui, lib);
+    opens_a_suggestion_and_previews_it(&ui, lib);
 
     ui.run(&["act", "win.show-view", "'suggestions'"], lib);
     let state = state(&ui, lib);
@@ -769,6 +770,59 @@ fn merges_a_tag_and_takes_it_back(ui: &Ui, library: &Path) {
     assert_eq!(
         tags_of(&kira),
         ["People/Kira", "mixed/disgusting", "places/inIreland/Galway"]
+    );
+}
+
+/// A suggestion clicked open on the Suggestions tab: the Tag Vocabulary with its rules not kept
+/// yet, and the preview keeps them. Nothing is applied.
+fn opens_a_suggestion_and_previews_it(ui: &Ui, library: &Path) {
+    ui.run(&["click", "Suggestions", "--role", "tab"], library);
+    let mut listed = Value::Null;
+    for _ in 0..60 {
+        listed = state(ui, library)["suggestions"].clone();
+        if listed["busy"] == false && listed["open"].as_array().is_some_and(|open| !open.is_empty()) {
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(500));
+    }
+    let flat = listed["open"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|one| one["key"] == "tags:flat")
+        .unwrap_or_else(|| panic!("no flat keywords suggested: {listed}"))
+        .clone();
+    let count = listed["open"].as_array().unwrap().len();
+    assert_eq!(listed["dashboard"], format!("{count} Suggestions"), "{listed}");
+
+    let title = flat["title"].as_str().unwrap();
+    ui.run(&["click", &format!("Open {title}"), "--role", "button"], library);
+    let opened = vocabulary(ui, library, |tags| {
+        tags["pending"].as_array().is_some_and(|pending| pending.len() == 2)
+    });
+    assert_eq!(state(ui, library)["view"], "tools");
+    assert_eq!(state(ui, library)["page"], "vocabulary");
+    assert_eq!(
+        opened["pending"],
+        serde_json::json!(["rename Funny -> mixed/funny", "rename inChina -> places/inChina"])
+    );
+
+    let named = format!("Tidy the tags with {} rules", opened["rules"].as_array().unwrap().len());
+    ui.run(&["act", "win.preview-tags"], library);
+    let mut previewed = Value::Null;
+    for _ in 0..60 {
+        previewed = state(ui, library)["preview"].clone();
+        if previewed["title"] == named.as_str() {
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(500));
+    }
+    assert_eq!(previewed["title"], named.as_str(), "{previewed}");
+    assert!(previewed["change"].as_u64().unwrap() > 0);
+    let kept = state(ui, library)["vocabulary"].clone();
+    assert!(
+        kept["pending"].as_array().unwrap().is_empty(),
+        "the preview keeps them: {kept}"
     );
 }
 

@@ -348,7 +348,21 @@ mod fixture_tests {
         let roots: Vec<&str> = roots.iter().map(|tag| tag.path.as_str()).collect();
         assert_eq!(
             roots,
-            ["Apartmens", "People", "events", "mixed", "people", "places", "timeline"]
+            [
+                "Apartmens",
+                "Funny",
+                "People",
+                "events",
+                "food",
+                "inChina",
+                "landscape",
+                "mixed",
+                "people",
+                "places",
+                "timeline",
+                "topics"
+            ],
+            "a flat keyword is a root of its own"
         );
     }
 

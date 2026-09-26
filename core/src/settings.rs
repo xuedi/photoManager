@@ -6,6 +6,7 @@
 //! it. The table is created if it is not there and the journal's schema version is left alone, so
 //! either of the two can open the file first.
 
+use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
 
 use rusqlite::{Connection, OptionalExtension, params};
@@ -33,6 +34,9 @@ pub const IMMICH_PREFIX: &str = "immich-prefix";
 
 /// How the folders above an event are laid out, as [`Layout`] keeps it as text.
 pub const FOLDER_LAYOUT: &str = "folder-layout";
+
+/// The suggestions the user dismissed, by key, as a JSON list.
+pub const DISMISSED_SUGGESTIONS: &str = "dismissed-suggestions";
 
 pub type Result<T> = rusqlite::Result<T>;
 
@@ -105,6 +109,29 @@ pub fn layout(settings: &Settings) -> Layout {
         }),
         _ => Layout::default(),
     }
+}
+
+/// The keys of the suggestions the user dismissed. A list that does not read is none.
+pub fn dismissed(settings: &Settings) -> BTreeSet<String> {
+    settings
+        .get(DISMISSED_SUGGESTIONS)
+        .ok()
+        .flatten()
+        .and_then(|text| serde_json::from_str::<Vec<String>>(&text).ok())
+        .unwrap_or_default()
+        .into_iter()
+        .collect()
+}
+
+/// Dismisses a suggestion, or brings it back.
+pub fn set_dismissed(settings: &mut Settings, key: &str, dismissed: bool) -> Result<()> {
+    let mut keys = self::dismissed(settings);
+    match dismissed {
+        true => keys.insert(key.to_string()),
+        false => keys.remove(key),
+    };
+    let written = serde_json::Value::from(keys.into_iter().collect::<Vec<String>>()).to_string();
+    settings.put(DISMISSED_SUGGESTIONS, &written)
 }
 
 /// What can be said about a place the user named as their backup. All of it is help for a person
@@ -258,6 +285,27 @@ mod tests {
         assert!(!filled.empty);
         assert_eq!(filled.last_touched.as_ref().map(|when| when.len()), Some(19));
         assert!(filled.tells().contains("was last changed on"));
+    }
+
+    #[test]
+    fn a_dismissed_suggestion_stays_dismissed_until_brought_back() {
+        let dir = temp("dismissed");
+        let file = dir.join("data/app.db");
+        let mut settings = Settings::open(&file).unwrap();
+        assert!(dismissed(&settings).is_empty());
+        set_dismissed(&mut settings, "tags:flat", true).unwrap();
+        set_dismissed(&mut settings, "tags:apart", true).unwrap();
+        drop(settings);
+
+        let cache = crate::cache::Cache::open(&dir.join("cache/cache.db")).unwrap();
+        cache.rebuild().unwrap();
+        let mut settings = Settings::open(&file).unwrap();
+        assert_eq!(
+            dismissed(&settings),
+            BTreeSet::from(["tags:apart".to_string(), "tags:flat".to_string()])
+        );
+        set_dismissed(&mut settings, "tags:flat", false).unwrap();
+        assert_eq!(dismissed(&settings), BTreeSet::from(["tags:apart".to_string()]));
     }
 
     #[test]

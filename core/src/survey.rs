@@ -369,7 +369,7 @@ mod fixture_tests {
         );
         assert_eq!(coverage["no-date"], Measure { of: all, missing: 4 });
         assert_eq!(coverage["date-off-folder"], Measure { of: 31, missing: 8 });
-        assert_eq!(coverage["no-tag"], Measure { of: all, missing: 22 });
+        assert_eq!(coverage["no-tag"], Measure { of: all, missing: 20 });
         assert_eq!(
             coverage["no-people"],
             Measure {

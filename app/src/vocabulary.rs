@@ -4,7 +4,9 @@
 //! Delete.
 //!
 //! Every change is a rule in the tool's settings, kept at once, so leaving the page loses
-//! nothing. The tree and its counts are worked out off the main thread from the cache.
+//! nothing. Opened from a suggestion, the page shows the suggested rules too, not kept until
+//! Keep or Preview, so leaving it then drops them; a change made on the page keeps them with it.
+//! The tree and its counts are worked out off the main thread from the cache.
 
 use std::cell::{Cell, RefCell};
 use std::rc::Rc;
@@ -30,6 +32,7 @@ mod imp {
         pub toasts: adw::ToastOverlay,
         pub title: adw::WindowTitle,
         pub preview: gtk::Button,
+        pub banner: adw::Banner,
         pub loading: adw::StatusPage,
         pub suggested: adw::PreferencesGroup,
         pub rules: adw::PreferencesGroup,
@@ -43,6 +46,8 @@ mod imp {
         pub library: RefCell<Option<Rc<Library>>>,
         pub key: RefCell<Option<String>>,
         pub vocabulary: RefCell<Vocabulary>,
+        /// What the tool's settings hold. The rules on screen past these are not kept yet.
+        pub kept: RefCell<Vocabulary>,
         pub overview: RefCell<Option<Overview>>,
         /// Which look is the newest, so one that arrives late is dropped.
         pub asking: Cell<u64>,
@@ -126,6 +131,11 @@ impl VocabularyPage {
 
     /// Shows a tool's vocabulary with the settings it was last given.
     pub fn open(&self, key: &str) {
+        self.load(key);
+        self.look();
+    }
+
+    fn load(&self, key: &str) {
         let imp = self.imp();
         let Some(library) = imp.library.borrow().clone() else {
             return;
@@ -135,11 +145,49 @@ impl VocabularyPage {
         }
         *imp.key.borrow_mut() = Some(key.to_string());
         let remembered = library.tool_settings(key).unwrap_or_default();
-        *imp.vocabulary.borrow_mut() = Vocabulary::read(&remembered).unwrap_or_else(|why| {
+        let kept = Vocabulary::read(&remembered).unwrap_or_else(|why| {
             tracing::error!(why, "the tag vocabulary could not be read, starting afresh");
             Vocabulary::default()
         });
+        *imp.vocabulary.borrow_mut() = kept.clone();
+        *imp.kept.borrow_mut() = kept;
+    }
+
+    /// Shows a tool's vocabulary with these settings, as a suggestion hands them over: what they
+    /// hold past the settings it was last given is not kept yet.
+    pub fn open_with(&self, key: &str, settings: &str) {
+        self.load(key);
+        match Vocabulary::read(settings) {
+            Ok(vocabulary) => *self.imp().vocabulary.borrow_mut() = vocabulary,
+            Err(why) => tracing::error!(why, "the suggested vocabulary could not be read"),
+        }
         self.look();
+    }
+
+    /// The rules on screen that are not kept yet.
+    pub fn pending(&self) -> Vec<Rule> {
+        let kept = self.imp().kept.borrow();
+        self.vocabulary()
+            .rules
+            .0
+            .into_iter()
+            .filter(|rule| !kept.rules.0.contains(rule))
+            .collect()
+    }
+
+    /// Keeps the rules a suggestion added. Whether there were any.
+    pub fn keep_pending(&self) -> bool {
+        let pending = self.pending().len();
+        if pending == 0 {
+            return false;
+        }
+        tracing::info!(rules = pending, "suggested tag rules kept");
+        self.keep(self.vocabulary());
+        self.say(&match pending {
+            1 => "1 rule kept".to_string(),
+            count => format!("{count} rules kept"),
+        });
+        true
     }
 
     /// Works the tree out again: after every rule, and after a scan.
@@ -281,6 +329,7 @@ impl VocabularyPage {
         if let (Some(library), Some(key)) = (imp.library.borrow().clone(), self.key()) {
             library.remember_tool_settings(&key, &vocabulary.written());
         }
+        *imp.kept.borrow_mut() = vocabulary.clone();
         *imp.vocabulary.borrow_mut() = vocabulary;
         self.look();
     }
@@ -298,6 +347,12 @@ impl VocabularyPage {
         let vocabulary = self.vocabulary();
         let overview = imp.overview.borrow().clone();
         let busy = imp.busy.get();
+        let pending = self.pending();
+        imp.banner.set_title(&match pending.len() {
+            1 => "1 suggested rule is not kept yet".to_string(),
+            count => format!("{count} suggested rules are not kept yet"),
+        });
+        imp.banner.set_revealed(!pending.is_empty());
         imp.loading.set_visible(busy && overview.is_none());
 
         imp.filling.set(true);
@@ -350,9 +405,13 @@ impl VocabularyPage {
         imp.suggested.set_visible(!overview.suggestions.is_empty());
 
         for (index, (rule, touched)) in overview.rules.iter().enumerate() {
+            let changes = format!("Changes {}", photos(*touched as i64));
             let row = adw::ActionRow::builder()
                 .title(glib::markup_escape_text(&rule.tells()))
-                .subtitle(format!("Changes {}", photos(*touched as i64)))
+                .subtitle(match pending.contains(rule) {
+                    true => format!("Not kept yet - {changes}"),
+                    false => changes,
+                })
                 .build();
             let remove = gtk::Button::builder()
                 .icon_name("user-trash-symbolic")
@@ -634,6 +693,8 @@ impl VocabularyPage {
         imp.preview.set_action_name(Some("win.preview-tags"));
         imp.preview.set_sensitive(false);
         imp.title.set_title("Tag Vocabulary");
+        imp.banner.set_button_label(Some("Keep"));
+        imp.banner.set_action_name(Some("win.tag-keep"));
 
         imp.loading.set_title("Looking at the Tags");
         imp.loading.set_child(Some(&adw::Spinner::new()));
@@ -727,6 +788,7 @@ impl VocabularyPage {
         header.pack_end(&imp.preview);
         let view = adw::ToolbarView::new();
         view.add_top_bar(&header);
+        view.add_top_bar(&imp.banner);
         view.set_content(Some(&scrolled));
         imp.toasts.set_child(Some(&view));
         self.set_child(Some(&imp.toasts));

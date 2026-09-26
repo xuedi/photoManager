@@ -739,7 +739,7 @@ pub(crate) mod tests {
             ],
             "a folder a month off, a camera years off, scans a year off"
         );
-        assert_eq!(count("no-tag"), 22);
+        assert_eq!(count("no-tag"), 20);
         assert_eq!(count("no-location"), all - 1, "one photo names its city");
         assert_eq!(count("no-gps@Germany"), 4);
         assert_eq!(count("no-gps@Germany/2019-07-13 Sommerfest"), 2);

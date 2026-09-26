@@ -73,16 +73,12 @@ template $PmWindow: Adw.ApplicationWindow {
         child: $PmTools tools {};
       }
 
-      Adw.ViewStackPage {
+      Adw.ViewStackPage suggestions_page {
         name: "suggestions";
         title: "Suggestions";
         icon-name: "starred-symbolic";
 
-        child: Adw.StatusPage {
-          icon-name: "starred-symbolic";
-          title: "Suggestions";
-          description: "Ready-made fixes to review and apply.";
-        };
+        child: $PmSuggestions suggestions {};
       }
     };
 

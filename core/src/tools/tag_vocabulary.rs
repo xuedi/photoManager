@@ -10,13 +10,13 @@ use std::collections::BTreeSet;
 
 use serde_json::{Map, Value};
 
-use super::{Page, Settings, Tool};
+use super::{Page, Settings, Suggestion, Tool};
 use crate::browse::TagTree;
 use crate::cache::{self, Cache, Tagged};
 use crate::changeset::Wanted;
 use crate::geo::Geo;
 use crate::scope::Scope;
-use crate::tags::{self, Rule, Rules, Suggestion};
+use crate::tags::{self, Rule, Rules};
 use crate::write::change::expand;
 use crate::write::{Change, Field};
 
@@ -139,7 +139,7 @@ impl Vocabulary {
     }
 
     /// Confirm on a suggestion: its rules, after the ones there are.
-    pub fn confirm(&mut self, suggestion: &Suggestion) -> Result<(), String> {
+    pub fn confirm(&mut self, suggestion: &tags::Suggestion) -> Result<(), String> {
         let mut rules = self.rules.clone();
         for rule in &suggestion.rules {
             rules.add(rule.clone())?;
@@ -203,7 +203,7 @@ fn levels(paths: &[String]) -> BTreeSet<String> {
 pub struct Overview {
     pub tree: TagTree,
     pub rules: Vec<(Rule, usize)>,
-    pub suggestions: Vec<Suggestion>,
+    pub suggestions: Vec<tags::Suggestion>,
 }
 
 pub fn overview(cache: &Cache, vocabulary: &Vocabulary) -> cache::Result<Overview> {
@@ -221,6 +221,157 @@ pub fn overview(cache: &Cache, vocabulary: &Vocabulary) -> cache::Result<Overvie
         suggestions: tags::suggestions(&tree, &vocabulary.rules, &vocabulary.left),
         tree,
     })
+}
+
+/// What the shape of the tree says is off, after the rules there are: the roots spelled two ways
+/// first, then the flat keywords into their branch, the leaves above their usual depth, the flat
+/// keywords that fit no one branch, and the roots that stand apart. Each one that adds rules
+/// opens the vocabulary with them, not kept until previewed or kept.
+pub fn pattern(cache: &Cache, vocabulary: &Vocabulary) -> cache::Result<Vec<Suggestion>> {
+    let photos: Vec<Vec<String>> = cache
+        .tag_sets()?
+        .iter()
+        .map(|tags| vocabulary.rules.map(tags))
+        .collect();
+    let tree = tags::mapped_tree(&Rules::default(), &photos);
+    let carrying = |paths: &[&str]| {
+        photos
+            .iter()
+            .filter(|tags| tags.iter().any(|tag| paths.iter().any(|path| tags::within(tag, path))))
+            .count()
+    };
+    let with_rules = |rules: &[Rule]| -> Option<(String, Vec<(String, String)>)> {
+        let mut then = vocabulary.clone();
+        let added: Vec<&Rule> = rules
+            .iter()
+            .filter(|rule| then.rules.add((*rule).clone()).is_ok())
+            .collect();
+        let rows = added
+            .iter()
+            .map(|rule| (rule.from().to_string(), rule.tells()))
+            .collect();
+        (!added.is_empty()).then(|| (then.written(), rows))
+    };
+    let whole = || Scope::Filter(crate::filter::Filter::all());
+    let mut found = Vec::new();
+
+    for (spellings, into) in tags::twin_roots(&tree) {
+        let moved: Vec<&str> = spellings
+            .iter()
+            .map(String::as_str)
+            .filter(|spelling| *spelling != into)
+            .collect();
+        let rules: Vec<Rule> = moved.iter().filter_map(|from| Rule::rename(from, &into).ok()).collect();
+        if let Some((settings, rows)) = with_rules(&rules) {
+            found.push(Suggestion {
+                key: format!("tags:twin:{into}"),
+                title: format!("{} are one root", spellings.join(" and ")),
+                detail: format!("Merge {} into {into}, before the tags below", moved.join(" and ")),
+                photos: carrying(&moved),
+                tool: "tag-vocabulary",
+                scope: whole(),
+                settings: Some(settings),
+                sure: true,
+                rows,
+            });
+        }
+    }
+
+    let flat = tags::flat(&tree);
+    let into: Vec<Rule> = flat
+        .into
+        .iter()
+        .filter_map(|(bare, path)| Rule::rename(bare, path).ok())
+        .collect();
+    if let Some((settings, rows)) = with_rules(&into) {
+        let moved: Vec<&str> = rows.iter().map(|(from, _)| from.as_str()).collect();
+        found.push(Suggestion {
+            key: "tags:flat".to_string(),
+            title: match rows.len() {
+                1 => "1 flat keyword belongs in the tree".to_string(),
+                count => format!("{count} flat keywords belong in the tree"),
+            },
+            detail: "Each is the name of exactly one tag of the tree, and moves there".to_string(),
+            photos: carrying(&moved),
+            tool: "tag-vocabulary",
+            scope: whole(),
+            settings: Some(settings),
+            sure: true,
+            rows,
+        });
+    }
+
+    let branches = tags::branches(&tree);
+    let lower: Vec<Rule> = tags::misplaced(&tree, &branches)
+        .iter()
+        .filter_map(|(path, to)| Rule::rename(path, to).ok())
+        .collect();
+    if let Some((settings, rows)) = with_rules(&lower) {
+        let moved: Vec<&str> = rows.iter().map(|(from, _)| from.as_str()).collect();
+        found.push(Suggestion {
+            key: "tags:depth".to_string(),
+            title: match rows.len() {
+                1 => "1 tag sits higher than the rest of its branch".to_string(),
+                count => format!("{count} tags sit higher than the rest of their branch"),
+            },
+            detail: "Each moves to the one tag of its name at the usual depth".to_string(),
+            photos: carrying(&moved),
+            tool: "tag-vocabulary",
+            scope: whole(),
+            settings: Some(settings),
+            sure: true,
+            rows,
+        });
+    }
+
+    let mut apart: Vec<(String, String)> = flat
+        .several
+        .iter()
+        .map(|(bare, paths)| {
+            (
+                bare.clone(),
+                format!("{} or {}", paths[..paths.len() - 1].join(", "), paths[paths.len() - 1]),
+            )
+        })
+        .collect();
+    apart.extend(
+        flat.nowhere
+            .iter()
+            .map(|bare| (bare.clone(), "No tag of the tree has this name".to_string())),
+    );
+    if !apart.is_empty() {
+        let names: Vec<&str> = apart.iter().map(|(bare, _)| bare.as_str()).collect();
+        found.push(Suggestion {
+            key: "tags:apart".to_string(),
+            title: match apart.len() {
+                1 => "1 flat keyword fits no one branch".to_string(),
+                count => format!("{count} flat keywords fit no one branch"),
+            },
+            detail: "Left alone. Rename or move each on the Tag Vocabulary page".to_string(),
+            photos: carrying(&names),
+            tool: "tag-vocabulary",
+            scope: whole(),
+            settings: None,
+            sure: false,
+            rows: apart,
+        });
+    }
+
+    for root in tags::strays(&tree, &branches) {
+        found.push(Suggestion {
+            key: format!("tags:stray:{root}"),
+            title: format!("{root} stands apart from the other roots"),
+            detail: "Spelled unlike them and carried by few photos. Rename or delete it on the Tag Vocabulary page"
+                .to_string(),
+            photos: carrying(&[root.as_str()]),
+            tool: "tag-vocabulary",
+            scope: whole(),
+            settings: None,
+            sure: false,
+            rows: Vec::new(),
+        });
+    }
+    Ok(found)
 }
 
 impl Tool for TagVocabulary {
@@ -248,6 +399,15 @@ impl Tool for TagVocabulary {
 
     fn page(&self) -> Option<Page> {
         Some(Page::Vocabulary)
+    }
+
+    fn suggestions(
+        &self,
+        cache: &Cache,
+        _geo: Option<&Geo>,
+        vocabulary: &Vocabulary,
+    ) -> Result<Vec<Suggestion>, String> {
+        pattern(cache, vocabulary).map_err(|error| error.to_string())
     }
 
     fn wanted(
@@ -599,5 +759,102 @@ mod tests {
             left.suggestions.iter().all(|one| one.key != "mixed:food"),
             "left alone stays left"
         );
+    }
+
+    #[test]
+    fn the_shape_of_the_tree_suggests_where_flat_keywords_go_and_the_write_puts_them_there() {
+        const FLAT: &str = "Germany/2014-03-22 Museum/IMG_9003.JPG";
+        let mut library = Library::new("tags-pattern");
+        let found = tool().suggestions(&library.cache, None, None).unwrap();
+        let keys: Vec<&str> = found.iter().map(|one| one.key.as_str()).collect();
+        assert_eq!(
+            keys,
+            ["tags:twin:people", "tags:flat", "tags:apart", "tags:stray:Apartmens"],
+            "the twin roots first"
+        );
+        let flat = &found[1];
+        assert_eq!(
+            flat.rows,
+            [
+                ("Funny".to_string(), "Rename Funny to mixed/funny".to_string()),
+                ("inChina".to_string(), "Rename inChina to places/inChina".to_string()),
+            ],
+            "a name spelled two ways is one tag once the twins merge"
+        );
+        assert_eq!(flat.photos, 1);
+        assert!(flat.sure);
+        assert_eq!(
+            found[2].rows,
+            [
+                ("food".to_string(), "mixed/food or topics/food".to_string()),
+                ("landscape".to_string(), "No tag of the tree has this name".to_string()),
+            ]
+        );
+        assert!(!found[2].sure && found[2].settings.is_none(), "shown, never guessed");
+
+        let settings = flat.settings.clone().unwrap();
+        let rules: Vec<String> = Vocabulary::read(&settings)
+            .unwrap()
+            .rules
+            .0
+            .iter()
+            .map(Rule::written)
+            .collect();
+        assert_eq!(
+            rules,
+            ["rename Funny -> mixed/funny", "rename inChina -> places/inChina"]
+        );
+
+        let without = tool().change_set(&library.cache, None, &whole(), None).unwrap();
+        let with = tool()
+            .change_set(&library.cache, None, &whole(), Some(&settings))
+            .unwrap();
+        let differ: Vec<&str> = with
+            .rows
+            .iter()
+            .filter(|row| {
+                without
+                    .rows
+                    .iter()
+                    .find(|other| other.rel_path == row.rel_path)
+                    .is_none_or(|other| other.change != row.change)
+            })
+            .map(|row| row.rel_path.as_str())
+            .collect();
+        assert_eq!(differ, [FLAT], "the rules change the one photo with those keywords");
+        assert_eq!(
+            tags_in(&with, FLAT),
+            [
+                "events/2014 Museum",
+                "food",
+                "landscape",
+                "mixed/funny",
+                "places/inChina",
+                "timeline/2014"
+            ]
+        );
+
+        let one = Scope::Photos {
+            title: "one".to_string(),
+            paths: vec![FLAT.to_string()],
+        };
+        let before = fields(&library, FLAT);
+        let set = tool().change_set(&library.cache, None, &one, Some(&settings)).unwrap();
+        assert_eq!(library.apply(&set).written, 1);
+        library.rescan();
+        let said = library.cache.stated(&[FLAT.to_string()]).unwrap()[FLAT]
+            .said
+            .tags
+            .clone();
+        assert!(said.contains(&"places/inChina".to_string()), "{said:?}");
+        assert!(!said.contains(&"inChina".to_string()), "{said:?}");
+        let again = tool().suggestions(&library.cache, None, None).unwrap();
+        assert!(
+            again.iter().all(|one| one.key != "tags:flat"),
+            "nothing flat is left to move: {again:?}"
+        );
+
+        assert_eq!(library.undo().written, 1);
+        assert_eq!(fields(&library, FLAT), before, "taken back exactly");
     }
 }

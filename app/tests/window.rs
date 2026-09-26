@@ -155,6 +155,7 @@ fn scans_into_its_cache() {
 
     reads_the_panel(&window);
     edits_one_photo(&window);
+    suggests_ready_made_fixes(&window, &opened);
 
     previews_what_a_tool_would_change(&window, &opened);
     lists_the_tools_for_a_scope(&window, &opened, &library);
@@ -166,6 +167,139 @@ fn scans_into_its_cache() {
     runs_tools_together(&window, &opened);
     answers_where_an_event_belongs(&window, &opened);
     chooses_a_folder_layout(&opened);
+}
+
+/// The Suggestions view lists what the tools found on their own, grouped by tool, and the
+/// dashboard says how many. Open lands on the tool's page with the scope; a tag suggestion shows
+/// its rules not kept until Keep, and leaving the page drops them. A dismissed suggestion stays
+/// dismissed in another window on the same library. Nothing is written.
+fn suggests_ready_made_fixes(window: &Window, opened: &Rc<Library>) {
+    const PLACES: &str = "gps-from-places-tag:sure";
+    const FLAT: &str = "tags:flat";
+    const APART: &str = "tags:apart";
+    let page = window.suggestions();
+    let tools = window.tools();
+    let act = |name: &str, target: Option<gtk::glib::Variant>| {
+        WidgetExt::activate_action(window, name, target.as_ref()).unwrap()
+    };
+    let passes = opened.history(0, 100).unwrap().len();
+
+    window.show_view("suggestions");
+    until(|| !page.is_busy() && !page.found().is_empty(), "the tools were asked");
+    let keys: Vec<String> = page.open().iter().map(|one| one.key.clone()).collect();
+    for wanted in [
+        PLACES,
+        "gps-from-the-event:sure",
+        "folder-migration:sure",
+        "tags:twin:people",
+        FLAT,
+        APART,
+        "tags:stray:Apartmens",
+    ] {
+        assert!(keys.iter().any(|key| key == wanted), "{wanted} is not in {keys:?}");
+    }
+    assert_eq!(page.find(PLACES).unwrap().photos, 7);
+    assert_eq!(page.find("folder-migration:sure").unwrap().photos, 2);
+    let shown = labels(page.upcast_ref());
+    for group in ["GPS from the Places Tag", "Tag Vocabulary", "Folder Migration"] {
+        assert!(shown.iter().any(|label| label == group), "no group {group}");
+    }
+    assert!(
+        headed(page.upcast_ref())
+            .iter()
+            .any(|(title, _)| title == "6 tags match a place by its exact name")
+    );
+    assert_eq!(
+        window.dashboard().suggestions_line(),
+        Some(format!("{} Suggestions", keys.len()))
+    );
+
+    act("win.open-suggestion", Some(PLACES.to_variant()));
+    assert_eq!(window.visible_view(), "tools");
+    assert_eq!(tools.showing(), "questions");
+    assert_eq!(window.scope(), Scope::Filter(Filter::all()));
+    let questions = tools.questions();
+    until(
+        || questions.key().as_deref() == Some("gps-from-places-tag") && !questions.is_busy(),
+        "the questions were asked",
+    );
+    assert_eq!(
+        questions
+            .questions()
+            .iter()
+            .filter(|question| question.confirmable())
+            .count(),
+        6,
+        "the bulk button does the rest"
+    );
+
+    let vocabulary = tools.vocabulary();
+    let looked = || {
+        until(
+            || !vocabulary.is_busy() && vocabulary.overview().is_some(),
+            "the tags were looked at",
+        )
+    };
+    act("win.open-suggestion", Some(FLAT.to_variant()));
+    assert_eq!(tools.showing(), "vocabulary");
+    looked();
+    assert_eq!(vocabulary.pending().len(), 2);
+    assert_eq!(opened.tool_settings("tag-vocabulary"), None, "not kept yet");
+    let rule = rows(vocabulary.upcast_ref())
+        .into_iter()
+        .find(|row| row.title() == "Rename inChina to places/inChina")
+        .expect("the suggested rule is listed");
+    assert!(rule.subtitle().unwrap().starts_with("Not kept yet"));
+
+    act("win.run-tool", Some("tag-vocabulary".to_variant()));
+    looked();
+    assert!(vocabulary.pending().is_empty(), "leaving the page dropped them");
+    assert!(vocabulary.vocabulary().rules.0.is_empty());
+
+    act("win.open-suggestion", Some(FLAT.to_variant()));
+    looked();
+    act("win.tag-keep", None);
+    assert!(vocabulary.pending().is_empty());
+    let kept = opened.tool_settings("tag-vocabulary").expect("kept");
+    assert!(kept.contains("rename inChina -> places/inChina"), "{kept}");
+    act("win.tag-forget-rule", Some(0.to_variant()));
+    act("win.tag-forget-rule", Some(0.to_variant()));
+    looked();
+    assert!(vocabulary.vocabulary().rules.0.is_empty());
+
+    window.show_view("suggestions");
+    until(|| !page.is_busy(), "asked again");
+    act("win.dismiss-suggestion", Some(APART.to_variant()));
+    assert!(page.open().iter().all(|one| one.key != APART));
+    assert!(page.toast().starts_with("Dismissed: "), "{}", page.toast());
+    assert_eq!(
+        window.dashboard().suggestions_line(),
+        Some(format!("{} Suggestions", page.open().len()))
+    );
+
+    let again = Library::open(opened.paths().clone()).expect("open the library again");
+    let other: Window = gtk::glib::Object::builder().build();
+    other.set_library(Some(again));
+    let remembered = other.suggestions();
+    until(
+        || !remembered.is_busy() && !remembered.found().is_empty(),
+        "asked in the other window",
+    );
+    assert!(remembered.open().iter().all(|one| one.key != APART), "still dismissed");
+    assert!(remembered.find(APART).is_some(), "found, only not shown");
+    remembered.set_show_dismissed(true);
+    assert!(
+        headed(remembered.upcast_ref())
+            .iter()
+            .any(|(_, said)| said.starts_with("Dismissed - ")),
+        "Show Dismissed brings it back into the list"
+    );
+    other.close();
+
+    act("win.restore-suggestion", Some(APART.to_variant()));
+    assert!(page.open().iter().any(|one| one.key == APART));
+    assert_eq!(opened.history(0, 100).unwrap().len(), passes, "nothing was written");
+    window.show_view("dashboard");
 }
 
 /// The layout is picked from the presets, put together level by level, refused when it could be
@@ -1414,6 +1548,20 @@ fn rows(widget: &gtk::Widget) -> Vec<adw::ActionRow> {
     descendants(widget)
         .into_iter()
         .filter_map(|widget| widget.downcast::<adw::ActionRow>().ok())
+        .collect()
+}
+
+/// The title and subtitle of every row, the ones that open to more rows too.
+fn headed(widget: &gtk::Widget) -> Vec<(String, String)> {
+    descendants(widget)
+        .into_iter()
+        .filter_map(|widget| match widget.downcast::<adw::ActionRow>() {
+            Ok(row) => Some((row.title().to_string(), row.subtitle().unwrap_or_default().to_string())),
+            Err(widget) => widget
+                .downcast::<adw::ExpanderRow>()
+                .ok()
+                .map(|row| (row.title().to_string(), row.subtitle().to_string())),
+        })
         .collect()
 }
 
