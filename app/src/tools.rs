@@ -1,6 +1,5 @@
-//! The tools view: what the tools work on, the tools with what each would change right now, and
-//! the preview one pushes when it is opened. The tools themselves live in `core`; this lists
-//! whatever is there and knows none of them by name.
+//! The tools view: what the edits work on, the edits, and the preview one pushes once its form
+//! is filled in. The edits themselves live in `core`; each asks its value in a form of its own.
 
 use std::cell::{Cell, RefCell};
 use std::rc::Rc;
@@ -11,22 +10,13 @@ use gtk::glib;
 use gtk::glib::subclass::InitializingObject;
 use photomanager_core::browse;
 use photomanager_core::changeset::{ChangeSet, Wanted};
+use photomanager_core::edits::{self, Edit, Value};
 use photomanager_core::filter::Filter;
 use photomanager_core::scope::Scope;
-use photomanager_core::tools::{self, Page, Suggestion};
 
 use crate::history::History;
-use crate::library::{Counted, Event, Library};
+use crate::library::{Event, Library};
 use crate::preview::Preview;
-use crate::questions::Questions;
-use crate::vocabulary::VocabularyPage;
-
-/// A tool's row, and the label that says what it would change.
-#[derive(Debug)]
-pub struct Listed {
-    key: &'static str,
-    count: gtk::Label,
-}
 
 mod imp {
     use super::*;
@@ -34,6 +24,8 @@ mod imp {
     #[derive(Debug, Default, gtk::CompositeTemplate)]
     #[template(resource = "/org/beijingcode/PhotoManager/tools.ui")]
     pub struct Tools {
+        #[template_child]
+        pub toasts: TemplateChild<adw::ToastOverlay>,
         #[template_child]
         pub nav: TemplateChild<adw::NavigationView>,
         #[template_child]
@@ -48,24 +40,14 @@ mod imp {
         pub preview: TemplateChild<Preview>,
         #[template_child]
         pub history: TemplateChild<History>,
-        #[template_child]
-        pub questions: TemplateChild<Questions>,
-        #[template_child]
-        pub vocabulary: TemplateChild<VocabularyPage>,
-        #[template_child]
-        pub together_group: TemplateChild<adw::PreferencesGroup>,
-        #[template_child]
-        pub together_row: TemplateChild<adw::ActionRow>,
         pub library: RefCell<Option<Rc<Library>>>,
         /// What the tools work on. The whole library until something else is chosen.
         pub scope: RefCell<Option<Scope>>,
         /// What the gallery last handed over with Use as Scope.
         pub picked: RefCell<Option<Scope>>,
-        pub listed: RefCell<Vec<Listed>>,
-        /// The newest count, `None` while it is being counted.
-        pub counted: RefCell<Option<Counted>>,
-        /// Which count is the newest asked for, so an older one that arrives late is dropped.
-        pub asked: Cell<u64>,
+        /// How many photos the scope names, `None` while it is counted.
+        pub photos: Cell<Option<usize>>,
+        pub toast: RefCell<String>,
     }
 
     #[glib::object_subclass]
@@ -77,8 +59,6 @@ mod imp {
         fn class_init(klass: &mut Self::Class) {
             Preview::ensure_type();
             History::ensure_type();
-            Questions::ensure_type();
-            VocabularyPage::ensure_type();
             klass.bind_template();
         }
 
@@ -91,17 +71,12 @@ mod imp {
         fn constructed(&self) {
             self.parent_constructed();
             let tools = self.obj();
-            tools.list_tools();
+            tools.list_edits();
             tools.show_scope();
             self.scope_row.connect_activated(glib::clone!(
                 #[weak]
                 tools,
                 move |_| tools.choose_scope()
-            ));
-            self.together_row.connect_activated(glib::clone!(
-                #[weak]
-                tools,
-                move |_| tools.choose_together()
             ));
         }
     }
@@ -126,20 +101,16 @@ impl Tools {
     pub fn set_library(&self, library: Option<Rc<Library>>) {
         self.imp().preview.set_library(library.clone());
         self.imp().history.set_library(library.clone());
-        self.imp().questions.set_library(library.clone());
-        self.imp().vocabulary.set_library(library.clone());
         if let Some(library) = &library {
             let tools = self.downgrade();
             library.connect_changed(move || {
                 if let Some(tools) = tools.upgrade() {
-                    tools.recount();
-                    tools.ask_again();
-                    tools.imp().vocabulary.look();
+                    tools.count_scope();
                 }
             });
         }
         *self.imp().library.borrow_mut() = library;
-        self.recount();
+        self.count_scope();
     }
 
     pub fn preview(&self) -> Preview {
@@ -157,9 +128,7 @@ impl Tools {
     pub fn set_scope(&self, scope: Scope) {
         tracing::info!(scope = scope.title(), "scope set");
         *self.imp().scope.borrow_mut() = Some(scope);
-        self.show_scope();
-        self.recount();
-        self.ask_again();
+        self.count_scope();
     }
 
     /// What the gallery hands over becomes the scope, and stays on offer in the scope dialog.
@@ -186,404 +155,82 @@ impl Tools {
         true
     }
 
-    /// How many photos the scope names and what each tool would change, once counted.
-    pub fn counted(&self) -> Option<Counted> {
-        self.imp().counted.borrow().clone()
+    /// How many photos the scope names, once counted.
+    pub fn scope_photos(&self) -> Option<usize> {
+        self.imp().photos.get()
     }
 
-    /// A tool by key, with its settings as text after a `:` if there are any; without, the ones
-    /// it was last given. A tool that asks shows its questions first; any other builds its change
-    /// set for the scope and shows it. Nothing is written.
+    /// An edit by key: its form, or with its value after a `:`, the preview straight away.
+    /// Nothing is written.
     pub fn run(&self, asked: &str) {
         let Some(library) = self.imp().library.borrow().clone() else {
             return;
         };
-        let (key, settings) = match asked.split_once(':') {
-            Some((key, settings)) => (key, Some(settings.to_string())),
+        let (key, value) = match asked.split_once(':') {
+            Some((key, value)) => (key, Some(value)),
             None => (asked, None),
         };
-        let given = settings.is_some();
-        let Some(tool) = tools::find(key) else {
-            tracing::warn!(tool = key, "no such tool");
+        let Some(edit) = Edit::find(key) else {
+            tracing::warn!(edit = key, "no such edit");
             return;
         };
-        let settings = match settings {
-            Some(settings) => {
-                library.remember_tool_settings(key, &settings);
-                Some(settings)
-            }
-            None => library.tool_settings(key),
-        };
-        tracing::info!(tool = key, scope = self.scope().title(), "tool opened");
-        match tool.page() {
-            Page::Questions => {
-                self.imp().questions.open(key, &self.scope());
-                self.push("questions");
-                return;
-            }
-            Page::Vocabulary => {
-                self.imp().vocabulary.open(key);
-                self.push("vocabulary");
-                return;
-            }
-            Page::Entry { title, description } if !given => {
-                self.enter(key, title, description, settings.as_deref().unwrap_or_default());
-                return;
-            }
-            Page::Entry { .. } | Page::Preview => {}
-        }
-        let tools = self.downgrade();
-        library.run_tool(key, settings, &self.scope(), move |event| {
-            let Some(tools) = tools.upgrade() else {
-                return;
-            };
-            match event {
-                Event::Previewed(set) => tools.show(set),
-                Event::Failed(why) => tracing::error!(why, "the tool could not be run"),
-                _ => {}
-            }
-        });
-    }
-
-    /// A suggestion's tool, on its scope and with its settings. A tag vocabulary is shown with
-    /// the suggested rules not kept yet; any other tool is run as if chosen from the list.
-    pub fn open_suggestion(&self, suggestion: &Suggestion) {
-        let Some(tool) = tools::find(suggestion.tool) else {
-            tracing::warn!(tool = suggestion.tool, "no such tool");
-            return;
-        };
-        self.set_scope(suggestion.scope.clone());
-        match (tool.page(), &suggestion.settings) {
-            (Page::Vocabulary, Some(settings)) => {
-                self.imp().vocabulary.open_with(suggestion.tool, settings);
-                self.push("vocabulary");
-            }
-            (_, Some(settings)) => self.run(&format!("{}:{settings}", suggestion.tool)),
-            (_, None) => self.run(suggestion.tool),
+        match value {
+            None => crate::forms::present(self, &library, edit, &self.scope()),
+            Some(text) => match edit.read(text) {
+                Ok(value) => self.preview_edit(edit, value),
+                Err(why) => self.say(&format!("{}: {why}", edit.title())),
+            },
         }
     }
 
-    pub fn questions(&self) -> Questions {
-        self.imp().questions.clone()
-    }
-
-    pub fn vocabulary(&self) -> VocabularyPage {
-        self.imp().vocabulary.clone()
-    }
-
-    /// A page of the tools' own, on top of the list.
-    fn push(&self, tag: &str) {
-        let nav = &self.imp().nav;
-        nav.pop_to_tag("tools");
-        nav.push_by_tag(tag);
-    }
-
-    /// One rule for the tag vocabulary on screen, as the settings write it.
-    pub fn tag_rule(&self, written: &str) {
-        if self.imp().vocabulary.add_rule(written).is_ok() {
-            self.recount();
-        }
-    }
-
-    pub fn tag_forget_rule(&self, index: usize) {
-        if self.imp().vocabulary.forget_rule(index) {
-            self.recount();
-        }
-    }
-
-    /// Confirm, Leave Alone or Suggest Again on one suggestion.
-    pub fn tag_suggestion(&self, key: &str, answer: &str) {
-        if self.imp().vocabulary.suggestion(key, answer) {
-            self.recount();
-        }
-    }
-
-    pub fn tag_generated(&self, key: &str) {
-        if self.imp().vocabulary.set_generated(key) {
-            self.recount();
-        }
-    }
-
-    /// Keeps the rules a suggestion added to the vocabulary on screen.
-    pub fn tag_keep(&self) {
-        if self.imp().vocabulary.keep_pending() {
-            self.recount();
-        }
-    }
-
-    /// The change set of the tag vocabulary on screen, with its rules so far, which are kept.
-    pub fn preview_tags(&self) {
-        let imp = self.imp();
-        let (Some(library), Some(key)) = (imp.library.borrow().clone(), imp.vocabulary.key()) else {
-            return;
-        };
-        if imp.vocabulary.keep_pending() {
-            self.recount();
-        }
-        tracing::info!(tool = key, scope = self.scope().title(), "tag rules previewed");
-        let tools = self.downgrade();
-        library.run_tool(&key, imp.vocabulary.settings(), &self.scope(), move |event| {
-            let Some(tools) = tools.upgrade() else {
-                return;
-            };
-            match event {
-                Event::Previewed(set) => tools.show(set),
-                Event::Failed(why) => tracing::error!(why, "the tag rules could not be previewed"),
-                _ => {}
-            }
-        });
-    }
-
-    /// Several tools by key, separated by commas, as one pass over the scope. Nothing is written.
-    pub fn run_together(&self, keys: &str) {
+    /// The change set of an edit with its value over the scope, pushed as the preview.
+    pub fn preview_edit(&self, edit: Edit, value: Value) {
         let Some(library) = self.imp().library.borrow().clone() else {
             return;
         };
-        let keys: Vec<&str> = keys.split(',').map(str::trim).filter(|key| !key.is_empty()).collect();
-        if keys.len() < 2 {
-            tracing::warn!(tools = keys.len(), "running together takes two tools at least");
-            return;
-        }
-        tracing::info!(
-            tools = keys.join(","),
-            scope = self.scope().title(),
-            "tools run together"
-        );
+        tracing::info!(edit = edit.key(), scope = self.scope().title(), "edit previewed");
         let tools = self.downgrade();
-        library.run_together(&keys, &self.scope(), move |event| {
+        library.run_edit(edit, value, &self.scope(), move |event| {
             let Some(tools) = tools.upgrade() else {
                 return;
             };
             match event {
                 Event::Previewed(set) => tools.show(set),
-                Event::Failed(why) => tracing::error!(why, "the tools could not be run together"),
+                Event::Failed(why) => {
+                    tools.say(&format!("{}: {why}", edit.title()));
+                    tracing::error!(why, "the edit could not be previewed");
+                }
                 _ => {}
             }
         });
     }
 
-    /// The one line a tool of that kind needs before its preview, prefilled with the last one.
-    fn enter(&self, key: &str, title: &str, description: &str, last: &str) {
-        let group = adw::PreferencesGroup::builder().description(description).build();
-        let entry = adw::EntryRow::builder().title(title).text(last).build();
-        group.add(&entry);
-        let why = gtk::Label::builder().xalign(0.0).wrap(true).visible(false).build();
-        why.add_css_class("error");
-        let button = gtk::Button::builder()
-            .label("Preview")
-            .halign(gtk::Align::Center)
-            .build();
-        button.add_css_class("pill");
-        button.add_css_class("suggested-action");
-        let content = gtk::Box::builder()
-            .orientation(gtk::Orientation::Vertical)
-            .spacing(18)
-            .margin_top(12)
-            .margin_bottom(18)
-            .margin_start(12)
-            .margin_end(12)
-            .build();
-        content.append(&group);
-        content.append(&why);
-        content.append(&button);
-        let view = adw::ToolbarView::new();
-        view.add_top_bar(&adw::HeaderBar::new());
-        view.set_content(Some(&content));
-        let named = tools::find(key).map(|tool| tool.title()).unwrap_or_default();
-        let dialog = adw::Dialog::builder()
-            .title(named)
-            .content_width(480)
-            .child(&view)
-            .build();
-        let key = key.to_string();
-        let use_it = glib::clone!(
-            #[weak(rename_to = page)]
-            self,
-            #[weak]
-            why,
-            #[weak]
-            entry,
-            #[weak]
-            dialog,
-            move || {
-                let text = entry.text().to_string();
-                let checked = match tools::find(&key) {
-                    Some(tool) if text.trim().is_empty() => {
-                        Err(format!("{} needs a {}", tool.title(), title_lower(tool)))
-                    }
-                    Some(tool) => tool.check(&text),
-                    None => Err(format!("there is no tool {key}")),
-                };
-                if let Err(reason) = checked {
-                    why.set_label(&reason);
-                    why.set_visible(true);
-                    return;
-                }
-                dialog.close();
-                page.run(&format!("{key}:{}", text.trim()));
-            }
-        );
-        let use_it = Rc::new(use_it);
-        button.connect_clicked(glib::clone!(
-            #[strong]
-            use_it,
-            move |_| use_it()
-        ));
-        entry.connect_entry_activated(move |_| use_it());
-        dialog.present(Some(self));
-        entry.grab_focus();
-    }
-
-    /// Which tools run together: every tool with a check, and Preview.
-    fn choose_together(&self) {
-        let list = gtk::ListBox::builder()
-            .selection_mode(gtk::SelectionMode::None)
-            .valign(gtk::Align::Start)
-            .build();
-        list.add_css_class("boxed-list");
-        let checks: Rc<RefCell<Vec<(&'static str, gtk::CheckButton)>>> = Rc::default();
-        let button = gtk::Button::builder()
-            .label("Preview")
-            .halign(gtk::Align::Center)
-            .sensitive(false)
-            .build();
-        button.add_css_class("pill");
-        button.add_css_class("suggested-action");
-        for tool in tools::ALL.iter().filter(|tool| !tool.moves()) {
-            let check = gtk::CheckButton::builder().valign(gtk::Align::Center).build();
-            let row = adw::ActionRow::builder()
-                .title(tool.title())
-                .subtitle(tool.fixes())
-                .activatable_widget(&check)
-                .build();
-            row.add_prefix(&check);
-            check.connect_toggled(glib::clone!(
-                #[weak]
-                button,
-                #[strong]
-                checks,
-                move |_| {
-                    let chosen = checks.borrow().iter().filter(|(_, check)| check.is_active()).count();
-                    button.set_sensitive(chosen >= 2);
-                }
-            ));
-            checks.borrow_mut().push((tool.key(), check));
-            list.append(&row);
-        }
-        let hint = gtk::Label::builder()
-            .label("Each tool with the settings and answers it was last given. A photo two tools would set the same field of is refused.")
-            .xalign(0.0)
-            .wrap(true)
-            .build();
-        hint.add_css_class("dim-label");
-        let content = gtk::Box::builder()
-            .orientation(gtk::Orientation::Vertical)
-            .spacing(18)
-            .margin_top(12)
-            .margin_bottom(18)
-            .margin_start(12)
-            .margin_end(12)
-            .build();
-        content.append(&hint);
-        content.append(&list);
-        content.append(&button);
-        let scrolled = gtk::ScrolledWindow::builder()
-            .hscrollbar_policy(gtk::PolicyType::Never)
-            .vexpand(true)
-            .child(&content)
-            .build();
-        let view = adw::ToolbarView::new();
-        view.add_top_bar(&adw::HeaderBar::new());
-        view.set_content(Some(&scrolled));
-        let dialog = adw::Dialog::builder()
-            .title("Run Together")
-            .content_width(480)
-            .content_height(560)
-            .child(&view)
-            .build();
-        button.connect_clicked(glib::clone!(
-            #[weak]
-            dialog,
-            move |button| {
-                let keys: Vec<&str> = checks
-                    .borrow()
-                    .iter()
-                    .filter(|(_, check)| check.is_active())
-                    .map(|(key, _)| *key)
-                    .collect();
-                dialog.close();
-                if let Err(error) =
-                    WidgetExt::activate_action(button, "win.run-together", Some(&keys.join(",").to_variant()))
-                {
-                    tracing::error!(%error, "the tools could not be run together");
-                }
-            }
-        ));
-        dialog.present(Some(self));
-    }
-
-    /// One answer to one question of the tool whose questions are shown.
-    pub fn answer(&self, key: &str, question: &str, answer: &str) {
-        let questions = &self.imp().questions;
-        if questions.key().as_deref() != Some(key) {
-            tracing::warn!(tool = key, "its questions are not the ones shown");
-            return;
-        }
-        if questions.answer(question, answer) {
-            self.recount();
-        }
-    }
-
-    pub fn answer_exact(&self, key: &str) {
-        let questions = &self.imp().questions;
-        if questions.key().as_deref() != Some(key) {
-            tracing::warn!(tool = key, "its questions are not the ones shown");
-            return;
-        }
-        if questions.answer_exact() > 0 {
-            self.recount();
-        }
-    }
-
-    /// The change set of the tool whose questions are shown, with the answers so far.
-    pub fn preview_answers(&self) {
-        let imp = self.imp();
-        let (Some(library), Some(key)) = (imp.library.borrow().clone(), imp.questions.key()) else {
-            return;
-        };
-        tracing::info!(tool = key, scope = self.scope().title(), "answers previewed");
-        let tools = self.downgrade();
-        library.run_tool(&key, imp.questions.settings(), &self.scope(), move |event| {
-            let Some(tools) = tools.upgrade() else {
-                return;
-            };
-            match event {
-                Event::Previewed(set) => tools.show(set),
-                Event::Failed(why) => tracing::error!(why, "the answers could not be previewed"),
-                _ => {}
-            }
-        });
-    }
-
-    /// The questions on screen are asked again, after a scan or for another scope.
-    fn ask_again(&self) {
-        let questions = &self.imp().questions;
-        if questions.key().is_some() {
-            questions.ask(&self.scope());
-        }
-    }
-
-    /// A change set made by hand rather than by a tool. Nothing is written.
+    /// A change set made by hand rather than by an edit. Nothing is written.
     pub fn preview_change_set(&self, title: &str, wanted: Vec<Wanted>) {
         let Some(library) = self.imp().library.borrow().clone() else {
             return;
         };
-        let tools = self.clone();
-        library.preview(title, wanted, move |event| match event {
-            Event::Previewed(set) => tools.show(set),
-            Event::Failed(why) => tracing::error!(why, "the preview could not be built"),
-            _ => {}
+        let tools = self.downgrade();
+        library.preview(title, wanted, move |event| {
+            let Some(tools) = tools.upgrade() else {
+                return;
+            };
+            match event {
+                Event::Previewed(set) => tools.show(set),
+                Event::Failed(why) => tracing::error!(why, "the preview could not be built"),
+                _ => {}
+            }
         });
+    }
+
+    /// Says something on the page the tools are on.
+    pub fn say(&self, text: &str) {
+        *self.imp().toast.borrow_mut() = text.to_string();
+        self.imp().toasts.add_toast(adw::Toast::new(text));
+    }
+
+    pub fn toast(&self) -> String {
+        self.imp().toast.borrow().clone()
     }
 
     pub fn show(&self, set: ChangeSet) {
@@ -591,6 +238,7 @@ impl Tools {
         self.imp().preview.show(set);
         let nav = &self.imp().nav;
         if nav.visible_page_tag().as_deref() != Some("preview") {
+            nav.pop_to_tag("tools");
             nav.push_by_tag("preview");
         }
     }
@@ -646,19 +294,16 @@ impl Tools {
             .unwrap_or_default()
     }
 
-    fn list_tools(&self) {
+    fn list_edits(&self) {
         let imp = self.imp();
-        for tool in tools::ALL {
-            let count = gtk::Label::new(None);
-            count.add_css_class("dim-label");
+        for edit in edits::ALL {
             let row = adw::ActionRow::builder()
-                .title(tool.title())
-                .subtitle(tool.fixes())
+                .title(edit.title())
+                .subtitle(edit.does())
                 .activatable(true)
-                .action_name("win.run-tool")
-                .action_target(&tool.key().to_variant())
+                .action_name("win.run-edit")
+                .action_target(&edit.key().to_variant())
                 .build();
-            row.add_suffix(&count);
             row.add_suffix(
                 &gtk::Image::builder()
                     .icon_name("go-next-symbolic")
@@ -666,12 +311,10 @@ impl Tools {
                     .build(),
             );
             imp.tools_group.add(&row);
-            imp.listed.borrow_mut().push(Listed { key: tool.key(), count });
         }
-        let none = tools::ALL.is_empty();
+        let none = edits::ALL.is_empty();
         imp.tools_group.set_visible(!none);
         imp.scope_group.set_visible(!none);
-        imp.together_group.set_visible(tools::ALL.len() > 1);
         imp.empty.set_visible(none);
     }
 
@@ -679,66 +322,36 @@ impl Tools {
         let imp = self.imp();
         let scope = self.scope();
         imp.scope_row.set_title(&glib::markup_escape_text(&scope_title(&scope)));
-        let photos = imp.counted.borrow().as_ref().map(|counted| counted.photos);
-        imp.scope_row.set_subtitle(&match photos {
+        imp.scope_row.set_subtitle(&match imp.photos.get() {
             Some(1) => "1 photo".to_string(),
             Some(photos) => format!("{photos} photos"),
             None => "Counting".to_string(),
         });
     }
 
-    /// Counts again: after the scope changed, and after every scan.
-    fn recount(&self) {
+    /// Counts the scope again: after it changed, and after every scan.
+    fn count_scope(&self) {
         let imp = self.imp();
         let Some(library) = imp.library.borrow().clone() else {
             return;
         };
-        let asked = imp.asked.get() + 1;
-        imp.asked.set(asked);
-        *imp.counted.borrow_mut() = None;
-        self.show_counts();
-
+        imp.photos.set(None);
+        self.show_scope();
+        let scope = self.scope();
         let tools = self.downgrade();
-        library.count_tools(&self.scope(), move |counted| {
+        library.scope_count(&scope.clone(), move |counted| {
             let Some(tools) = tools.upgrade() else {
                 return;
             };
-            if tools.imp().asked.get() != asked {
+            if tools.scope() != scope {
                 return;
             }
             match counted {
-                Ok(counted) => *tools.imp().counted.borrow_mut() = Some(counted),
-                Err(why) => tracing::error!(why, "the tools could not be counted"),
+                Ok(photos) => tools.imp().photos.set(Some(photos)),
+                Err(why) => tracing::error!(why, "the scope could not be counted"),
             }
-            tools.show_counts();
+            tools.show_scope();
         });
-    }
-
-    fn show_counts(&self) {
-        let imp = self.imp();
-        let counted = imp.counted.borrow();
-        for listed in imp.listed.borrow().iter() {
-            let found = counted
-                .as_ref()
-                .and_then(|counted| counted.tools.iter().find(|(key, _)| key == listed.key))
-                .map(|(_, count)| count);
-            let waiting = counted
-                .as_ref()
-                .and_then(|counted| counted.waiting.iter().find(|(key, _)| key == listed.key))
-                .map(|(_, waiting)| *waiting)
-                .unwrap_or_default();
-            let tool = tools::find(listed.key);
-            listed.count.set_label(&match found {
-                None => "Counting".to_string(),
-                Some(Ok(0)) if waiting > 0 => tool.map(|tool| tool.waiting(waiting)).unwrap_or_default(),
-                Some(Ok(0)) => "Nothing to do here".to_string(),
-                Some(Ok(1)) => "1 photo would change".to_string(),
-                Some(Ok(count)) => format!("{count} photos would change"),
-                Some(Err(_)) => "Could not be counted".to_string(),
-            });
-        }
-        drop(counted);
-        self.show_scope();
     }
 
     /// The scope dialog: the whole library, what the gallery handed over, or a country or an
@@ -894,14 +507,6 @@ fn scope_title(scope: &Scope) -> String {
             Some(folder) => folder.rsplit('/').next().unwrap_or(folder).to_string(),
         },
         other => other.title(),
-    }
-}
-
-/// `tag` for a tool that asks for a tag.
-fn title_lower(tool: &dyn tools::AnyTool) -> String {
-    match tool.page() {
-        Page::Entry { title, .. } => title.to_lowercase(),
-        _ => "setting".to_string(),
     }
 }
 

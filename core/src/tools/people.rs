@@ -10,7 +10,7 @@ use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 
 use unicode_normalization::UnicodeNormalization;
 
-use super::{Answer, Answers, Finding, Kind, Offer, Question, Tool, Wording};
+use super::{Answer, Answers, Offer, Question, Tool};
 use crate::browse::{self, TagTree};
 use crate::cache::{self, Cache};
 use crate::changeset::{self, Wanted};
@@ -35,9 +35,6 @@ struct Known {
     assets: HashMap<String, Asset>,
     /// By asset id.
     faces: HashMap<String, Vec<Face>>,
-    /// Assets that lie outside the library, by id: none of its photos.
-    outside: usize,
-    fetched_at: Option<String>,
 }
 
 impl Known {
@@ -52,13 +49,9 @@ impl Known {
             faces.entry(face.asset_id.clone()).or_default().push(face);
         }
         let mut assets = HashMap::new();
-        let mut outside = 0;
         for asset in snapshot.assets().map_err(failed)? {
-            match asset.rel_path.clone() {
-                Some(rel_path) => {
-                    assets.insert(rel_path, asset);
-                }
-                None => outside += 1,
+            if let Some(rel_path) = asset.rel_path.clone() {
+                assets.insert(rel_path, asset);
             }
         }
         Ok(Some(Known {
@@ -70,8 +63,6 @@ impl Known {
                 .collect(),
             assets,
             faces,
-            outside,
-            fetched_at: snapshot.about("fetched-at").map_err(failed)?,
         }))
     }
 
@@ -209,46 +200,6 @@ fn tag_of(answers: &Answers, person: &Person) -> Option<String> {
 impl Tool for PeopleFromImmich {
     type Settings = Answers;
 
-    fn key(&self) -> &'static str {
-        "people-from-immich"
-    }
-
-    fn title(&self) -> &'static str {
-        "People from Immich"
-    }
-
-    fn fixes(&self) -> &'static str {
-        "Writes who Immich found in each photo into it: the faces, the persons and their tags"
-    }
-
-    fn named(&self, _answers: &Answers) -> String {
-        "Write people from Immich".to_string()
-    }
-
-    fn answers<'a>(&self, answers: &'a mut Answers) -> Option<&'a mut Answers> {
-        Some(answers)
-    }
-
-    fn waiting(&self, open: usize) -> String {
-        match open {
-            1 => "1 person waits for a tag".to_string(),
-            open => format!("{open} persons wait for a tag"),
-        }
-    }
-
-    fn wording(&self) -> Wording {
-        Wording {
-            asked: "Persons",
-            one: "person",
-            many: "persons",
-            confirm: "Confirm Exact Matches",
-            sure_one: "matches a people tag by its exact name",
-            sure_many: "match a people tag by their exact name",
-            unasked: "Nobody Immich names is in a photo of the scope. Get People from Immich on the dashboard, \
-                      or choose another scope on the Tools page.",
-        }
-    }
-
     fn questions(
         &self,
         cache: &Cache,
@@ -274,7 +225,6 @@ impl Tool for PeopleFromImmich {
             .filter_map(|(id, assets)| {
                 let person = known.people.get(id)?;
                 Some(Question {
-                    kind: Kind::Person,
                     answer: answers.get(id).cloned(),
                     ..Question::place(id, person.name.clone(), assets.len(), offers(&person.name, &tags))
                 })
@@ -282,133 +232,6 @@ impl Tool for PeopleFromImmich {
             .collect();
         questions.sort_by(|one, other| other.photos.cmp(&one.photos).then(one.title.cmp(&other.title)));
         Ok(questions)
-    }
-
-    fn report(
-        &self,
-        cache: &Cache,
-        _geo: Option<&Geo>,
-        scope: &Scope,
-        answers: &Answers,
-    ) -> Result<Vec<Finding>, String> {
-        let Some(known) = Known::load(cache)? else {
-            return Ok(vec![Finding {
-                title: "Nothing Fetched from Immich Yet".to_string(),
-                detail: "Get People from Immich on the dashboard: it reads who Immich found in each photo.".to_string(),
-                rows: Vec::new(),
-            }]);
-        };
-        let paths = scope.paths(cache).map_err(|error| error.to_string())?;
-        let stated = cache.stated(&paths).map_err(|error| error.to_string())?;
-        let named: Vec<&Person> = known.people.values().filter(|person| person.named()).collect();
-        let mut findings = vec![Finding {
-            title: "From Immich".to_string(),
-            detail: format!(
-                "{} named persons, fetched on {}. {}",
-                named.len(),
-                known.fetched_at.as_deref().unwrap_or("an unknown day"),
-                match known.outside {
-                    0 => "Every photo Immich knows lies in the library.".to_string(),
-                    1 => "1 photo Immich knows lies outside the library.".to_string(),
-                    count => format!("{count} photos Immich knows lie outside the library."),
-                }
-            ),
-            rows: Vec::new(),
-        }];
-
-        let mut untold = 0;
-        let mut without_face: BTreeMap<String, usize> = BTreeMap::new();
-        for rel_path in &paths {
-            let said = stated.get(rel_path).map(|stated| &stated.said);
-            let carried: Vec<String> = said
-                .map(|said| {
-                    tags::deepest(&said.tags)
-                        .into_iter()
-                        .filter(|tag| is_people(tag))
-                        .collect()
-                })
-                .unwrap_or_default();
-            let region_names: HashSet<String> = said
-                .and_then(|said| said.regions.as_ref())
-                .map(|regions| regions.faces.iter().map(|face| fold(&face.name)).collect())
-                .unwrap_or_default();
-            let found: Vec<&Person> = known
-                .assets
-                .get(rel_path)
-                .map(|asset| known.named(asset).map(|(_, person)| person).collect())
-                .unwrap_or_default();
-            let told = |person: &Person| {
-                let tag = tag_of(answers, person);
-                region_names.contains(&fold(&person.name))
-                    || tag.as_ref().is_some_and(|tag| region_names.contains(&fold(leaf(tag))))
-                    || carried.iter().any(|carried| match &tag {
-                        Some(tag) => carried == tag,
-                        None => fold(leaf(carried)) == fold(&person.name),
-                    })
-            };
-            if found.iter().any(|person| !told(person)) {
-                untold += 1;
-            }
-            for tag in &carried {
-                if !found.iter().any(|person| tag_of(answers, person).as_ref() == Some(tag)) {
-                    *without_face.entry(tag.clone()).or_default() += 1;
-                }
-            }
-        }
-        findings.push(Finding {
-            title: "Photos Immich Names People In".to_string(),
-            detail: match untold {
-                0 => "Every photo of the scope says who Immich found in it.".to_string(),
-                1 => "1 photo of the scope does not say someone Immich found in it.".to_string(),
-                count => format!("{count} photos of the scope do not say someone Immich found in them."),
-            },
-            rows: Vec::new(),
-        });
-
-        let answered: HashSet<String> = named.iter().filter_map(|person| tag_of(answers, person)).collect();
-        let mut rows: Vec<(String, usize)> = without_face.into_iter().collect();
-        rows.sort_by(|one, other| other.1.cmp(&one.1).then(one.0.cmp(&other.0)));
-        if !rows.is_empty() {
-            findings.push(Finding {
-                title: "People Tags Immich Has No Face For".to_string(),
-                detail: "Photos that carry a person's tag where Immich found no face of that person.".to_string(),
-                rows: rows
-                    .into_iter()
-                    .map(|(tag, count)| {
-                        let photos = match count {
-                            1 => "1 photo".to_string(),
-                            count => format!("{count} photos"),
-                        };
-                        let why = match answered.contains(&tag) {
-                            true => format!("{photos} without a face of this person in Immich"),
-                            false => format!("{photos}, no person from Immich is answered with it"),
-                        };
-                        (tag, why)
-                    })
-                    .collect(),
-            });
-        }
-
-        let unnamed = known
-            .people
-            .values()
-            .filter(|person| !person.hidden && person.name.trim().is_empty())
-            .count();
-        if unnamed > 0 {
-            let persons = match unnamed {
-                1 => "1 person Immich found faces of has no name".to_string(),
-                count => format!("{count} persons Immich found faces of have no name"),
-            };
-            findings.push(Finding {
-                title: "Persons without a Name".to_string(),
-                detail: format!(
-                    "{persons}. Name them in Immich and get the people again to have them written; nothing is \
-                     written back to Immich from here."
-                ),
-                rows: Vec::new(),
-            });
-        }
-        Ok(findings)
     }
 
     fn wanted(
@@ -507,6 +330,48 @@ impl Tool for PeopleFromImmich {
         }
         Ok(wanted)
     }
+}
+
+/// The persons whose tag is sure - one people tag has their exact name - each with how many
+/// photos writing them would change. A person every photo already says is not among them.
+pub fn sure(cache: &Cache) -> Result<Vec<(Question, usize)>, String> {
+    let whole = Scope::Filter(Filter::all());
+    let asked: Vec<Question> = PeopleFromImmich
+        .questions(cache, None, &whole, &Answers::default())?
+        .into_iter()
+        .filter(Question::confirmable)
+        .collect();
+    let (Some(known), false) = (Known::load(cache)?, asked.is_empty()) else {
+        return Ok(Vec::new());
+    };
+    let mut answers = Answers::default();
+    for question in &asked {
+        answers.set(&question.key, question.sure().map(|offer| offer.answer.clone()));
+    }
+    let changed: HashSet<String> = PeopleFromImmich
+        .wanted(cache, None, &whole, &answers)
+        .map_err(|error| error.to_string())?
+        .into_iter()
+        .filter(|wanted| wanted.refused.is_none())
+        .map(|wanted| wanted.rel_path)
+        .collect();
+    let mut photos: HashMap<&str, usize> = HashMap::new();
+    for rel_path in &changed {
+        let Some(asset) = known.assets.get(rel_path) else {
+            continue;
+        };
+        let persons: HashSet<&str> = known.named(asset).map(|(_, person)| person.id.as_str()).collect();
+        for person in persons {
+            *photos.entry(person).or_default() += 1;
+        }
+    }
+    Ok(asked
+        .into_iter()
+        .filter_map(|question| {
+            let count = photos.get(question.key.as_str()).copied().unwrap_or_default();
+            (count > 0).then_some((question, count))
+        })
+        .collect())
 }
 
 /// The photos among these in which Immich names someone the file does not: no face region and no

@@ -12,7 +12,9 @@ use crate::geo::Geo;
 use crate::journal::Journal;
 use crate::metadata::Exiv2;
 use crate::scan::{self, Mode};
+use crate::scope::Scope;
 use crate::thumbs::Thumbs;
+use crate::tools::{Answer, Answers, Question, Settings, Tool};
 use crate::write::{Engine, Summary};
 
 /// The excerpt of the place data, imported once for every test of the process.
@@ -114,4 +116,67 @@ impl Library {
             })
             .collect()
     }
+}
+
+/// A tool driven the way the tests of its questions and answers drive it: the answers as text.
+pub trait Driven {
+    fn asked(
+        &self,
+        cache: &Cache,
+        geo: Option<&Geo>,
+        scope: &Scope,
+        settings: Option<&str>,
+    ) -> Result<Vec<Question>, String>;
+    fn built(
+        &self,
+        cache: &Cache,
+        geo: Option<&Geo>,
+        scope: &Scope,
+        settings: Option<&str>,
+    ) -> Result<ChangeSet, String>;
+    fn answered(&self, settings: Option<&str>, key: &str, answer: Option<Answer>) -> Result<String, String>;
+}
+
+fn read(settings: Option<&str>) -> Result<Answers, String> {
+    Answers::read(settings.unwrap_or_default())
+}
+
+impl<T: Tool<Settings = Answers>> Driven for T {
+    fn asked(
+        &self,
+        cache: &Cache,
+        geo: Option<&Geo>,
+        scope: &Scope,
+        settings: Option<&str>,
+    ) -> Result<Vec<Question>, String> {
+        self.questions(cache, geo, scope, &read(settings)?)
+    }
+
+    fn built(
+        &self,
+        cache: &Cache,
+        geo: Option<&Geo>,
+        scope: &Scope,
+        settings: Option<&str>,
+    ) -> Result<ChangeSet, String> {
+        let wanted = self
+            .wanted(cache, geo, scope, &read(settings)?)
+            .map_err(|error| error.to_string())?;
+        ChangeSet::build(cache, "", &wanted).map_err(|error| error.to_string())
+    }
+
+    fn answered(&self, settings: Option<&str>, key: &str, answer: Option<Answer>) -> Result<String, String> {
+        let mut answers = read(settings)?;
+        answers.set(key, answer);
+        Ok(answers.written())
+    }
+}
+
+/// Every waiting question whose best offer is sure, answered with it.
+pub fn confirm_sure(questions: &[Question], settings: Option<&str>) -> String {
+    let mut answers = read(settings).unwrap();
+    for question in questions.iter().filter(|question| question.confirmable()) {
+        answers.set(&question.key, question.sure().map(|offer| offer.answer.clone()));
+    }
+    answers.written()
 }

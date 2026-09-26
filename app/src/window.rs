@@ -130,17 +130,6 @@ impl Window {
         self.imp().suggestions.clone()
     }
 
-    /// Opens a suggestion in its tool, with its scope and settings. Nothing is written.
-    pub fn open_suggestion(&self, key: &str) {
-        let Some(suggestion) = self.imp().suggestions.find(key) else {
-            tracing::warn!(suggestion = key, "no such suggestion");
-            return;
-        };
-        tracing::info!(suggestion = key, tool = suggestion.tool, "suggestion opened");
-        self.show_view("tools");
-        self.imp().tools.open_suggestion(&suggestion);
-    }
-
     pub fn preview(&self) -> Preview {
         self.imp().tools.preview()
     }
@@ -288,87 +277,45 @@ impl Window {
                 }
             })
             .build();
-        let run_tool = gtk::gio::ActionEntry::builder("run-tool")
+        let run_edit = gtk::gio::ActionEntry::builder("run-edit")
             .parameter_type(Some(glib::VariantTy::STRING))
             .activate(|window: &Window, _, parameter| {
                 if let Some(asked) = parameter.and_then(|value| value.str()) {
+                    window.show_view("tools");
                     window.imp().tools.run(asked);
                 }
             })
             .build();
-        let answer = gtk::gio::ActionEntry::builder("answer")
-            .parameter_type(Some(glib::VariantTy::new("(sss)").expect("a tuple of three texts")))
-            .activate(|window: &Window, _, parameter| {
-                match parameter.and_then(|value| value.get::<(String, String, String)>()) {
-                    Some((key, question, answer)) => window.imp().tools.answer(&key, &question, &answer),
-                    None => tracing::warn!("an answer is a tool, a question and the answer"),
-                }
-            })
+        let tick_fix = gtk::gio::ActionEntry::builder("tick-fix")
+            .parameter_type(Some(glib::VariantTy::new("(sb)").expect("a text and a truth")))
+            .activate(
+                |window: &Window, _, parameter| match parameter.and_then(|value| value.get::<(String, bool)>()) {
+                    Some((key, ticked)) => window.imp().suggestions.tick(&key, ticked),
+                    None => tracing::warn!("a tick is a suggestion's key and whether it is ticked"),
+                },
+            )
             .build();
-        let answer_exact = gtk::gio::ActionEntry::builder("answer-exact")
-            .parameter_type(Some(glib::VariantTy::STRING))
-            .activate(|window: &Window, _, parameter| {
-                if let Some(key) = parameter.and_then(|value| value.str()) {
-                    window.imp().tools.answer_exact(key);
-                }
-            })
-            .build();
-        let preview_answers = gtk::gio::ActionEntry::builder("preview-answers")
-            .activate(|window: &Window, _, _| window.imp().tools.preview_answers())
-            .build();
-        let text = |name: &str, act: fn(&Tools, &str)| {
+        let select_fixes = |name: &str, ticked: bool| {
             gtk::gio::ActionEntry::builder(name)
                 .parameter_type(Some(glib::VariantTy::STRING))
                 .activate(move |window: &Window, _, parameter| {
-                    if let Some(text) = parameter.and_then(|value| value.str()) {
-                        act(&window.imp().tools, text);
+                    if let Some(finder) = parameter.and_then(|value| value.str()) {
+                        window.imp().suggestions.tick_every(finder, ticked);
                     }
                 })
                 .build()
         };
-        let tag_forget_rule = gtk::gio::ActionEntry::builder("tag-forget-rule")
-            .parameter_type(Some(glib::VariantTy::INT32))
-            .activate(|window: &Window, _, parameter| {
-                if let Some(index) = parameter.and_then(|value| value.get::<i32>()) {
-                    window.imp().tools.tag_forget_rule(index.max(0) as usize);
-                }
-            })
+        let apply_fixes = gtk::gio::ActionEntry::builder("apply-fixes")
+            .activate(|window: &Window, _, _| window.imp().suggestions.apply())
             .build();
-        let tag_suggestion = gtk::gio::ActionEntry::builder("tag-suggestion")
-            .parameter_type(Some(glib::VariantTy::new("(ss)").expect("a tuple of two texts")))
-            .activate(|window: &Window, _, parameter| {
-                match parameter.and_then(|value| value.get::<(String, String)>()) {
-                    Some((key, answer)) => window.imp().tools.tag_suggestion(&key, &answer),
-                    None => tracing::warn!("a suggestion is answered with its key and the answer"),
-                }
-            })
-            .build();
-        let preview_tags = gtk::gio::ActionEntry::builder("preview-tags")
-            .activate(|window: &Window, _, _| window.imp().tools.preview_tags())
-            .build();
-        let open_suggestion = gtk::gio::ActionEntry::builder("open-suggestion")
-            .parameter_type(Some(glib::VariantTy::STRING))
-            .activate(|window: &Window, _, parameter| {
-                if let Some(key) = parameter.and_then(|value| value.str()) {
-                    window.open_suggestion(key);
-                }
-            })
-            .build();
-        let dismiss = |name: &str, dismissed: bool| {
-            gtk::gio::ActionEntry::builder(name)
-                .parameter_type(Some(glib::VariantTy::STRING))
-                .activate(move |window: &Window, _, parameter| {
-                    if let Some(key) = parameter.and_then(|value| value.str()) {
-                        window.imp().suggestions.dismiss(key, dismissed);
-                    }
-                })
-                .build()
-        };
-        let tag_keep = gtk::gio::ActionEntry::builder("tag-keep")
-            .activate(|window: &Window, _, _| window.imp().tools.tag_keep())
+        let cancel_fixes = gtk::gio::ActionEntry::builder("cancel-fixes")
+            .activate(|window: &Window, _, _| window.imp().suggestions.cancel())
             .build();
         let show_history = gtk::gio::ActionEntry::builder("show-history")
-            .activate(|window: &Window, _, _| window.imp().tools.show_history())
+            .activate(|window: &Window, _, _| {
+                window.show_view("tools");
+                window.imp().tools.show_history();
+            })
             .build();
         let history_details = gtk::gio::ActionEntry::builder("history-details")
             .parameter_type(Some(glib::VariantTy::INT64))
@@ -477,23 +424,12 @@ impl Window {
             gallery_none,
             use_as_scope,
             tools_scope,
-            run_tool,
-            answer,
-            answer_exact,
-            preview_answers,
-            text("tag-rule", Tools::tag_rule),
-            text("tag-generated", Tools::tag_generated),
-            text("tag-rename", |tools, path| tools.vocabulary().rename(path)),
-            text("tag-merge", |tools, path| tools.vocabulary().merge(path)),
-            text("tag-delete", |tools, path| tools.vocabulary().delete(path)),
-            text("run-together", Tools::run_together),
-            tag_forget_rule,
-            tag_suggestion,
-            preview_tags,
-            tag_keep,
-            open_suggestion,
-            dismiss("dismiss-suggestion", true),
-            dismiss("restore-suggestion", false),
+            run_edit,
+            tick_fix,
+            select_fixes("fixes-select-all", true),
+            select_fixes("fixes-select-none", false),
+            apply_fixes,
+            cancel_fixes,
             show_history,
             history_details,
             undo_pass,

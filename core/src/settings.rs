@@ -6,7 +6,6 @@
 //! it. The table is created if it is not there and the journal's schema version is left alone, so
 //! either of the two can open the file first.
 
-use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
 
 use rusqlite::{Connection, OptionalExtension, params};
@@ -35,8 +34,11 @@ pub const IMMICH_PREFIX: &str = "immich-prefix";
 /// How the folders above an event are laid out, as [`Layout`] keeps it as text.
 pub const FOLDER_LAYOUT: &str = "folder-layout";
 
-/// The suggestions the user dismissed, by key, as a JSON list.
-pub const DISMISSED_SUGGESTIONS: &str = "dismissed-suggestions";
+/// What older versions remembered for their tools and suggestions: answers, tag rules and the
+/// dismissed suggestions. Moved out on open into [`LEFT_OVER_FILE`] beside `app.db`, for a person
+/// to read; what they said that was written is in the photos, and what was not is found again.
+const LEFT_OVER: &str = "name LIKE 'tool.%' OR name = 'dismissed-suggestions'";
+pub const LEFT_OVER_FILE: &str = "old-tool-settings.json";
 
 pub type Result<T> = rusqlite::Result<T>;
 
@@ -57,6 +59,7 @@ impl Settings {
         connection.pragma_update(None, "journal_mode", "WAL")?;
         connection.busy_timeout(std::time::Duration::from_secs(5))?;
         connection.execute_batch(SCHEMA)?;
+        move_out_left_over(&connection, file)?;
         Ok(Settings {
             connection,
             file: file.to_path_buf(),
@@ -100,6 +103,38 @@ impl Settings {
     }
 }
 
+/// Writes what older versions remembered into a file beside `app.db`, and only once that file is
+/// written takes it out of the table. A file there already is never overwritten.
+fn move_out_left_over(connection: &Connection, file: &Path) -> Result<()> {
+    let mut statement = connection.prepare(&format!(
+        "SELECT name, value FROM setting WHERE {LEFT_OVER} ORDER BY name"
+    ))?;
+    let old: Vec<(String, String)> = statement
+        .query_map([], |row| Ok((row.get(0)?, row.get(1)?)))?
+        .collect::<Result<_>>()?;
+    if old.is_empty() {
+        return Ok(());
+    }
+    let mut kept = file.with_file_name(LEFT_OVER_FILE);
+    let mut number = 1;
+    while kept.exists() {
+        number += 1;
+        kept = file.with_file_name(format!("old-tool-settings-{number}.json"));
+    }
+    let written: serde_json::Map<String, serde_json::Value> = old
+        .into_iter()
+        .map(|(name, value)| (name, serde_json::Value::from(value)))
+        .collect();
+    let text = serde_json::to_string_pretty(&serde_json::Value::Object(written)).unwrap_or_default();
+    if let Err(error) = std::fs::write(&kept, text) {
+        tracing::warn!(%error, "the old tool settings could not be written out, so they stay");
+        return Ok(());
+    }
+    connection.execute(&format!("DELETE FROM setting WHERE {LEFT_OVER}"), [])?;
+    tracing::info!(file = %kept.display(), "old tool settings moved out");
+    Ok(())
+}
+
 /// The folder layout the user chose, or the default when they chose none or it no longer reads.
 pub fn layout(settings: &Settings) -> Layout {
     match settings.get(FOLDER_LAYOUT) {
@@ -109,29 +144,6 @@ pub fn layout(settings: &Settings) -> Layout {
         }),
         _ => Layout::default(),
     }
-}
-
-/// The keys of the suggestions the user dismissed. A list that does not read is none.
-pub fn dismissed(settings: &Settings) -> BTreeSet<String> {
-    settings
-        .get(DISMISSED_SUGGESTIONS)
-        .ok()
-        .flatten()
-        .and_then(|text| serde_json::from_str::<Vec<String>>(&text).ok())
-        .unwrap_or_default()
-        .into_iter()
-        .collect()
-}
-
-/// Dismisses a suggestion, or brings it back.
-pub fn set_dismissed(settings: &mut Settings, key: &str, dismissed: bool) -> Result<()> {
-    let mut keys = self::dismissed(settings);
-    match dismissed {
-        true => keys.insert(key.to_string()),
-        false => keys.remove(key),
-    };
-    let written = serde_json::Value::from(keys.into_iter().collect::<Vec<String>>()).to_string();
-    settings.put(DISMISSED_SUGGESTIONS, &written)
 }
 
 /// What can be said about a place the user named as their backup. All of it is help for a person
@@ -288,24 +300,22 @@ mod tests {
     }
 
     #[test]
-    fn a_dismissed_suggestion_stays_dismissed_until_brought_back() {
-        let dir = temp("dismissed");
-        let file = dir.join("data/app.db");
+    fn what_older_tools_remembered_is_moved_out_on_open() {
+        let file = temp("left-over").join("data/app.db");
         let mut settings = Settings::open(&file).unwrap();
-        assert!(dismissed(&settings).is_empty());
-        set_dismissed(&mut settings, "tags:flat", true).unwrap();
-        set_dismissed(&mut settings, "tags:apart", true).unwrap();
+        settings.put("tool.gps-from-places-tag", "{}").unwrap();
+        settings.put("dismissed-suggestions", "[\"tags:flat\"]").unwrap();
+        settings.put(FOLDER_LAYOUT, "country/city").unwrap();
         drop(settings);
 
-        let cache = crate::cache::Cache::open(&dir.join("cache/cache.db")).unwrap();
-        cache.rebuild().unwrap();
-        let mut settings = Settings::open(&file).unwrap();
-        assert_eq!(
-            dismissed(&settings),
-            BTreeSet::from(["tags:apart".to_string(), "tags:flat".to_string()])
-        );
-        set_dismissed(&mut settings, "tags:flat", false).unwrap();
-        assert_eq!(dismissed(&settings), BTreeSet::from(["tags:apart".to_string()]));
+        let settings = Settings::open(&file).unwrap();
+        assert_eq!(settings.get("tool.gps-from-places-tag").unwrap(), None);
+        assert_eq!(settings.get("dismissed-suggestions").unwrap(), None);
+        assert_eq!(settings.get(FOLDER_LAYOUT).unwrap().as_deref(), Some("country/city"));
+        let kept: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(file.with_file_name(LEFT_OVER_FILE)).unwrap()).unwrap();
+        assert_eq!(kept["tool.gps-from-places-tag"], "{}");
+        assert_eq!(kept["dismissed-suggestions"], "[\"tags:flat\"]");
     }
 
     #[test]

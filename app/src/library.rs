@@ -1,7 +1,6 @@
 //! The library as the window sees it: the cache, and a scan running off the main thread.
 
 use std::cell::{Cell, RefCell};
-use std::collections::BTreeSet;
 use std::path::Path;
 use std::rc::Rc;
 use std::sync::Arc;
@@ -11,7 +10,9 @@ use photomanager_core::browse::{self, TagTree};
 use photomanager_core::cache::Cache;
 use photomanager_core::changeset::{self, ChangeSet, Wanted};
 use photomanager_core::details::Details;
+use photomanager_core::edits::{self, Camera, Edit, Value};
 use photomanager_core::filter::{Filter, Listed, Order};
+use photomanager_core::fixes::{self, Fix, Pass as FixPass};
 use photomanager_core::geo::Geo;
 use photomanager_core::geo::import::Imported;
 use photomanager_core::geo::lookup::Candidate;
@@ -27,8 +28,7 @@ use photomanager_core::scope::Scope;
 use photomanager_core::settings::{self, Settings};
 use photomanager_core::survey::Survey;
 use photomanager_core::thumbs::{Size, Thumbs};
-use photomanager_core::tools::tag_vocabulary::{self, Overview, Vocabulary};
-use photomanager_core::tools::{self, Finding, Question, Suggestion};
+use photomanager_core::tools::Question;
 use photomanager_core::write::{Engine, Summary as Applied};
 
 #[derive(Debug)]
@@ -47,6 +47,8 @@ pub enum Event {
     Previewed(ChangeSet),
     /// A change set was applied, or the last one was taken back.
     Applied(Kind, Applied),
+    /// The ticked fixes were applied, a pass for each finder that had any.
+    Fixed(Vec<FixPass>),
     Failed(String),
 }
 
@@ -91,16 +93,6 @@ impl std::fmt::Debug for Watchers {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(f, "{} watchers", self.0.borrow().len())
     }
-}
-
-/// What the Tools page shows for a scope: how many photos it names, and how many each tool
-/// would change, by key.
-#[derive(Debug, Clone, Default)]
-pub struct Counted {
-    pub photos: usize,
-    pub tools: Vec<(String, Result<usize, String>)>,
-    /// How many questions of each tool that asks wait for an answer, by key.
-    pub waiting: Vec<(String, usize)>,
 }
 
 /// What the gallery's sidebars show.
@@ -246,102 +238,19 @@ impl Library {
         );
     }
 
-    /// Every tool's change set for the scope, counted off the main thread through a read-only look
-    /// at the cache. The numbers are the ones the preview will show.
-    pub fn count_tools<F: FnOnce(Result<Counted, String>) + 'static>(&self, scope: &Scope, done: F) {
-        let scope = scope.clone();
-        let remembered: Vec<Option<String>> = tools::ALL.iter().map(|tool| self.tool_settings(tool.key())).collect();
-        let geo_db = self.paths.geo_db();
-        let root = self.paths.library().to_path_buf();
-        self.read_off_thread(
-            move |cache| {
-                let geo = Geo::read_only(&geo_db).ok().flatten();
-                let geo = geo.as_ref();
-                let mut counted = Counted {
-                    photos: scope.paths(cache)?.len(),
-                    ..Counted::default()
-                };
-                for (tool, settings) in tools::ALL.iter().zip(&remembered) {
-                    let key = tool.key().to_string();
-                    let count = match tool.moves() {
-                        true => tool.change_set(cache, geo, &scope, settings.as_deref()).map(|mut set| {
-                            set.look(&root);
-                            set.counts().change
-                        }),
-                        false => tools::count(*tool, cache, geo, &scope, settings.as_deref()),
-                    };
-                    counted.tools.push((key.clone(), count));
-                    if tool.asks() {
-                        let waiting =
-                            tools::waiting(*tool, cache, geo, &scope, settings.as_deref()).unwrap_or_default();
-                        counted.waiting.push((key, waiting));
-                    }
-                }
-                Ok(counted)
-            },
-            done,
-        );
-    }
-
-    /// What a tool asks about the scope, with the answers these settings give, off the main thread
-    /// through read-only looks at the cache and the place data.
-    pub fn questions<F: FnOnce(Result<(Vec<Question>, Vec<Finding>), String>) + 'static>(
-        &self,
-        key: &str,
-        settings: Option<String>,
-        scope: &Scope,
-        done: F,
-    ) {
-        let Some(tool) = tools::find(key) else {
-            done(Err(format!("there is no tool {key}")));
-            return;
-        };
-        let scope = scope.clone();
-        let (sender, receiver) = async_channel::bounded(1);
-        let cache_db = self.paths.cache_db();
-        let geo_db = self.paths.geo_db();
-        std::thread::spawn(move || {
-            let geo = Geo::read_only(&geo_db).ok().flatten();
-            let asked = match Cache::read_only(&cache_db) {
-                Ok(Some(cache)) => tool
-                    .questions(&cache, geo.as_ref(), &scope, settings.as_deref())
-                    .and_then(|questions| {
-                        let report = tool.report(&cache, geo.as_ref(), &scope, settings.as_deref())?;
-                        Ok((questions, report))
-                    }),
-                Ok(None) => Ok((Vec::new(), Vec::new())),
-                Err(error) => Err(error.to_string()),
-            };
-            let _ = sender.send_blocking(asked);
-        });
-        gtk::glib::spawn_future_local(async move {
-            if let Ok(asked) = receiver.recv().await {
-                done(asked);
-            }
-        });
-    }
-
-    /// What every tool would fix in the library, each with the settings it was last given, asked
-    /// off the main thread through read-only looks at the cache and the place data. A tool that
-    /// cannot say is left out, and the log says why.
-    pub fn suggestions<F: FnOnce(Result<Vec<Suggestion>, String>) + 'static>(&self, done: F) {
-        let remembered: Vec<Option<String>> = tools::ALL.iter().map(|tool| self.tool_settings(tool.key())).collect();
+    /// Every fix in the library, found off the main thread through read-only looks at the cache
+    /// and the place data. A finder that cannot look is left out, and the log says why.
+    pub fn fixes<F: FnOnce(Result<Vec<Fix>, String>) + 'static>(&self, done: F) {
         let geo_db = self.paths.geo_db();
         self.read_off_thread(
             move |cache| {
                 let started = std::time::Instant::now();
                 let geo = Geo::read_only(&geo_db).ok().flatten();
-                let mut found = Vec::new();
-                for (tool, settings) in tools::ALL.iter().zip(&remembered) {
-                    match tool.suggestions(cache, geo.as_ref(), settings.as_deref()) {
-                        Ok(suggested) => found.extend(suggested),
-                        Err(why) => tracing::warn!(tool = tool.key(), why, "the tool could not suggest"),
-                    }
-                }
+                let found = fixes::find(cache, geo.as_ref());
                 tracing::info!(
-                    suggestions = found.len(),
+                    fixes = found.len(),
                     seconds = started.elapsed().as_secs_f64(),
-                    "suggestions asked"
+                    "suggestions found"
                 );
                 Ok(found)
             },
@@ -349,39 +258,25 @@ impl Library {
         );
     }
 
-    /// The keys of the suggestions the user dismissed.
-    pub fn dismissed(&self) -> BTreeSet<String> {
-        self.settings
-            .borrow()
-            .as_ref()
-            .map(settings::dismissed)
-            .unwrap_or_default()
+    /// How many photos a scope names, counted off the main thread.
+    pub fn scope_count<F: FnOnce(Result<usize, String>) + 'static>(&self, scope: &Scope, done: F) {
+        let scope = scope.clone();
+        self.read_off_thread(move |cache| Ok(scope.paths(cache)?.len()), done);
     }
 
-    /// Dismisses a suggestion, or brings it back.
-    pub fn set_dismissed(&self, key: &str, dismissed: bool) {
-        let mut settings = self.settings.borrow_mut();
-        let Some(settings) = settings.as_mut() else {
-            return;
-        };
-        if let Err(error) = settings::set_dismissed(settings, key, dismissed) {
-            tracing::error!(%error, key, "the dismissed suggestion could not be kept");
-        }
+    /// The cameras of the scope, for Shift Dates.
+    pub fn cameras(&self, scope: &Scope) -> Result<Vec<Camera>, String> {
+        let cache = self.cache.borrow();
+        let cache = cache.as_ref().ok_or("the cache is busy")?;
+        edits::cameras(cache, scope).map_err(|error| error.to_string())
     }
 
-    /// The tag tree after a vocabulary's rules, what each rule changes and what is still worth
-    /// suggesting, worked out off the main thread from the whole library.
-    pub fn vocabulary<F: FnOnce(Result<Overview, String>) + 'static>(&self, vocabulary: Vocabulary, done: F) {
-        self.read_off_thread(move |cache| tag_vocabulary::overview(cache, &vocabulary), done);
-    }
-
-    /// The settings a tool was last run or answered with, as text.
-    pub fn tool_settings(&self, key: &str) -> Option<String> {
-        self.setting(&tool_setting(key))
-    }
-
-    pub fn remember_tool_settings(&self, key: &str, settings: &str) {
-        self.put_setting(&tool_setting(key), settings);
+    /// Where Move Event starts for the scope's one event.
+    pub fn move_proposal(&self, scope: &Scope) -> Result<Question, String> {
+        let cache = self.cache.borrow();
+        let cache = cache.as_ref().ok_or("the cache is busy")?;
+        let geo = self.geo.borrow();
+        edits::proposal(cache, geo.as_ref(), scope)
     }
 
     /// The countries, the events and the tags, with their counts.
@@ -808,54 +703,17 @@ impl Library {
         );
     }
 
-    /// A tool's change set for the scope, with its settings as text or its own defaults.
-    pub fn run_tool<F: Fn(Event) + 'static>(
-        self: &Rc<Self>,
-        key: &str,
-        settings: Option<String>,
-        scope: &Scope,
-        report: F,
-    ) {
-        let Some(tool) = tools::find(key) else {
-            report(Event::Failed(format!("there is no tool {key}")));
-            return;
-        };
+    /// An edit's change set for the scope with the value given. Nothing is written.
+    pub fn run_edit<F: Fn(Event) + 'static>(self: &Rc<Self>, edit: Edit, value: Value, scope: &Scope, report: F) {
         let scope = scope.clone();
         let geo_db = self.paths.geo_db();
         let root = self.paths.library().to_path_buf();
         self.build(
             move |cache| {
                 let geo = Geo::read_only(&geo_db).ok().flatten();
-                let mut set = tool.change_set(cache, geo.as_ref(), &scope, settings.as_deref())?;
+                let mut set = edit.change_set(&value, cache, geo.as_ref(), &scope)?;
                 set.look(&root);
                 Ok(set)
-            },
-            report,
-        );
-    }
-
-    /// Several tools as one pass over the scope, each with the settings it was last given.
-    pub fn run_together<F: Fn(Event) + 'static>(self: &Rc<Self>, keys: &[&str], scope: &Scope, report: F) {
-        let mut chosen = Vec::new();
-        for key in keys {
-            match tools::find(key) {
-                Some(tool) => chosen.push((tool, self.tool_settings(key))),
-                None => {
-                    report(Event::Failed(format!("there is no tool {key}")));
-                    return;
-                }
-            }
-        }
-        let scope = scope.clone();
-        let geo_db = self.paths.geo_db();
-        self.build(
-            move |cache| {
-                let geo = Geo::read_only(&geo_db).ok().flatten();
-                let chosen: Vec<(&dyn tools::AnyTool, Option<&str>)> = chosen
-                    .iter()
-                    .map(|(tool, settings)| (*tool, settings.as_deref()))
-                    .collect();
-                tools::together(&chosen, cache, geo.as_ref(), &scope)
             },
             report,
         );
@@ -903,6 +761,11 @@ impl Library {
         self.write(Job::Apply(set.clone()), report);
     }
 
+    /// Writes the ticked fixes, finder by finder, reading the library again between passes.
+    pub fn apply_fixes<F: Fn(Event) + 'static>(self: &Rc<Self>, ticked: Vec<Fix>, report: F) {
+        self.write(Job::Fixes(ticked), report);
+    }
+
     /// Puts the last applied change set back.
     pub fn undo_last<F: Fn(Event) + 'static>(self: &Rc<Self>, report: F) {
         self.write(Job::UndoLast, report);
@@ -935,13 +798,41 @@ impl Library {
         let library = self.paths.library().to_path_buf();
         let cancel = self.cancel.clone();
         let progress = sender.clone();
+        let geo_db = self.paths.geo_db();
+        let thumbs = self.thumbs.clone();
 
         std::thread::spawn(move || {
             let told = |done: usize, total: usize| {
                 let _ = progress.send_blocking(Message::Done(done, total));
             };
+            if let Job::Fixes(ticked) = &job {
+                let geo = Geo::read_only(&geo_db).ok().flatten();
+                let mut rescan = |cache: &mut Cache| -> Result<(), String> {
+                    let _ = progress.send_blocking(Message::Note("Reading the photos again".to_string()));
+                    scan::run(cache, &library, &Exiv2, &thumbs, Mode::Reconcile, &|_| {}, &cancel)
+                        .map(|_| ())
+                        .map_err(|error| error.to_string())
+                };
+                let outcome = Engine::new(&library)
+                    .map_err(|error| error.to_string())
+                    .and_then(|mut engine| {
+                        fixes::apply(
+                            ticked,
+                            &mut cache,
+                            geo.as_ref(),
+                            &mut engine,
+                            &mut journal,
+                            &mut rescan,
+                            &told,
+                            &cancel,
+                        )
+                    });
+                let _ = sender.send_blocking(Message::Fixed(outcome, cache, journal));
+                return;
+            }
             let outcome = match Engine::new(&library) {
                 Ok(mut engine) => match &job {
+                    Job::Fixes(_) => unreachable!("the fixes are applied above"),
                     Job::Apply(set) => changeset::apply(set, &mut engine, &mut journal, &mut cache, &told, &cancel),
                     Job::UndoLast => changeset::undo_last(&mut engine, &mut journal, &mut cache, &told, &cancel),
                     Job::TakeBack(batch) => {
@@ -951,7 +842,7 @@ impl Library {
                 Err(error) => Err(error),
             };
             let kind = match job {
-                Job::Apply(_) => Kind::Write,
+                Job::Apply(_) | Job::Fixes(_) => Kind::Write,
                 Job::UndoLast | Job::TakeBack(_) => Kind::Undo,
             };
             let _ = sender.send_blocking(Message::Applied(
@@ -967,6 +858,16 @@ impl Library {
             while let Ok(message) = receiver.recv().await {
                 let event = match message {
                     Message::Done(done, total) => Event::Done(done, total),
+                    Message::Note(note) => Event::Note(note),
+                    Message::Fixed(outcome, cache, journal) => {
+                        *this.cache.borrow_mut() = Some(cache);
+                        *this.journal.borrow_mut() = Some(journal);
+                        this.working.set(false);
+                        match outcome {
+                            Ok(passes) => Event::Fixed(passes),
+                            Err(why) => Event::Failed(why),
+                        }
+                    }
                     Message::Applied(kind, outcome, cache, journal) => {
                         *this.cache.borrow_mut() = Some(cache);
                         *this.journal.borrow_mut() = Some(journal);
@@ -1133,14 +1034,10 @@ impl Library {
     }
 }
 
-/// Where a tool's settings are kept in `app.db`.
-fn tool_setting(key: &str) -> String {
-    format!("tool.{key}")
-}
-
 /// What a write pass is asked to do.
 enum Job {
     Apply(ChangeSet),
+    Fixes(Vec<Fix>),
     UndoLast,
     TakeBack(i64),
 }
@@ -1157,5 +1054,6 @@ enum Message {
     Note(String),
     Previewed(std::result::Result<ChangeSet, String>, Cache),
     Applied(Kind, std::result::Result<Applied, String>, Cache, Journal),
+    Fixed(std::result::Result<Vec<FixPass>, String>, Cache, Journal),
     Failed(String, Cache),
 }

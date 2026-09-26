@@ -3,7 +3,7 @@ use photomanager::library::Library;
 use photomanager::window::{VIEWS, Window};
 use photomanager_core::changeset::Wanted;
 use photomanager_core::filter::{Filter, Gap};
-use photomanager_core::layout::{Component, Layout};
+use photomanager_core::layout::Component;
 use photomanager_core::paths::Paths;
 use photomanager_core::scope::Scope;
 use photomanager_core::write::{Change, Field};
@@ -155,149 +155,80 @@ fn scans_into_its_cache() {
 
     reads_the_panel(&window);
     edits_one_photo(&window);
-    suggests_ready_made_fixes(&window, &opened);
+    suggests_fixes_to_tick(&window, &opened);
 
     previews_what_a_tool_would_change(&window, &opened);
     lists_the_tools_for_a_scope(&window, &opened, &library);
-    answers_the_questions_of_a_tool(&window, &opened);
-    answers_by_event_and_on_the_map(&window);
-    answers_a_question_about_a_camera(&window);
+    fills_in_the_forms_of_the_edits(&window, &opened);
     reads_the_history(&window, &opened);
-    keeps_a_tag_vocabulary(&window, &opened);
-    runs_tools_together(&window, &opened);
-    answers_where_an_event_belongs(&window, &opened);
     chooses_a_folder_layout(&opened);
 }
 
-/// The Suggestions view lists what the tools found on their own, grouped by tool, and the
-/// dashboard says how many. Open lands on the tool's page with the scope; a tag suggestion shows
-/// its rules not kept until Keep, and leaving the page drops them. A dismissed suggestion stays
-/// dismissed in another window on the same library. Nothing is written.
-fn suggests_ready_made_fixes(window: &Window, opened: &Rc<Library>) {
-    const PLACES: &str = "gps-from-places-tag:sure";
-    const FLAT: &str = "tags:flat";
-    const APART: &str = "tags:apart";
+/// The Suggestions view lists every fix the app is sure about, grouped by finder in the order
+/// they are applied, each with a check, and the dashboard says how many. A tick is one click and
+/// Select All ticks a group; the checks live only in the window, so another window on the same
+/// library starts with none. Nothing is written here: the apply is the smoke test's.
+fn suggests_fixes_to_tick(window: &Window, opened: &Rc<Library>) {
+    const BEIJING: &str = "places-from-tags:places/inChina/Beijing";
+    const FOLDER: &str = "folders:China/2006-09-00 Besuch Ben";
     let page = window.suggestions();
-    let tools = window.tools();
     let act = |name: &str, target: Option<gtk::glib::Variant>| {
         WidgetExt::activate_action(window, name, target.as_ref()).unwrap()
     };
     let passes = opened.history(0, 100).unwrap().len();
 
     window.show_view("suggestions");
-    until(|| !page.is_busy() && !page.found().is_empty(), "the tools were asked");
-    let keys: Vec<String> = page.open().iter().map(|one| one.key.clone()).collect();
+    until(|| !page.is_busy() && !page.found().is_empty(), "the fixes were found");
+    let found = page.found();
+    let keys: Vec<&str> = found.iter().map(|fix| fix.key.as_str()).collect();
     for wanted in [
-        PLACES,
-        "gps-from-the-event:sure",
-        "folder-migration:sure",
-        "tags:twin:people",
-        FLAT,
-        APART,
-        "tags:stray:Apartmens",
+        "tags:rename People -> people",
+        "tags:rename inChina -> places/inChina",
+        "tags:tidy",
+        BEIJING,
+        "places-from-events:Germany/2016-06-00 Harbour Walk",
+        FOLDER,
     ] {
-        assert!(keys.iter().any(|key| key == wanted), "{wanted} is not in {keys:?}");
+        assert!(keys.contains(&wanted), "{wanted} is not in {keys:?}");
     }
-    assert_eq!(page.find(PLACES).unwrap().photos, 7);
-    assert_eq!(page.find("folder-migration:sure").unwrap().photos, 2);
+    let beijing = found.iter().find(|fix| fix.key == BEIJING).unwrap();
+    assert_eq!(
+        (beijing.photos, beijing.detail.as_str()),
+        (2, "Beijing, Beijing, China")
+    );
     let shown = labels(page.upcast_ref());
-    for group in ["GPS from the Places Tag", "Tag Vocabulary", "Folder Migration"] {
+    for group in ["Tag Tree", "Places from Tags", "Places from Events", "Folders"] {
         assert!(shown.iter().any(|label| label == group), "no group {group}");
     }
-    assert!(
-        headed(page.upcast_ref())
-            .iter()
-            .any(|(title, _)| title == "6 tags match a place by its exact name")
-    );
+    assert!(shown.iter().position(|label| label == "Tag Tree") < shown.iter().position(|label| label == "Folders"));
     assert_eq!(
         window.dashboard().suggestions_line(),
-        Some(format!("{} Suggestions", keys.len()))
+        Some(format!("{} Suggestions", found.len()))
     );
+    assert!(page.ticked().is_empty(), "nothing starts ticked");
+    assert!(shown.iter().any(|label| label == "Tick the fixes to apply"));
 
-    act("win.open-suggestion", Some(PLACES.to_variant()));
-    assert_eq!(window.visible_view(), "tools");
-    assert_eq!(tools.showing(), "questions");
-    assert_eq!(window.scope(), Scope::Filter(Filter::all()));
-    let questions = tools.questions();
-    until(
-        || questions.key().as_deref() == Some("gps-from-places-tag") && !questions.is_busy(),
-        "the questions were asked",
-    );
-    assert_eq!(
-        questions
-            .questions()
-            .iter()
-            .filter(|question| question.confirmable())
-            .count(),
-        6,
-        "the bulk button does the rest"
-    );
-
-    let vocabulary = tools.vocabulary();
-    let looked = || {
-        until(
-            || !vocabulary.is_busy() && vocabulary.overview().is_some(),
-            "the tags were looked at",
-        )
-    };
-    act("win.open-suggestion", Some(FLAT.to_variant()));
-    assert_eq!(tools.showing(), "vocabulary");
-    looked();
-    assert_eq!(vocabulary.pending().len(), 2);
-    assert_eq!(opened.tool_settings("tag-vocabulary"), None, "not kept yet");
-    let rule = rows(vocabulary.upcast_ref())
-        .into_iter()
-        .find(|row| row.title() == "Rename inChina to places/inChina")
-        .expect("the suggested rule is listed");
-    assert!(rule.subtitle().unwrap().starts_with("Not kept yet"));
-
-    act("win.run-tool", Some("tag-vocabulary".to_variant()));
-    looked();
-    assert!(vocabulary.pending().is_empty(), "leaving the page dropped them");
-    assert!(vocabulary.vocabulary().rules.0.is_empty());
-
-    act("win.open-suggestion", Some(FLAT.to_variant()));
-    looked();
-    act("win.tag-keep", None);
-    assert!(vocabulary.pending().is_empty());
-    let kept = opened.tool_settings("tag-vocabulary").expect("kept");
-    assert!(kept.contains("rename inChina -> places/inChina"), "{kept}");
-    act("win.tag-forget-rule", Some(0.to_variant()));
-    act("win.tag-forget-rule", Some(0.to_variant()));
-    looked();
-    assert!(vocabulary.vocabulary().rules.0.is_empty());
-
-    window.show_view("suggestions");
-    until(|| !page.is_busy(), "asked again");
-    act("win.dismiss-suggestion", Some(APART.to_variant()));
-    assert!(page.open().iter().all(|one| one.key != APART));
-    assert!(page.toast().starts_with("Dismissed: "), "{}", page.toast());
-    assert_eq!(
-        window.dashboard().suggestions_line(),
-        Some(format!("{} Suggestions", page.open().len()))
-    );
+    act("win.tick-fix", Some((BEIJING, true).to_variant()));
+    assert_eq!(page.ticked(), [BEIJING]);
+    assert!(labels(page.upcast_ref()).iter().any(|label| label == "1 fix selected"));
+    act("win.fixes-select-all", Some("folders".to_variant()));
+    assert_eq!(page.ticked().len(), 2);
+    act("win.fixes-select-none", Some("all".to_variant()));
+    assert!(page.ticked().is_empty());
+    act("win.tick-fix", Some((FOLDER, true).to_variant()));
 
     let again = Library::open(opened.paths().clone()).expect("open the library again");
     let other: Window = gtk::glib::Object::builder().build();
     other.set_library(Some(again));
-    let remembered = other.suggestions();
+    let fresh = other.suggestions();
     until(
-        || !remembered.is_busy() && !remembered.found().is_empty(),
-        "asked in the other window",
+        || !fresh.is_busy() && !fresh.found().is_empty(),
+        "found in the other window",
     );
-    assert!(remembered.open().iter().all(|one| one.key != APART), "still dismissed");
-    assert!(remembered.find(APART).is_some(), "found, only not shown");
-    remembered.set_show_dismissed(true);
-    assert!(
-        headed(remembered.upcast_ref())
-            .iter()
-            .any(|(_, said)| said.starts_with("Dismissed - ")),
-        "Show Dismissed brings it back into the list"
-    );
+    assert!(fresh.ticked().is_empty(), "a tick is not kept anywhere");
     other.close();
 
-    act("win.restore-suggestion", Some(APART.to_variant()));
-    assert!(page.open().iter().any(|one| one.key == APART));
+    act("win.tick-fix", Some((FOLDER, false).to_variant()));
     assert_eq!(opened.history(0, 100).unwrap().len(), passes, "nothing was written");
     window.show_view("dashboard");
 }
@@ -372,560 +303,6 @@ fn walk(root: &std::path::Path) -> Vec<std::path::PathBuf> {
     all
 }
 
-/// The tag tool opens its tree instead of questions. A rename merges two nodes and the merged
-/// one counts both; taking the rule out brings the other back; a rule that would undo an earlier
-/// one says why; a suggestion is a click; and the preview holds exactly the photos the rules
-/// touch plus the untidy ones. Nothing is written here.
-fn keeps_a_tag_vocabulary(window: &Window, opened: &Rc<Library>) {
-    use photomanager_core::cache::Cache;
-    use photomanager_core::tools::Settings;
-    use photomanager_core::tools::tag_vocabulary::Vocabulary;
-    const TOOL: &str = "tag-vocabulary";
-    let tools = window.tools();
-    let page = tools.vocabulary();
-    let act = |name: &str, target: gtk::glib::Variant| WidgetExt::activate_action(window, name, Some(&target)).unwrap();
-    let looked = || {
-        until(
-            || !page.is_busy() && page.overview().is_some(),
-            "the tags were looked at",
-        );
-        page.overview().unwrap()
-    };
-    window.show_view("tools");
-    act("win.tools-scope", "all".to_variant());
-    act("win.run-tool", TOOL.to_variant());
-    assert_eq!(tools.showing(), "vocabulary", "a tree, not questions");
-    let before = looked();
-    let people = before.tree.count("people").unwrap();
-    let other = before.tree.count("People").unwrap();
-    assert!(
-        labels(page.upcast_ref()).iter().any(|label| label == "Suggestions"),
-        "the suggestions are on top"
-    );
-
-    act("win.tag-rule", "rename People -> people".to_variant());
-    let merged = looked();
-    assert_eq!(merged.tree.count("People"), None);
-    assert_eq!(
-        merged.tree.count("people"),
-        Some(people + other),
-        "the merged node counts both"
-    );
-    assert!(
-        rows(page.upcast_ref())
-            .iter()
-            .any(|row| row.title() == "Rename People to people"),
-        "the rule is listed"
-    );
-
-    act("win.tag-rule", "rename people -> People".to_variant());
-    let why = page.refused().expect("the rule was refused");
-    assert!(why.contains("back to where it was"), "{why}");
-    assert_eq!(page.vocabulary().rules.0.len(), 1, "a refused rule is not kept");
-
-    act("win.tag-forget-rule", 0.to_variant());
-    let back = looked();
-    assert_eq!(back.tree.count("People"), Some(other), "without the rule it is back");
-
-    let twin = back
-        .suggestions
-        .iter()
-        .find(|suggestion| suggestion.key == "twin:people")
-        .expect("the twins are suggested");
-    assert_eq!(twin.offer, "Merge Into people");
-    act("win.tag-suggestion", ("twin:people", "confirm").to_variant());
-    let confirmed = looked();
-    assert_eq!(confirmed.tree.count("People"), None, "confirm makes it a rule");
-    act("win.tag-suggestion", ("mixed:food", "leave").to_variant());
-    let left = looked();
-    assert!(left.suggestions.iter().all(|suggestion| suggestion.key != "mixed:food"));
-
-    act("win.tag-generated", "kept".to_variant());
-    looked();
-    let settings = page.settings().unwrap();
-    assert_eq!(Vocabulary::read(&settings).unwrap().generated.key(), "kept");
-    assert_eq!(opened.tool_settings(TOOL), Some(settings.clone()), "kept at once");
-
-    act("win.tag-rename", "mixed/wired".to_variant());
-    assert_eq!(
-        page.editing().as_deref(),
-        Some("mixed/wired"),
-        "the rename dialog is open"
-    );
-
-    let cache = Cache::read_only(&opened.paths().cache_db()).unwrap().unwrap();
-    let expected = photomanager_core::tools::find(TOOL)
-        .unwrap()
-        .change_set(&cache, None, &window.scope(), Some(&settings))
-        .unwrap();
-    WidgetExt::activate_action(window, "win.preview-tags", None).unwrap();
-    let preview = window.preview();
-    until(
-        || preview.title().as_deref() == Some("Tidy the tags with 1 rule") && !opened.is_busy(),
-        "the rules were previewed",
-    );
-    let counts = preview.counts().unwrap();
-    assert_eq!(counts.change, expected.counts().change);
-    assert!(counts.change > 0);
-    assert_eq!(tools.showing(), "preview");
-    window.show_view("dashboard");
-}
-
-/// Two tools chosen together are one preview, named after both, with one row per photo.
-fn runs_tools_together(window: &Window, opened: &Rc<Library>) {
-    window.show_view("tools");
-    WidgetExt::activate_action(
-        window,
-        "win.tools-scope",
-        Some(&"Germany/2015-00-00 Seasons".to_variant()),
-    )
-    .unwrap();
-    WidgetExt::activate_action(
-        window,
-        "win.run-together",
-        Some(&"time-zones,tag-vocabulary".to_variant()),
-    )
-    .unwrap();
-    let preview = window.preview();
-    until(
-        || {
-            preview
-                .title()
-                .is_some_and(|title| title.starts_with("Write time zones and XMP dates and tidy the tags"))
-                && !opened.is_busy()
-        },
-        "the two tools were previewed as one",
-    );
-    let counts = preview.counts().unwrap();
-    assert_eq!(
-        (counts.photos, counts.change),
-        (2, 2),
-        "one row per photo with a date to zone, the third states its offset and its tags are tidy"
-    );
-    window.show_view("dashboard");
-}
-
-/// The folder tool asks one question per event not in a city and per loose photo; Confirm Sure
-/// Cities takes the one event every photo of which names its city; Enter a Folder says where it
-/// would go with every letter; the preview is of folders and costs no traffic. Nothing is moved
-/// here: the apply is the smoke test's.
-fn answers_where_an_event_belongs(window: &Window, opened: &Rc<Library>) {
-    use photomanager_core::tools::folders::Parts;
-    use photomanager_core::tools::{Answer, Kind};
-    const TOOL: &str = "folder-migration";
-    const BEN: &str = "China/2006-09-00 Besuch Ben";
-    const GARDEN: &str = "Germany/2013-05-18 Garden Party";
-    let tools = window.tools();
-    let questions = tools.questions();
-    let act = |name: &str, target: gtk::glib::Variant| WidgetExt::activate_action(window, name, Some(&target)).unwrap();
-    let asked = |key: &str| {
-        questions
-            .questions()
-            .into_iter()
-            .find(|question| question.key == key)
-            .unwrap_or_else(|| panic!("nothing asks about {key}"))
-    };
-    window.show_view("tools");
-    act("win.tools-scope", "all".to_variant());
-    act("win.run-tool", TOOL.to_variant());
-    until(
-        || questions.key().as_deref() == Some(TOOL) && !questions.is_busy(),
-        "the events were asked about",
-    );
-    assert_eq!(asked(BEN).kind, Kind::Folder);
-    let row = rows(questions.upcast_ref())
-        .into_iter()
-        .find(|row| row.title() == BEN && row.subtitle().is_some_and(|said| said.starts_with("2 photos")))
-        .expect("a row for the event, by its whole path");
-    let subtitle = row.subtitle().unwrap();
-    assert!(
-        subtitle.contains("Offered: China/Beijing/2006-09-00 Besuch Ben - the places tag of every photo"),
-        "{subtitle}"
-    );
-    let menu = descendants(row.upcast_ref())
-        .into_iter()
-        .find_map(|widget| widget.downcast::<gtk::MenuButton>().ok())
-        .and_then(|button| button.menu_model())
-        .expect("a menu of answers");
-    let items: Vec<String> = (0..menu.n_items())
-        .filter_map(|index| {
-            menu.item_attribute_value(index, "label", None)
-                .and_then(|label| label.get::<String>())
-        })
-        .collect();
-    assert!(items.iter().any(|item| item == "Enter a Folder…"), "{items:?}");
-    assert!(
-        labels(questions.upcast_ref())
-            .iter()
-            .any(|label| label == "Where the Events Are"),
-        "the report is above the questions"
-    );
-
-    act("win.answer-exact", TOOL.to_variant());
-    assert!(matches!(asked(BEN).answer, Some(Answer::Folder(_))));
-    assert_eq!(asked(GARDEN).answer, None, "only the sure one");
-
-    act("win.answer", (TOOL, GARDEN, "folder").to_variant());
-    assert_eq!(questions.typing().as_deref(), Some(GARDEN), "the folder dialog is open");
-    let mut parts = Parts::of(&asked(GARDEN), &Layout::default());
-    assert!(parts.date_fixed);
-    parts.set(&Component::Country, "");
-    assert!(questions.type_folder(GARDEN, &parts).is_err());
-    assert_eq!(
-        questions.typing().as_deref(),
-        Some(GARDEN),
-        "a bad folder keeps the dialog open"
-    );
-    parts.set(&Component::Country, "Germany");
-    parts.set(&Component::City, "Hamburg");
-    questions.type_folder(GARDEN, &parts).unwrap();
-    assert_eq!(questions.typing(), None, "the dialog closed");
-    assert_eq!(
-        asked(GARDEN).answer,
-        Some(Answer::Folder("Germany/Hamburg/2013-05-18 Garden Party".to_string()))
-    );
-
-    WidgetExt::activate_action(window, "win.preview-answers", None).unwrap();
-    let preview = window.preview();
-    until(
-        || preview.title().as_deref() == Some("Folder Migration") && !opened.is_busy(),
-        "the answers were previewed",
-    );
-    let counts = preview.counts().unwrap();
-    assert_eq!((counts.photos, counts.change, counts.traffic), (2, 2, 0));
-    window.show_view("dashboard");
-}
-
-/// A tool that asks shows one row per tag with its photos, the row on the list says what waits,
-/// Confirm Exact Matches answers exactly the exact ones, an answer outlives the window, and the
-/// preview holds the answered photos and no other. Nothing is written here.
-fn answers_the_questions_of_a_tool(window: &Window, opened: &Rc<Library>) {
-    use photomanager_core::tools::Answer;
-    const TOOL: &str = "gps-from-places-tag";
-    let tools = window.tools();
-    let questions = tools.questions();
-    let act = |name: &str, target: gtk::glib::Variant| WidgetExt::activate_action(window, name, Some(&target)).unwrap();
-    let count_of = |tools: &photomanager::tools::Tools| {
-        until(|| tools.counted().is_some(), "the tools were counted");
-        let counted = tools.counted().unwrap();
-        let count = counted
-            .tools
-            .iter()
-            .find(|(key, _)| key == TOOL)
-            .unwrap()
-            .1
-            .clone()
-            .unwrap();
-        let waiting = counted.waiting.iter().find(|(key, _)| key == TOOL).unwrap().1;
-        (count, waiting)
-    };
-    window.show_view("tools");
-    act("win.tools-scope", "all".to_variant());
-    assert_eq!(count_of(&tools), (0, 8), "nothing is answered yet");
-    assert!(
-        labels(tools.upcast_ref())
-            .iter()
-            .any(|label| label == "8 tags wait for an answer"),
-        "the row says what waits instead of a count of nothing"
-    );
-
-    act("win.run-tool", TOOL.to_variant());
-    assert_eq!(tools.showing(), "questions");
-    until(|| !questions.is_busy(), "the questions were asked");
-    let asked = questions.questions();
-    assert_eq!(asked.len(), 10, "one question per tag");
-    let shown: Vec<String> = rows(questions.upcast_ref())
-        .iter()
-        .map(|row| row.title().to_string())
-        .collect();
-    for question in &asked {
-        assert_eq!(
-            shown.iter().filter(|title| **title == question.title).count(),
-            1,
-            "one row for {}",
-            question.title
-        );
-    }
-    let beijing = rows(questions.upcast_ref())
-        .into_iter()
-        .find(|row| row.title() == "inChina/Beijing")
-        .expect("a row for Beijing");
-    assert!(beijing.subtitle().unwrap().starts_with("2 photos - Best match Beijing"));
-
-    act("win.answer-exact", TOOL.to_variant());
-    let answered = questions.questions();
-    for question in &answered {
-        let exact = !question.apart && question.sure().is_some();
-        assert_eq!(
-            matches!(question.answer, Some(Answer::Place(_))),
-            exact,
-            "{} is answered only if it matched exactly",
-            question.key
-        );
-    }
-    let confirmed = answered
-        .iter()
-        .filter(|question| matches!(question.answer, Some(Answer::Place(_))))
-        .count();
-    assert_eq!(confirmed, 6);
-    until(|| count_of(&tools) == (7, 2), "the row counts what the answers give");
-
-    // Another window on another opening of the same library finds the answers where they were.
-    let again = Library::open(opened.paths().clone()).expect("open the library again");
-    let other: Window = gtk::glib::Object::builder().build();
-    other.set_library(Some(again));
-    WidgetExt::activate_action(&other, "win.run-tool", Some(&TOOL.to_variant())).unwrap();
-    let remembered = other.tools().questions();
-    until(
-        || !remembered.is_busy() && !remembered.questions().is_empty(),
-        "asked again",
-    );
-    assert_eq!(
-        remembered.settings(),
-        questions.settings(),
-        "the answers are remembered"
-    );
-    assert_eq!(
-        remembered
-            .questions()
-            .iter()
-            .map(|question| question.answer.clone())
-            .collect::<Vec<_>>(),
-        answered
-            .iter()
-            .map(|question| question.answer.clone())
-            .collect::<Vec<_>>()
-    );
-    other.close();
-
-    WidgetExt::activate_action(window, "win.preview-answers", None).unwrap();
-    let preview = window.preview();
-    until(
-        || preview.title().as_deref() == Some("Set GPS from the places tag") && !opened.is_busy(),
-        "the answers were previewed",
-    );
-    let counts = preview.counts().unwrap();
-    assert_eq!(
-        (counts.photos, counts.change),
-        (7, 7),
-        "the answered photos and no other"
-    );
-    assert_eq!(tools.showing(), "preview");
-
-    act("win.answer", (TOOL, "places/inGreece/Atens", "leave").to_variant());
-    until(
-        || count_of(&tools) == (8, 1),
-        "left alone, the photo with both tags is free",
-    );
-    act("win.answer", (TOOL, "places/inGreece/Atens", "forget").to_variant());
-    until(|| count_of(&tools) == (7, 2), "asked again, it waits again");
-    window.show_view("dashboard");
-}
-
-/// The event tool asks one question per event on the same page, with its own words; its bulk
-/// button confirms only the events whose located photos agree, and a pin dropped on the map
-/// answers a question. Nothing is written here.
-fn answers_by_event_and_on_the_map(window: &Window) {
-    use photomanager_core::tools::Answer;
-    const TOOL: &str = "gps-from-the-event";
-    const HARBOUR: &str = "Germany/2016-06-00 Harbour Walk";
-    const COPENHAGEN: &str = "Denmark/2018-10-00 Wedding Trip to Copenhagen";
-    let tools = window.tools();
-    let questions = tools.questions();
-    let act = |name: &str, target: gtk::glib::Variant| WidgetExt::activate_action(window, name, Some(&target)).unwrap();
-    let count_of = |tools: &photomanager::tools::Tools| {
-        until(|| tools.counted().is_some(), "the tools were counted");
-        let counted = tools.counted().unwrap();
-        let count = counted
-            .tools
-            .iter()
-            .find(|(key, _)| key == TOOL)
-            .unwrap()
-            .1
-            .clone()
-            .unwrap();
-        let waiting = counted.waiting.iter().find(|(key, _)| key == TOOL).unwrap().1;
-        (count, waiting)
-    };
-    window.show_view("tools");
-    act("win.tools-scope", "all".to_variant());
-    assert_eq!(count_of(&tools), (0, 6));
-    assert!(
-        labels(tools.upcast_ref())
-            .iter()
-            .any(|label| label == "6 events wait for an answer"),
-        "the row says what waits"
-    );
-
-    act("win.run-tool", TOOL.to_variant());
-    until(
-        || questions.key().as_deref() == Some(TOOL) && !questions.is_busy(),
-        "the events were asked about",
-    );
-    let asked = questions.questions();
-    assert_eq!(asked.len(), 6, "one question per event");
-    let shown = rows(questions.upcast_ref());
-    for question in &asked {
-        assert_eq!(
-            shown.iter().filter(|row| row.title() == question.title).count(),
-            1,
-            "one row for {}",
-            question.title
-        );
-    }
-    let harbour = shown
-        .iter()
-        .find(|row| row.title() == "2016-06-00 Harbour Walk")
-        .expect("a row for the walk");
-    assert_eq!(
-        harbour.subtitle().unwrap(),
-        "1 photo - Best match Hamburg, Hamburg, Germany, where 3 of its photos are"
-    );
-    let menu = descendants(harbour.upcast_ref())
-        .into_iter()
-        .find_map(|widget| widget.downcast::<gtk::MenuButton>().ok())
-        .and_then(|button| button.menu_model())
-        .expect("a menu of answers");
-    let items: Vec<String> = (0..menu.n_items())
-        .filter_map(|index| {
-            menu.item_attribute_value(index, "label", None)
-                .and_then(|label| label.get::<String>())
-        })
-        .collect();
-    assert!(items.iter().any(|item| item == "Pick on Map…"), "{items:?}");
-    assert!(
-        labels(questions.upcast_ref())
-            .iter()
-            .any(|label| label == "Confirm Where the Rest Is"),
-        "the bulk button is worded by the tool"
-    );
-
-    act("win.answer-exact", TOOL.to_variant());
-    let answered: Vec<String> = questions
-        .questions()
-        .into_iter()
-        .filter(|question| question.answer.is_some())
-        .map(|question| question.key)
-        .collect();
-    assert_eq!(answered, [HARBOUR], "only where the rest agrees");
-
-    act("win.answer", (TOOL, COPENHAGEN, "map").to_variant());
-    assert_eq!(
-        questions.picking(),
-        Some((COPENHAGEN.to_string(), None)),
-        "the map is open"
-    );
-    questions.pick_point(55.6800, 12.5900);
-    let (_, pin) = questions.picking().unwrap();
-    let Some(Answer::Pin { near, .. }) = pin else {
-        panic!("the click made no pin: {pin:?}");
-    };
-    assert_eq!(near.name, "Copenhagen");
-    assert!(questions.use_point());
-    assert_eq!(questions.picking(), None, "the map closed");
-    let copenhagen = questions
-        .questions()
-        .into_iter()
-        .find(|question| question.key == COPENHAGEN)
-        .unwrap();
-    assert!(
-        matches!(copenhagen.answer, Some(Answer::Pin { lat, lon, .. }) if (lat, lon) == (55.68, 12.59)),
-        "{:?}",
-        copenhagen.answer
-    );
-    until(|| count_of(&tools) == (2, 4), "the row counts what the answers give");
-    window.show_view("dashboard");
-}
-
-/// A question about a camera's clock has Enter a Shift where a place has the map, Confirm puts
-/// the offer's own answer in, and a typed shift is checked before it is kept. Nothing is written
-/// here.
-fn answers_a_question_about_a_camera(window: &Window) {
-    use photomanager_core::tools::{Answer, Kind};
-    const TOOL: &str = "dates-against-the-folder";
-    const PARTY: &str = "Germany/2013-05-18 Garden Party";
-    let tools = window.tools();
-    let questions = tools.questions();
-    let act = |name: &str, target: gtk::glib::Variant| WidgetExt::activate_action(window, name, Some(&target)).unwrap();
-    let asked = |key: &str| {
-        questions
-            .questions()
-            .into_iter()
-            .find(|question| question.key == key)
-            .unwrap_or_else(|| panic!("nothing asks about {key}"))
-    };
-    window.show_view("tools");
-    act("win.tools-scope", "all".to_variant());
-    act("win.run-tool", TOOL.to_variant());
-    until(
-        || questions.key().as_deref() == Some(TOOL) && !questions.is_busy(),
-        "the events were asked about",
-    );
-    let party = asked(PARTY);
-    assert_eq!(party.kind, Kind::Shift);
-    let row = rows(questions.upcast_ref())
-        .into_iter()
-        .find(|row| row.title() == "2013-05-18 Garden Party")
-        .expect("a row for the party");
-    let subtitle = row.subtitle().unwrap();
-    assert!(
-        subtitle.contains("Offered: Shift DMC-TZ7 by +623d 23:45 (more than a year)"),
-        "{subtitle}"
-    );
-    assert!(
-        subtitle.contains("DMC-TZ7: 2 photos"),
-        "the evidence per camera: {subtitle}"
-    );
-    let menu = descendants(row.upcast_ref())
-        .into_iter()
-        .find_map(|widget| widget.downcast::<gtk::MenuButton>().ok())
-        .and_then(|button| button.menu_model())
-        .expect("a menu of answers");
-    let items: Vec<String> = (0..menu.n_items())
-        .filter_map(|index| {
-            menu.item_attribute_value(index, "label", None)
-                .and_then(|label| label.get::<String>())
-        })
-        .collect();
-    assert!(items.iter().any(|item| item == "Enter a Shift…"), "{items:?}");
-    assert!(
-        !items
-            .iter()
-            .any(|item| item == "Pick on Map…" || item == "Choose Another…"),
-        "{items:?}"
-    );
-    assert!(
-        !labels(questions.upcast_ref())
-            .iter()
-            .any(|label| label == "Confirm Exact Matches"),
-        "no bulk button for dates"
-    );
-
-    act("win.answer", (TOOL, PARTY, "best").to_variant());
-    assert_eq!(
-        asked(PARTY).answer,
-        Some(party.offers[0].answer.clone()),
-        "Confirm puts the offer in"
-    );
-
-    act("win.answer", (TOOL, PARTY, "shift").to_variant());
-    assert_eq!(questions.typing().as_deref(), Some(PARTY), "the shift dialog is open");
-    let typed = |text: &str| questions.type_shift(PARTY, &[("DMC-TZ7".to_string(), text.to_string())]);
-    assert!(typed("soon").unwrap_err().starts_with("DMC-TZ7: "));
-    assert_eq!(
-        questions.typing().as_deref(),
-        Some(PARTY),
-        "a bad shift keeps the dialog open"
-    );
-    typed("-2d").unwrap();
-    assert_eq!(questions.typing(), None, "the dialog closed");
-    let Some(Answer::Shift(moved)) = asked(PARTY).answer else {
-        panic!("not a shift: {:?}", asked(PARTY).answer);
-    };
-    assert_eq!(moved[0].by.written(), "-2d");
-    window.show_view("dashboard");
-}
-
 /// The preview knows only a change set: it counts it, it lets rows be dropped from it, and it
 /// asks the engine for the exact diff of one photo when that photo is asked about. Nothing here
 /// writes; the apply is the smoke test's.
@@ -976,36 +353,38 @@ fn previews_what_a_tool_would_change(window: &Window, opened: &Rc<Library>) {
     assert!(preview.applied().is_none(), "a preview writes nothing");
 }
 
-/// Each tool says what it would change for the scope, and that is the number the preview shows
-/// when it is opened. The count follows the scope, and the library after a scan.
+/// The tools work on the scope the dialog or the gallery gives, the scope row says how many
+/// photos it names, and an edit given its value previews exactly those photos. The count follows
+/// the library after a scan.
 fn lists_the_tools_for_a_scope(window: &Window, opened: &Rc<Library>, library: &std::path::Path) {
     const EVENT: &str = "Germany/2019-07-13 Sommerfest";
-    const DEMO: &str = "demo-rating";
     let tools = window.tools();
     let act = |name: &str, target: &str| WidgetExt::activate_action(window, name, Some(&target.to_variant())).unwrap();
-    let demo = || {
-        until(|| tools.counted().is_some(), "the tools were counted");
-        let counted = tools.counted().unwrap();
-        let (_, count) = counted
-            .tools
-            .iter()
-            .find(|(key, _)| key == DEMO)
-            .expect("the demo is listed");
-        (counted.photos, *count.as_ref().unwrap())
-    };
+    let counted = |photos: usize| until(|| tools.scope_photos() == Some(photos), "the scope was counted");
     window.show_view("tools");
+    let listed: Vec<String> = rows(tools.upcast_ref())
+        .iter()
+        .map(|row| row.title().to_string())
+        .collect();
+    for edit in [
+        "Set Place",
+        "Shift Dates",
+        "Set Date",
+        "Set Time Zone",
+        "Add Tag",
+        "Remove Tag",
+        "Rename Tag",
+        "Tidy Tags",
+        "Move Event",
+    ] {
+        assert!(listed.iter().any(|title| title == edit), "{edit} is not in {listed:?}");
+    }
 
     act("win.tools-scope", "all");
-    assert_eq!(
-        demo(),
-        (
-            photomanager_core::fixtures::photo_count(),
-            photomanager_core::fixtures::photo_count()
-        )
-    );
+    counted(photomanager_core::fixtures::photo_count());
     act("win.tools-scope", EVENT);
     assert_eq!(window.scope(), Scope::Filter(Filter::all().within(EVENT)));
-    assert_eq!(demo(), (3, 3), "the event narrows the count to its photos");
+    counted(3);
 
     act("win.tools-scope", "picked");
     assert_eq!(
@@ -1015,15 +394,17 @@ fn lists_the_tools_for_a_scope(window: &Window, opened: &Rc<Library>, library: &
     );
     act("win.tools-scope", EVENT);
 
-    act("win.run-tool", DEMO);
-    until(|| !opened.is_busy(), "the demo was built");
     let preview = window.preview();
-    let counts = preview.counts().expect("the demo was previewed");
-    assert_eq!(
-        (counts.photos, counts.change),
-        (3, demo().1),
-        "the row said what the preview shows"
-    );
+    let previewed = |value: &str| {
+        act("win.run-edit", &format!("demo-rating:{value}"));
+        until(
+            || !opened.is_busy() && preview.title().as_deref() == Some(&format!("Set a rating of {value}")),
+            "the demo was built",
+        );
+        preview.counts().expect("the demo was previewed")
+    };
+    let counts = previewed("3");
+    assert_eq!((counts.photos, counts.change), (3, 3), "the scope's photos");
     assert_eq!(tools.showing(), "preview");
 
     // The header narrows at a breakpoint once the window is that narrow; the tabs cannot.
@@ -1034,7 +415,7 @@ fn lists_the_tools_for_a_scope(window: &Window, opened: &Rc<Library>, library: &
     let (width, _, _, _) = stack.measure(gtk::Orientation::Horizontal, -1);
     assert!(width < 400, "the tabs need {width} px, more than a phone has");
 
-    // Another program rates one photo of the event; after a scan the count knows it.
+    // Another program rates one photo of the event; after a scan the preview knows it.
     let photo = library.join(EVENT).join("IMAG0001.jpg");
     let status = std::process::Command::new("exiftool")
         .args(["-q", "-overwrite_original", "-XMP-xmp:Rating=3"])
@@ -1048,7 +429,82 @@ fn lists_the_tools_for_a_scope(window: &Window, opened: &Rc<Library>, library: &
         || opened.version() > before && !opened.is_scanning(),
         "the scan finished",
     );
-    assert_eq!(demo(), (3, 2), "the count after a scan is fresh");
+    counted(3);
+    let counts = previewed("3");
+    assert_eq!(counts.change, 2, "the preview after a scan is fresh");
+    window.show_view("dashboard");
+}
+
+/// Each edit asks its value in a form of its own, and the value given makes the preview. A value
+/// that does not read says why and previews nothing. Nothing is written here.
+fn fills_in_the_forms_of_the_edits(window: &Window, opened: &Rc<Library>) {
+    use photomanager_core::tools::{Answer, Located};
+    let tools = window.tools();
+    let preview = window.preview();
+    let act = |name: &str, target: &str| WidgetExt::activate_action(window, name, Some(&target.to_variant())).unwrap();
+    let previewed = |asked: &str, title: &str| {
+        act("win.run-edit", asked);
+        until(
+            || !opened.is_busy() && preview.title().as_deref() == Some(title),
+            "the edit was previewed",
+        );
+        preview.counts().unwrap()
+    };
+    window.show_view("tools");
+
+    let form = || window.visible_dialog().map(|dialog| dialog.title().to_string());
+    for (edit, title) in [
+        ("add-tag", "Add Tag"),
+        ("set-place", "Set Place"),
+        ("set-date", "Set Date"),
+        ("set-time-zone", "Set Time Zone"),
+        ("tidy-tags", "Tidy Tags"),
+        ("shift-dates", "Shift Dates"),
+    ] {
+        act("win.run-edit", edit);
+        assert_eq!(form().as_deref(), Some(title), "{edit} shows its form");
+        window.visible_dialog().unwrap().force_close();
+    }
+    act("win.tools-scope", "all");
+    act("win.run-edit", "move-event");
+    assert_ne!(form().as_deref(), Some("Move Event"), "no form without one event");
+    assert!(
+        tools.toast().contains("choose one event as the scope"),
+        "{}",
+        tools.toast()
+    );
+
+    act("win.run-edit", "add-tag:people//Anna");
+    assert!(tools.toast().starts_with("Add Tag: "), "{}", tools.toast());
+
+    let counts = previewed("rename-tag:People -> people", "Rename People to people");
+    assert!(counts.change > 0);
+    let counts = previewed("set-time-zone:", "Set the time zone of where each photo was taken");
+    assert!(counts.change > 0);
+    let beijing = opened.find_place("Beijing")[0].place.clone();
+    let place = Answer::Place(Located::of(&beijing)).written();
+    let counts = previewed(&format!("set-place:{place}"), "Set the place to Beijing");
+    assert!(
+        counts.change > 0 && counts.refused > 0,
+        "a photo with a position of its own is refused"
+    );
+
+    act("win.tools-scope", "China/2006-09-00 Besuch Ben");
+    act("win.run-edit", "move-event");
+    assert_eq!(form().as_deref(), Some("Move Event"));
+    let dialog = window.visible_dialog().expect("the folder form");
+    assert!(
+        headed(dialog.upcast_ref())
+            .iter()
+            .any(|(title, said)| title == "After" && said == "China/Beijing/2006-09-00 Besuch Ben"),
+        "it starts from where Folder Migration would put it"
+    );
+    dialog.force_close();
+    let counts = previewed(
+        "move-event:China/Beijing/2006-09-00 Besuch Ben",
+        "Move China/2006-09-00 Besuch Ben to China/Beijing/2006-09-00 Besuch Ben",
+    );
+    assert_eq!(counts.change, 1, "the event moves as one folder");
     window.show_view("dashboard");
 }
 

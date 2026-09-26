@@ -2,115 +2,90 @@ using Gtk 4.0;
 using Adw 1;
 
 template $PmTools: Adw.Bin {
-  child: Adw.NavigationView nav {
-    Adw.NavigationPage {
-      title: "Tools";
-      tag: "tools";
+  child: Adw.ToastOverlay toasts {
+    child: Adw.NavigationView nav {
+      Adw.NavigationPage {
+        title: "Tools";
+        tag: "tools";
 
-      child: ScrolledWindow {
-        hscrollbar-policy: never;
+        child: ScrolledWindow {
+          hscrollbar-policy: never;
 
-        child: Adw.Clamp {
-          maximum-size: 720;
+          child: Adw.Clamp {
+            maximum-size: 720;
 
-          child: Box {
-            orientation: vertical;
-            spacing: 24;
-            margin-top: 24;
-            margin-bottom: 24;
-            margin-start: 12;
-            margin-end: 12;
+            child: Box {
+              orientation: vertical;
+              spacing: 24;
+              margin-top: 24;
+              margin-bottom: 24;
+              margin-start: 12;
+              margin-end: 12;
 
-            Adw.PreferencesGroup scope_group {
-              title: "Scope";
-              description: "What the tools work on";
+              Adw.PreferencesGroup scope_group {
+                title: "Scope";
+                description: "What the tools work on";
 
-              Adw.ActionRow scope_row {
-                title: "Whole Library";
-                activatable: true;
+                Adw.ActionRow scope_row {
+                  title: "Whole Library";
+                  activatable: true;
 
-                [suffix]
-                Image {
-                  icon-name: "go-next-symbolic";
-                  accessible-role: presentation;
+                  [suffix]
+                  Image {
+                    icon-name: "go-next-symbolic";
+                    accessible-role: presentation;
+                  }
                 }
               }
-            }
 
-            Adw.PreferencesGroup tools_group {
-              title: "Tools";
-            }
+              Adw.PreferencesGroup tools_group {
+                title: "Tools";
+                description: "Each writes a value you give to every photo of the scope, after a preview";
+              }
 
-            Adw.PreferencesGroup together_group {
-              Adw.ActionRow together_row {
-                title: "Run Together";
-                subtitle: "Several tools as one pass, so each photo is written once";
-                activatable: true;
+              Adw.StatusPage empty {
+                visible: false;
+                icon-name: "applications-engineering-symbolic";
+                title: "No Tools Yet";
+                description: "Edits that write a place, a date, a tag or a folder to many photos at once will be listed here.";
 
-                [suffix]
-                Image {
-                  icon-name: "go-next-symbolic";
-                  accessible-role: presentation;
+                styles [
+                  "compact",
+                ]
+              }
+
+              Adw.PreferencesGroup {
+                Adw.ActionRow history_row {
+                  title: "History";
+                  subtitle: "Every change written to the photos, and taking one back";
+                  activatable: true;
+                  action-name: "win.show-history";
+
+                  [suffix]
+                  Image {
+                    icon-name: "go-next-symbolic";
+                    accessible-role: presentation;
+                  }
                 }
               }
-            }
-
-            Adw.StatusPage empty {
-              visible: false;
-              icon-name: "applications-engineering-symbolic";
-              title: "No Tools Yet";
-              description: "Tools that fix locations, dates, tags, people, folders and file names in bulk will be listed here.";
-
-              styles [
-                "compact",
-              ]
-            }
-
-            Adw.PreferencesGroup {
-              Adw.ActionRow history_row {
-                title: "History";
-                subtitle: "Every change written to the photos, and taking one back";
-                activatable: true;
-                action-name: "win.show-history";
-
-                [suffix]
-                Image {
-                  icon-name: "go-next-symbolic";
-                  accessible-role: presentation;
-                }
-              }
-            }
+            };
           };
         };
-      };
-    }
+      }
 
-    Adw.NavigationPage {
-      title: "Questions";
-      tag: "questions";
+      Adw.NavigationPage {
+        title: "Preview";
+        tag: "preview";
 
-      child: $PmQuestions questions {};
-    }
+        child: $PmPreview preview {};
+      }
 
-    Adw.NavigationPage {
-      title: "Tag Vocabulary";
-      tag: "vocabulary";
+      Adw.NavigationPage {
+        title: "History";
+        tag: "history";
 
-      child: $PmVocabulary vocabulary {};
-    }
-
-    Adw.NavigationPage {
-      title: "Preview";
-      tag: "preview";
-
-      child: $PmPreview preview {};
-    }
-
-    Adw.NavigationPage {
-      title: "History";
-      tag: "history";
-
-      child: $PmHistory history {};
-    }
+        child: $PmHistory history {};
+      }
+    };
   };
 }

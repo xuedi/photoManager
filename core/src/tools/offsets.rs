@@ -16,8 +16,8 @@ pub const NO_PLACE_DATA: &str = "there is no place data yet: get it on the dashb
 #[derive(Debug, Clone, PartialEq)]
 pub enum Zone {
     Known(String),
-    /// The folder's country has several zones and the photo no position: someone has to say
-    /// which, once for the whole of [`zone_key`].
+    /// The folder's country has several zones and the photo no position: its zone is given by
+    /// hand.
     Several {
         country: String,
         zones: Vec<(String, i64)>,
@@ -93,24 +93,11 @@ impl<'a> Offsets<'a> {
             Zone::Several { country, .. } => match chosen {
                 Some(zone) => dates::offset_in(zone, at),
                 None => Err(format!(
-                    "{country} has several time zones: say which on Time Zones and XMP Dates"
+                    "{country} has several time zones: give the zone with Set Time Zone"
                 )),
             },
             Zone::Unknown(why) => Err(why),
         }
-    }
-}
-
-/// What a question about a country of several zones is kept under: the photo's event, or the
-/// folder it lies loose in.
-pub fn zone_key(photo: &Dated) -> String {
-    match &photo.event_dir {
-        Some(event_dir) => event_dir.clone(),
-        None => photo
-            .rel_path
-            .rsplit_once('/')
-            .map(|(folder, _)| folder.to_string())
-            .unwrap_or_default(),
     }
 }
 

@@ -16,7 +16,7 @@
 
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 
-use super::{Answer, Answers, EXACT, Finding, Kind, Located, Offer, Question, Tool, Wording};
+use super::{Answer, Answers, EXACT, Located, Offer, Question, Tool};
 use crate::cache::{self, Cache, Folder, Tagged};
 use crate::changeset::Wanted;
 use crate::geo::lookup::How;
@@ -29,6 +29,9 @@ use crate::write::Move;
 pub struct FolderMigration;
 
 const PLACES: &str = "places";
+
+/// How a move the people gate holds back starts to say why.
+pub const PEOPLE_FIRST: &str = "Immich names";
 
 /// A folder an event or a photo can be answered with: plain folder names, then the event folder
 /// `YYYY-MM-DD Name`. Whether it is in the layout is asked when it is to be moved, so an answer
@@ -158,12 +161,6 @@ impl Parts {
             .find(|(named, _)| named == component)
             .map(|(_, text)| text.as_str())
             .unwrap_or_default()
-    }
-
-    pub fn set(&mut self, component: &Component, text: &str) {
-        if let Some((_, kept)) = self.named.iter_mut().find(|(named, _)| named == component) {
-            *kept = text.to_string();
-        }
     }
 
     /// What the question's folder or photo would be called with these parts.
@@ -424,8 +421,6 @@ struct Survey<'a> {
     spellings: Spellings,
     folders: Vec<Folder>,
     events: Vec<Event>,
-    /// Events of the scope already where the layout wants them.
-    settled: usize,
     loose: Vec<Tagged>,
     positions: HashMap<String, Vec<(f64, f64)>>,
     towns: HashMap<(u64, u64), Option<Located>>,
@@ -523,7 +518,6 @@ impl<'a> Survey<'a> {
             spellings: Spellings::new(cache, &folders)?,
             folders,
             events,
-            settled: settled.len(),
             loose: cache.tagged(&loose_paths)?,
             positions,
             towns: HashMap::new(),
@@ -1070,45 +1064,6 @@ fn days_between(folder: &Folder, (year, month, day): (i64, i64, i64)) -> Option<
 impl Tool for FolderMigration {
     type Settings = Answers;
 
-    fn key(&self) -> &'static str {
-        "folder-migration"
-    }
-
-    fn title(&self) -> &'static str {
-        "Folder Migration"
-    }
-
-    fn fixes(&self) -> &'static str {
-        "Moves each event into its place in the folder layout"
-    }
-
-    fn answers<'a>(&self, answers: &'a mut Answers) -> Option<&'a mut Answers> {
-        Some(answers)
-    }
-
-    fn moves(&self) -> bool {
-        true
-    }
-
-    fn waiting(&self, open: usize) -> String {
-        match open {
-            1 => "1 folder waits for an answer".to_string(),
-            open => format!("{open} folders wait for an answer"),
-        }
-    }
-
-    fn wording(&self) -> Wording {
-        Wording {
-            asked: "Events and Loose Photos",
-            one: "event",
-            many: "events",
-            confirm: "Confirm Sure Folders",
-            sure_one: "has one sure folder",
-            sure_many: "have one sure folder",
-            unasked: "Every event of the scope is in the folder layout. Choose another scope on the Tools page.",
-        }
-    }
-
     fn questions(
         &self,
         cache: &Cache,
@@ -1125,157 +1080,28 @@ impl Tool for FolderMigration {
             questions.push(Question {
                 key: event.dir.clone(),
                 title: event.dir.clone(),
-                kind: Kind::Folder,
                 photos: event.photos.len(),
                 offers,
                 answer: answers.get(&event.dir).cloned(),
                 apart: false,
                 note,
-                evidence: Vec::new(),
             });
         }
         for photo in &survey.loose {
             questions.push(Question {
                 key: photo.rel_path.clone(),
                 title: photo.rel_path.clone(),
-                kind: Kind::Folder,
                 photos: 1,
                 offers: survey.loose_offers(photo),
                 answer: answers.get(&photo.rel_path).cloned(),
                 apart: false,
                 note: Some("A photo in a folder but in no event: it goes into an event".to_string()),
-                evidence: Vec::new(),
             });
         }
         Ok(questions)
     }
 
-    fn report(
-        &self,
-        cache: &Cache,
-        geo: Option<&Geo>,
-        scope: &Scope,
-        _answers: &Answers,
-    ) -> Result<Vec<Finding>, String> {
-        let mut survey = Survey::take(cache, geo, scope).map_err(|error| error.to_string())?;
-        let (mut sure, mut some, mut several, mut none) = (0, 0, Vec::new(), 0);
-        let mut settled_on = 0;
-        let mut elsewhere = Vec::new();
-        let mut subs = Vec::new();
-        for at in 0..survey.events.len() {
-            let evidence = survey.evidence(at);
-            let (offers, _) = survey.offers(at, &evidence);
-            if offers.first().is_some_and(|offer| offer.sure) {
-                settled_on += 1;
-            }
-            let event = &survey.events[at];
-            match (evidence.sure, evidence.several(), evidence.with_city) {
-                (true, _, _) => sure += 1,
-                (false, true, _) => {
-                    let cities: Vec<String> = evidence
-                        .tagged
-                        .iter()
-                        .map(|(_, city, count)| format!("{city} {count}"))
-                        .collect();
-                    several.push((event.dir.clone(), cities.join(", ")));
-                }
-                (false, false, 0) => none += 1,
-                (false, false, _) => some += 1,
-            }
-            for (other, count) in &evidence.elsewhere {
-                elsewhere.push((
-                    event.dir.clone(),
-                    format!("{count} of {} say {other}", photos(event.photos.len())),
-                ));
-            }
-            if !event.subs.is_empty() {
-                let names: Vec<&str> = event.subs.iter().map(String::as_str).collect();
-                subs.push((event.dir.clone(), names.join(", ")));
-            }
-        }
-        let cities = match survey.layout.has(&Component::City) {
-            true => format!(
-                " - one city on every photo: {sure}, a city on some photos: {some}, several cities: {}, none: {none}",
-                several.len()
-            ),
-            false => String::new(),
-        };
-        let mut findings = vec![Finding {
-            title: "Where the Events Are".to_string(),
-            detail: format!(
-                "In the layout {} already: {}. Not yet: {}{cities}. Sure where they go: {settled_on}.",
-                survey.layout.title(),
-                survey.settled,
-                survey.events.len(),
-            ),
-            rows: Vec::new(),
-        }];
-        if !several.is_empty() && survey.layout.has(&Component::City) {
-            findings.push(Finding {
-                title: "Events in Several Cities".to_string(),
-                detail: "An event is never split: it goes to one city, or stays where it is.".to_string(),
-                rows: several,
-            });
-        }
-        if !elsewhere.is_empty() {
-            findings.push(Finding {
-                title: "Events Another Country Names".to_string(),
-                detail: "Photos whose places tag names another country than their folder.".to_string(),
-                rows: elsewhere,
-            });
-        }
-        if !subs.is_empty() {
-            findings.push(Finding {
-                title: "Events with Folders Inside".to_string(),
-                detail: "They move with their event, as they are.".to_string(),
-                rows: subs,
-            });
-        }
-        if !survey.loose.is_empty() {
-            findings.push(Finding {
-                title: "Photos in No Event".to_string(),
-                detail: format!("{} to be put into an event.", photos(survey.loose.len())),
-                rows: Vec::new(),
-            });
-        }
-        let waiting: Vec<String> = survey.events.iter().map(|event| event.dir.clone()).collect();
-        let mut asked_about: Vec<String> = Vec::new();
-        for dir in &waiting {
-            asked_about.extend(cache.under(dir).map_err(|error| error.to_string())?);
-        }
-        match super::people::untold(cache, &asked_about)? {
-            None => findings.push(Finding {
-                title: "Nothing Fetched from Immich".to_string(),
-                detail: "Without Immich's people nothing stops an event whose people only Immich knows. Get \
-                         People from Immich on the dashboard first."
-                    .to_string(),
-                rows: Vec::new(),
-            }),
-            Some(untold) if !untold.is_empty() => {
-                let mut by_event: BTreeMap<String, BTreeSet<String>> = BTreeMap::new();
-                for (rel_path, names) in untold {
-                    if let Some(dir) = Placement::parse(&rel_path, &survey.layout).event_dir {
-                        by_event.entry(dir).or_default().extend(names);
-                    }
-                }
-                findings.push(Finding {
-                    title: "Events Waiting for Their People".to_string(),
-                    detail: "Immich names people in their photos that the files do not. They are not moved until \
-                             People from Immich has written them."
-                        .to_string(),
-                    rows: by_event
-                        .into_iter()
-                        .map(|(dir, names)| (dir, names.into_iter().collect::<Vec<String>>().join(", ")))
-                        .collect(),
-                });
-            }
-            Some(_) => {}
-        }
-        Ok(findings)
-    }
-
     fn wanted(&self, cache: &Cache, geo: Option<&Geo>, scope: &Scope, answers: &Answers) -> cache::Result<Vec<Wanted>> {
-        let layout = cache.layout();
         let survey = Survey::take(cache, geo, scope)?;
         let asked: BTreeSet<String> = survey
             .events
@@ -1283,89 +1109,100 @@ impl Tool for FolderMigration {
             .map(|event| event.dir.clone())
             .chain(survey.loose.iter().map(|photo| photo.rel_path.clone()))
             .collect();
-
-        let mut moves: Vec<(Move, Option<String>)> = Vec::new();
-        for key in &asked {
-            let Some(Answer::Folder(folder)) = answers.get(key) else {
-                continue;
-            };
-            let event = is_event(key);
-            let (to, inside) = match event {
-                true => (folder.clone(), cache.under(key)?),
-                false => (format!("{folder}/{}", file_name(key)), vec![key.clone()]),
-            };
-            if to == *key {
-                continue;
-            }
-            let stated = cache.stated(&inside)?;
-            let mut photos = Vec::new();
-            let mut unread = None;
-            for rel_path in &inside {
-                match stated.get(rel_path).and_then(|stated| stated.content_id.clone()) {
-                    Some(content) => photos.push((rel_path.clone(), content)),
-                    None => unread = Some(format!("the scan could not read the image data of {rel_path}")),
-                }
-            }
-            let mut refused = unread;
-            if event {
-                let date = Placement::of_folder(key, layout).event_text;
-                if Placement::of_folder(&to, layout).event_text != date {
-                    refused.get_or_insert("the date in an event's folder name is not changed here".to_string());
-                }
-            }
-            if !in_layout(folder, layout) {
-                refused.get_or_insert(format!("{folder} is not {}", layout.title()));
-            }
-            if !cache.under(&to)?.is_empty() || cache.known(&to)?.is_some() {
-                refused.get_or_insert(format!("{to} is there already"));
-            }
-            moves.push((
-                Move {
-                    from: key.clone(),
-                    to,
-                    photos,
-                },
-                refused,
-            ));
-        }
-
-        let mut targets: HashMap<String, Vec<String>> = HashMap::new();
-        for (moved, _) in &moves {
-            targets.entry(moved.to.clone()).or_default().push(moved.from.clone());
-        }
-        let everything: Vec<String> = moves
-            .iter()
-            .flat_map(|(moved, _)| moved.photos.iter().map(|(rel_path, _)| rel_path.clone()))
+        let answered: Vec<(String, String)> = asked
+            .into_iter()
+            .filter_map(|key| match answers.get(&key) {
+                Some(Answer::Folder(folder)) => Some((key, folder.clone())),
+                _ => None,
+            })
             .collect();
-        let untold = super::people::untold(cache, &everything).map_err(people_failed)?;
-
-        let mut wanted = Vec::new();
-        for (moved, mut refused) in moves {
-            if let Some(others) = targets.get(&moved.to).filter(|others| others.len() > 1) {
-                let other = others
-                    .iter()
-                    .find(|other| **other != moved.from)
-                    .cloned()
-                    .unwrap_or_default();
-                refused.get_or_insert(format!("{other} is to go to {} too", moved.to));
-            }
-            if let Some(untold) = &untold {
-                let mut names: BTreeSet<&String> = BTreeSet::new();
-                for (rel_path, _) in &moved.photos {
-                    names.extend(untold.get(rel_path).into_iter().flatten());
-                }
-                if !names.is_empty() {
-                    let names: Vec<&str> = names.into_iter().map(String::as_str).collect();
-                    refused.get_or_insert(format!(
-                        "Immich names {} in its photos and the files do not: write the people first",
-                        names.join(", ")
-                    ));
-                }
-            }
-            wanted.push(Wanted::moving(moved, refused));
-        }
-        Ok(wanted)
+        moves(cache, &answered)
     }
+}
+
+/// Each event or loose photo into its folder, one rename each, refused where the date would
+/// change, the folder is not in the layout, is there already or two would go to one, or Immich
+/// names people in its photos the files do not yet.
+pub fn moves(cache: &Cache, answered: &[(String, String)]) -> cache::Result<Vec<Wanted>> {
+    let layout = cache.layout();
+    let mut moves: Vec<(Move, Option<String>)> = Vec::new();
+    for (key, folder) in answered {
+        let event = is_event(key);
+        let (to, inside) = match event {
+            true => (folder.clone(), cache.under(key)?),
+            false => (format!("{folder}/{}", file_name(key)), vec![key.clone()]),
+        };
+        if to == *key {
+            continue;
+        }
+        let stated = cache.stated(&inside)?;
+        let mut photos = Vec::new();
+        let mut unread = None;
+        for rel_path in &inside {
+            match stated.get(rel_path).and_then(|stated| stated.content_id.clone()) {
+                Some(content) => photos.push((rel_path.clone(), content)),
+                None => unread = Some(format!("the scan could not read the image data of {rel_path}")),
+            }
+        }
+        let mut refused = unread;
+        if event {
+            let date = Placement::of_folder(key, layout).event_text;
+            if Placement::of_folder(&to, layout).event_text != date {
+                refused.get_or_insert("the date in an event's folder name is not changed here".to_string());
+            }
+        }
+        if !in_layout(folder, layout) {
+            refused.get_or_insert(format!("{folder} is not {}", layout.title()));
+        }
+        if !cache.under(&to)?.is_empty() || cache.known(&to)?.is_some() {
+            refused.get_or_insert(format!("{to} is there already"));
+        }
+        moves.push((
+            Move {
+                from: key.clone(),
+                to,
+                photos,
+            },
+            refused,
+        ));
+    }
+
+    let mut targets: HashMap<String, Vec<String>> = HashMap::new();
+    for (moved, _) in &moves {
+        targets.entry(moved.to.clone()).or_default().push(moved.from.clone());
+    }
+    let everything: Vec<String> = moves
+        .iter()
+        .flat_map(|(moved, _)| moved.photos.iter().map(|(rel_path, _)| rel_path.clone()))
+        .collect();
+    let untold = super::people::untold(cache, &everything).map_err(people_failed)?;
+
+    let mut wanted = Vec::new();
+    for (moved, mut refused) in moves {
+        if let Some(others) = targets.get(&moved.to).filter(|others| others.len() > 1) {
+            let other = others
+                .iter()
+                .find(|other| **other != moved.from)
+                .cloned()
+                .unwrap_or_default();
+            refused.get_or_insert(format!("{other} is to go to {} too", moved.to));
+        }
+        if let Some(untold) = &untold {
+            let mut names: BTreeSet<&String> = BTreeSet::new();
+            for (rel_path, _) in &moved.photos {
+                names.extend(untold.get(rel_path).into_iter().flatten());
+            }
+            if !names.is_empty() {
+                let names: Vec<&str> = names.into_iter().map(String::as_str).collect();
+                refused.get_or_insert(format!(
+                    "{PEOPLE_FIRST} {} in its photos and the files do not: write the people first",
+                    names.join(", ")
+                ));
+            }
+        }
+        wanted.push(Wanted::moving(moved, refused));
+    }
+    Ok(wanted)
 }
 
 fn people_failed(why: String) -> rusqlite::Error {

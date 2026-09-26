@@ -151,13 +151,12 @@ fn the_app_can_be_clicked_through_headless() {
     edits_one_photo_and_takes_it_back(&ui, lib);
     a_scope_is_what_the_demo_works_on(&ui, lib);
     takes_back_an_older_pass(&ui, lib);
-    gives_places_from_their_tag_and_takes_them_back(&ui, lib);
-    gives_places_from_the_event_and_takes_them_back(&ui, lib);
+    applies_suggestions_and_takes_them_back(&ui, lib);
+    sets_a_place_and_takes_it_back(&ui, lib);
     writes_time_zones_and_takes_them_back(&ui, lib);
     merges_a_tag_and_takes_it_back(&ui, lib);
     gives_people_from_immich_and_takes_them_back(&ui, lib);
     moves_an_event_into_its_city_and_takes_it_back(&ui, lib);
-    opens_a_suggestion_and_previews_it(&ui, lib);
 
     ui.run(&["act", "win.show-view", "'suggestions'"], lib);
     let state = state(&ui, lib);
@@ -186,16 +185,11 @@ fn previews_applies_and_takes_it_back(ui: &Ui, library: &Path) {
 
     ui.run(&["click", "Tools", "--role", "tab"], library);
     ui.run(&["act", "win.tools-scope", &format!("'{EVENT}'")], library);
-    let tools = counted(ui, library, 2);
-    assert_eq!(
-        tools["counts"]["demo-rating"].as_u64(),
-        Some(2),
-        "the list says what it would change"
-    );
-    ui.run(&["act", "win.run-tool", "'demo-rating'"], library);
+    counted(ui, library, 2);
+    ui.run(&["act", "win.run-edit", "'demo-rating:3'"], library);
     let previewed = settled_preview(ui, library);
     assert_eq!(previewed["photos"].as_u64(), Some(2), "the demo is the event's photos");
-    assert_eq!(previewed["change"].as_u64(), Some(2), "and the number the list showed");
+    assert_eq!(previewed["change"].as_u64(), Some(2), "and the number the scope said");
     assert_eq!(previewed["selected"].as_u64(), Some(2));
     assert!(previewed["traffic"].as_u64().unwrap() > 0, "whole files go up again");
     assert_eq!(state(ui, library)["page"], "preview");
@@ -374,9 +368,8 @@ fn a_scope_is_what_the_demo_works_on(ui: &Ui, library: &Path) {
         state_now["gallery"]["toast"]
     );
 
-    let tools = counted(ui, library, 4);
-    assert_eq!(tools["counts"]["demo-rating"].as_u64(), Some(4));
-    ui.run(&["act", "win.run-tool", "'demo-rating'"], library);
+    counted(ui, library, 4);
+    ui.run(&["act", "win.run-edit", "'demo-rating:3'"], library);
     for _ in 0..60 {
         let state = state(ui, library);
         if state["preview"]["photos"].as_u64() == Some(4) && state["preview"]["change"].as_u64() == Some(4) {
@@ -397,7 +390,7 @@ fn takes_back_an_older_pass(ui: &Ui, library: &Path) {
         let before = state(ui, library)["applied"]["batch"].as_i64().unwrap_or(0);
         ui.run(&["act", "win.tools-scope", &format!("'{scope}'")], library);
         counted(ui, library, photos);
-        ui.run(&["act", "win.run-tool", &format!("'{tool}'")], library);
+        ui.run(&["act", "win.run-edit", &format!("'{tool}'")], library);
         let mut previewed = Value::Null;
         for _ in 0..60 {
             previewed = state(ui, library)["preview"].clone();
@@ -411,7 +404,7 @@ fn takes_back_an_older_pass(ui: &Ui, library: &Path) {
         written(ui, library, "write", before)["batch"].as_i64().unwrap()
     };
     ui.run(&["act", "win.show-view", "'tools'"], library);
-    let first = apply(COUNTRY, 7, "demo-rating", "Set a rating of 3");
+    let first = apply(COUNTRY, 7, "demo-rating:3", "Set a rating of 3");
     let second = apply(EVENT, 2, "demo-rating:4", "Set a rating of 4");
 
     ui.run(&["act", "win.show-history"], library);
@@ -462,76 +455,75 @@ fn takes_back_an_older_pass(ui: &Ui, library: &Path) {
     assert_eq!(passes[1]["can_take_back"], true);
 }
 
-/// GPS from the places tag, clicked through: the tags are answered on the question page, the
-/// preview holds the answered photos, the write puts the city centre, the mark that it was
-/// derived and the words into the files, and taking the pass back takes all of it away again.
-fn gives_places_from_their_tag_and_takes_them_back(ui: &Ui, library: &Path) {
-    const TOOL: &str = "gps-from-places-tag";
+/// The Suggestions tab, clicked through: two finders' fixes ticked, Apply Selected writes them as
+/// two passes in their order - the tags before the places - the photos say what the fixes said,
+/// the applied fixes are gone from the list and the rest stays, and each pass is taken back from
+/// the history.
+fn applies_suggestions_and_takes_them_back(ui: &Ui, library: &Path) {
+    const MERGE: &str = "tags:rename People -> people";
     const BEIJING: &str = "China/2006-09-00 Besuch Ben/P1000001.JPG";
     const WITH_WORDS: &str = "Ireland/2008-10-03 Galway/IMG_0003.JPG";
     let beijing = library.join(BEIJING);
     let with_words = library.join(WITH_WORDS);
+    let kira = library.join("Ireland/2008-10-03 Galway/Kira/IMG_0002.JPG");
+    assert!(tags_of(&kira).contains(&"People/Kira".to_string()));
 
-    ui.run(&["act", "win.show-view", "'tools'"], library);
-    ui.run(&["act", "win.tools-scope", "'all'"], library);
-    let tools = counted(ui, library, photomanager_core::fixtures::photo_count() as u64);
-    assert_eq!(tools["waiting"][TOOL].as_u64(), Some(8), "{tools}");
-    ui.run(&["act", "win.run-tool", &format!("'{TOOL}'")], library);
-    let asked = questions(ui, library, |questions| {
-        questions["questions"].as_array().unwrap().len() == 10
+    let listed = suggestions(ui, library, |listed| !listed["fixes"].as_array().unwrap().is_empty());
+    let fixes = listed["fixes"].as_array().unwrap().clone();
+    let places: Vec<&Value> = fixes.iter().filter(|fix| fix["finder"] == "places-from-tags").collect();
+    assert_eq!(places.len(), 6, "{listed}");
+    assert_eq!(listed["dashboard"], format!("{} Suggestions", fixes.len()), "{listed}");
+    assert!(fixes.iter().all(|fix| fix["ticked"] == false), "nothing starts ticked");
+
+    ui.run(&["click", "Suggestions", "--role", "tab"], library);
+    ui.run(&["act", "win.fixes-select-all", "'places-from-tags'"], library);
+    // A check has no action a click from outside can use; ticking is the same GAction.
+    ui.run(&["act", "win.tick-fix", &format!("('{MERGE}', true)")], library);
+    let ticked = state(ui, library)["suggestions"]["fixes"].clone();
+    assert_eq!(
+        ticked
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter(|fix| fix["ticked"] == true)
+            .count(),
+        7,
+        "{ticked}"
+    );
+    assert_eq!(read_place(&beijing), None, "nothing has been written yet");
+
+    ui.run(&["click", "Apply Selected", "--role", "button"], library);
+    let applied = suggestions(ui, library, |listed| {
+        listed["applied"].is_array() && listed["busy"] == false
     });
-    assert_eq!(state(ui, library)["page"], "questions");
+    let passes = applied["applied"].as_array().unwrap().clone();
+    let finders: Vec<&str> = passes.iter().map(|pass| pass["finder"].as_str().unwrap()).collect();
+    assert_eq!(finders, ["tags", "places-from-tags"], "the tags first: {applied}");
+    assert_eq!(passes[0]["written"].as_u64(), Some(1), "{applied}");
+    assert_eq!(passes[1]["written"].as_u64(), Some(7), "{applied}");
     assert!(
-        asked["questions"]
-            .as_array()
+        applied["toast"]
+            .as_str()
             .unwrap()
-            .iter()
-            .all(|question| question["answer"].is_null() || question["apart"] == true)
+            .starts_with("Written 8 photos in 2 passes"),
+        "{applied}"
     );
-
-    ui.run(&["act", "win.answer-exact", &format!("'{TOOL}'")], library);
-    ui.run(
-        &[
-            "act",
-            "win.answer",
-            &format!("('{TOOL}', 'places/inGreece/Atens', 'leave')"),
-        ],
-        library,
-    );
-    let answered = questions(ui, library, |questions| {
-        questions["questions"]
-            .as_array()
-            .unwrap()
-            .iter()
-            .any(|question| question["key"] == "places/inGreece/Atens" && question["answer"] == "leave")
-    });
-    let confirmed: Vec<&str> = answered["questions"]
+    let left: Vec<String> = applied["fixes"]
         .as_array()
         .unwrap()
         .iter()
-        .filter(|question| question["sure"] == true && question["apart"] == false)
-        .map(|question| question["answer"].as_str().unwrap_or("unanswered"))
+        .map(|fix| fix["key"].as_str().unwrap().to_string())
         .collect();
-    assert_eq!(confirmed.len(), 6, "{answered}");
-    assert!(!confirmed.contains(&"unanswered"), "{answered}");
-
-    let before = state(ui, library)["applied"]["batch"].as_i64().unwrap_or(0);
-    ui.run(&["act", "win.preview-answers"], library);
-    let mut previewed = Value::Null;
-    for _ in 0..60 {
-        previewed = state(ui, library)["preview"].clone();
-        if previewed["title"] == "Set GPS from the places tag" {
-            break;
-        }
-        std::thread::sleep(std::time::Duration::from_millis(500));
-    }
-    assert_eq!(previewed["change"].as_u64(), Some(8), "{previewed}");
-    assert_eq!(read_place(&beijing), None, "nothing has been written yet");
-
-    ui.run(&["click", "Apply", "--role", "button"], library);
-    let written = written(ui, library, "write", before);
-    assert_eq!(written["written"].as_u64(), Some(8), "{written}");
-    let batch = written["batch"].as_i64().unwrap();
+    assert!(
+        !left
+            .iter()
+            .any(|key| key == MERGE || key.starts_with("places-from-tags:")),
+        "{left:?}"
+    );
+    assert!(
+        left.iter().any(|key| key == "tags:tidy"),
+        "what was not ticked stays: {left:?}"
+    );
 
     let (lat, method, error, city) = read_place(&beijing).expect("a position");
     assert!((lat - 39.9075).abs() < 0.001, "{lat}");
@@ -540,23 +532,11 @@ fn gives_places_from_their_tag_and_takes_them_back(ui: &Ui, library: &Path) {
     assert_eq!(city.as_deref(), Some("Beijing"));
     let (_, _, _, kept) = read_place(&with_words).expect("a position");
     assert_eq!(kept.as_deref(), Some("Galway"), "its own words were kept");
+    assert!(tags_of(&kira).contains(&"people/Kira".to_string()));
 
-    let taken_before = state(ui, library)["history"]["taken"]["batch"].as_i64().unwrap_or(0);
-    ui.run(&["act", "win.undo-pass", &format!("int64 {batch}")], library);
-    ui.run(&["click", "Take It Back", "--role", "button"], library);
-    let mut taken = Value::Null;
-    for _ in 0..120 {
-        let now = state(ui, library);
-        if now["history"]["taken"]["batch"].as_i64().unwrap_or(0) > taken_before
-            && now["writing"] == false
-            && now["scanning"] == false
-        {
-            taken = now["history"]["taken"].clone();
-            break;
-        }
-        std::thread::sleep(std::time::Duration::from_millis(500));
+    for pass in passes.iter().rev() {
+        take_back(ui, library, pass["batch"].as_i64().unwrap());
     }
-    assert_eq!(taken["written"].as_u64(), Some(8), "{taken}");
     assert_eq!(
         read_place(&beijing),
         None,
@@ -564,158 +544,122 @@ fn gives_places_from_their_tag_and_takes_them_back(ui: &Ui, library: &Path) {
     );
     assert_eq!(city_of(&beijing), None);
     assert_eq!(city_of(&with_words).as_deref(), Some("Galway"));
+    assert!(
+        tags_of(&kira).contains(&"People/Kira".to_string()),
+        "the old spelling is back"
+    );
 }
 
-/// GPS from the event, clicked through: one event answered with the place where the rest of it
-/// is, one with a pin as the map gives it, the preview holds their bare photos, the write puts
-/// position, mark, error and words into the files, and taking the pass back takes them away.
-fn gives_places_from_the_event_and_takes_them_back(ui: &Ui, library: &Path) {
-    const TOOL: &str = "gps-from-the-event";
-    const HARBOUR: &str = "Germany/2016-06-00 Harbour Walk";
-    const COPENHAGEN: &str = "Denmark/2018-10-00 Wedding Trip to Copenhagen";
-    const PIN: &str = r#"{"pin":[55.68,12.59],"near":{"id":2618425,"name":"Copenhagen","region":"Capital Region","country":"Denmark","code":"DK","lat":55.67594,"lon":12.56553}}"#;
-    let bare = library.join(HARBOUR).join("DSC_0104.JPG");
-    let pinned = library.join(COPENHAGEN).join("DSCF0002.JPG");
-
-    ui.run(&["act", "win.show-view", "'tools'"], library);
-    ui.run(&["act", "win.tools-scope", "'all'"], library);
-    let tools = counted(ui, library, photomanager_core::fixtures::photo_count() as u64);
-    assert_eq!(tools["waiting"][TOOL].as_u64(), Some(6), "{tools}");
-    ui.run(&["act", "win.run-tool", &format!("'{TOOL}'")], library);
-    let asked = questions(ui, library, |questions| {
-        questions["tool"] == TOOL && questions["questions"].as_array().unwrap().len() == 6
-    });
-    let harbour = asked["questions"]
-        .as_array()
-        .unwrap()
-        .iter()
-        .find(|question| question["key"] == HARBOUR)
-        .unwrap();
-    assert_eq!(harbour["sure"], true, "{harbour}");
-    assert_eq!(harbour["best"]["located"].as_u64(), Some(3), "{harbour}");
-
-    ui.run(
-        &["act", "win.answer", &format!("('{TOOL}', '{HARBOUR}', 'best')")],
-        library,
-    );
-    ui.run(
-        &["act", "win.answer", &format!("('{TOOL}', '{COPENHAGEN}', '{PIN}')")],
-        library,
-    );
-    questions(ui, library, |questions| {
-        questions["questions"]
-            .as_array()
-            .unwrap()
-            .iter()
-            .filter(|question| !question["answer"].is_null())
-            .count()
-            == 2
-    });
-
-    let before = state(ui, library)["applied"]["batch"].as_i64().unwrap_or(0);
-    ui.run(&["act", "win.preview-answers"], library);
-    let mut previewed = Value::Null;
-    for _ in 0..60 {
-        previewed = state(ui, library)["preview"].clone();
-        if previewed["title"] == "Set GPS from the event" {
-            break;
-        }
-        std::thread::sleep(std::time::Duration::from_millis(500));
-    }
-    assert_eq!(previewed["change"].as_u64(), Some(2), "{previewed}");
-
-    ui.run(&["click", "Apply", "--role", "button"], library);
-    let written = written(ui, library, "write", before);
-    assert_eq!(written["written"].as_u64(), Some(2), "{written}");
-    let batch = written["batch"].as_i64().unwrap();
-
-    let (lat, method, error, city) = read_place(&bare).expect("a position");
-    assert!((lat - 53.55073).abs() < 0.0001, "{lat}");
-    assert_eq!(method, "photoManager: event");
-    assert_eq!(error, 5000.0);
-    assert_eq!(city.as_deref(), Some("Hamburg"));
-    let (lat, method, error, city) = read_place(&pinned).expect("a position");
-    assert!((lat - 55.68).abs() < 0.0001, "the pin is written at its point: {lat}");
-    assert_eq!(method, "photoManager: event");
-    assert_eq!(error, 1000.0);
-    assert_eq!(city.as_deref(), Some("Copenhagen"));
-
+/// Takes one pass back from the history and waits until the library is read again.
+fn take_back(ui: &Ui, library: &Path, batch: i64) -> Value {
     let taken_before = state(ui, library)["history"]["taken"]["batch"].as_i64().unwrap_or(0);
     ui.run(&["act", "win.undo-pass", &format!("int64 {batch}")], library);
     ui.run(&["click", "Take It Back", "--role", "button"], library);
-    let mut taken = Value::Null;
     for _ in 0..120 {
         let now = state(ui, library);
         if now["history"]["taken"]["batch"].as_i64().unwrap_or(0) > taken_before
             && now["writing"] == false
             && now["scanning"] == false
         {
-            taken = now["history"]["taken"].clone();
-            break;
+            return now["history"]["taken"].clone();
         }
         std::thread::sleep(std::time::Duration::from_millis(500));
     }
-    assert_eq!(taken["written"].as_u64(), Some(2), "{taken}");
-    assert_eq!(read_place(&bare), None, "the position, the mark and the words are gone");
-    assert_eq!(read_place(&pinned), None);
-    assert_eq!(city_of(&bare), None);
+    panic!("pass {batch} was never taken back");
 }
 
-/// The zones tool asks nothing where no country has several zones: its page is empty, Preview
-/// still opens, and what is written is the offset of where each photo was, taken back after.
+/// The suggestions once found and matching what is waited for.
+fn suggestions(ui: &Ui, library: &Path, ready: impl Fn(&Value) -> bool) -> Value {
+    let mut listed = Value::Null;
+    for _ in 0..120 {
+        let now = state(ui, library);
+        listed = now["suggestions"].clone();
+        if listed["busy"] == false && now["writing"] == false && now["scanning"] == false && ready(&listed) {
+            return listed;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(500));
+    }
+    panic!("the suggestions never came to that: {listed}");
+}
+
+/// Waits for an edit's preview by its title.
+fn previewed_edit(ui: &Ui, library: &Path, asked: &str, title: &str) -> Value {
+    ui.run(&["act", "win.run-edit", &format!("'{asked}'")], library);
+    let mut previewed = Value::Null;
+    for _ in 0..60 {
+        previewed = state(ui, library)["preview"].clone();
+        if previewed["title"] == title {
+            return previewed;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(500));
+    }
+    panic!("{asked} never previewed: {previewed}");
+}
+
+/// Set Place, clicked through: one event given a pin as the map gives it, the preview holds its
+/// photos without a position of their own, the write puts position, mark, error and words into
+/// the files, and taking the pass back takes them away.
+fn sets_a_place_and_takes_it_back(ui: &Ui, library: &Path) {
+    const COPENHAGEN: &str = "Denmark/2018-10-00 Wedding Trip to Copenhagen";
+    const PIN: &str = r#"{"pin":[55.68,12.59],"near":{"id":2618425,"name":"Copenhagen","region":"Capital Region","country":"Denmark","code":"DK","lat":55.67594,"lon":12.56553}}"#;
+    let pinned = library.join(COPENHAGEN).join("DSCF0002.JPG");
+
+    ui.run(&["act", "win.show-view", "'tools'"], library);
+    ui.run(&["act", "win.tools-scope", &format!("'{COPENHAGEN}'")], library);
+    counted(ui, library, 2);
+    let before = state(ui, library)["applied"]["batch"].as_i64().unwrap_or(0);
+    let previewed = previewed_edit(
+        ui,
+        library,
+        &format!("set-place:{PIN}"),
+        "Set the place to a point near Copenhagen",
+    );
+    assert_eq!(previewed["change"].as_u64(), Some(2), "{previewed}");
+
+    ui.run(&["click", "Apply", "--role", "button"], library);
+    let written = written(ui, library, "write", before);
+    assert_eq!(written["written"].as_u64(), Some(2), "{written}");
+    let (lat, method, error, city) = read_place(&pinned).expect("a position");
+    assert!((lat - 55.68).abs() < 0.0001, "the pin is written at its point: {lat}");
+    assert_eq!(method, "photoManager: set by hand");
+    assert_eq!(error, 1000.0);
+    assert_eq!(city.as_deref(), Some("Copenhagen"));
+
+    let taken = take_back(ui, library, written["batch"].as_i64().unwrap());
+    assert_eq!(taken["written"].as_u64(), Some(2), "{taken}");
+    assert_eq!(read_place(&pinned), None);
+}
+
+/// Set Time Zone where each photo was taken: the offset of where each photo was is written, a
+/// photo that states its own keeps it, and taking the pass back takes it away.
 fn writes_time_zones_and_takes_them_back(ui: &Ui, library: &Path) {
-    const TOOL: &str = "time-zones";
     const SEASONS: &str = "Germany/2015-00-00 Seasons";
     let summer = library.join(SEASONS).join("IMG_8002.JPG");
 
     ui.run(&["act", "win.show-view", "'tools'"], library);
     ui.run(&["act", "win.tools-scope", &format!("'{SEASONS}'")], library);
-    let tools = counted(ui, library, 3);
-    assert_eq!(tools["counts"][TOOL].as_u64(), Some(2), "{tools}");
-    assert_eq!(tools["waiting"][TOOL].as_u64(), Some(0), "{tools}");
-    ui.run(&["act", "win.run-tool", &format!("'{TOOL}'")], library);
-    questions(ui, library, |questions| {
-        questions["tool"] == TOOL && questions["questions"].as_array().unwrap().is_empty()
-    });
-
+    counted(ui, library, 3);
     let before = state(ui, library)["applied"]["batch"].as_i64().unwrap_or(0);
-    ui.run(&["act", "win.preview-answers"], library);
-    let mut previewed = Value::Null;
-    for _ in 0..60 {
-        previewed = state(ui, library)["preview"].clone();
-        if previewed["title"] == "Write time zones and XMP dates" {
-            break;
-        }
-        std::thread::sleep(std::time::Duration::from_millis(500));
-    }
+    let previewed = previewed_edit(
+        ui,
+        library,
+        "set-time-zone:",
+        "Set the time zone of where each photo was taken",
+    );
     assert_eq!(previewed["change"].as_u64(), Some(2), "{previewed}");
     ui.run(&["click", "Apply", "--role", "button"], library);
     let written = written(ui, library, "write", before);
     assert_eq!(written["written"].as_u64(), Some(2), "{written}");
-    let batch = written["batch"].as_i64().unwrap();
     assert_eq!(offset_of(&summer).as_deref(), Some("+02:00"));
 
-    let taken_before = state(ui, library)["history"]["taken"]["batch"].as_i64().unwrap_or(0);
-    ui.run(&["act", "win.undo-pass", &format!("int64 {batch}")], library);
-    ui.run(&["click", "Take It Back", "--role", "button"], library);
-    for _ in 0..120 {
-        let now = state(ui, library);
-        if now["history"]["taken"]["batch"].as_i64().unwrap_or(0) > taken_before
-            && now["writing"] == false
-            && now["scanning"] == false
-        {
-            break;
-        }
-        std::thread::sleep(std::time::Duration::from_millis(500));
-    }
+    take_back(ui, library, written["batch"].as_i64().unwrap());
     assert_eq!(offset_of(&summer), None, "the offset is gone again");
 }
 
-/// The tag vocabulary, clicked through: its tree opens, one merge becomes a rule, the preview holds
-/// the event's photos, the write puts the merged tag into every field, and taking the pass back
-/// puts the old spelling back.
+/// Rename Tag, clicked through: the preview holds the event's photo that carries the tag, the
+/// write puts the merged tag into every field, and taking the pass back puts the old spelling
+/// back.
 fn merges_a_tag_and_takes_it_back(ui: &Ui, library: &Path) {
-    const TOOL: &str = "tag-vocabulary";
     const GALWAY: &str = "Ireland/2008-10-03 Galway";
     let kira = library.join(GALWAY).join("Kira/IMG_0002.JPG");
     assert!(tags_of(&kira).contains(&"People/Kira".to_string()));
@@ -723,106 +667,25 @@ fn merges_a_tag_and_takes_it_back(ui: &Ui, library: &Path) {
     ui.run(&["act", "win.show-view", "'tools'"], library);
     ui.run(&["act", "win.tools-scope", &format!("'{GALWAY}'")], library);
     counted(ui, library, 2);
-    ui.run(&["act", "win.run-tool", &format!("'{TOOL}'")], library);
-    let looked = vocabulary(ui, library, |tags| tags["tree"].is_object());
-    assert_eq!(state(ui, library)["page"], "vocabulary");
-    assert_eq!(looked["tree"]["People"].as_u64(), Some(1), "{looked}");
-
-    ui.run(&["act", "win.tag-rule", "'rename People -> people'"], library);
-    let merged = vocabulary(ui, library, |tags| {
-        tags["rules"].as_array().is_some_and(|rules| rules.len() == 1)
-    });
-    assert!(merged["tree"]["People"].is_null(), "{merged}");
-
     let before = state(ui, library)["applied"]["batch"].as_i64().unwrap_or(0);
-    ui.run(&["act", "win.preview-tags"], library);
-    let mut previewed = Value::Null;
-    for _ in 0..60 {
-        previewed = state(ui, library)["preview"].clone();
-        if previewed["title"] == "Tidy the tags with 1 rule" {
-            break;
-        }
-        std::thread::sleep(std::time::Duration::from_millis(500));
-    }
-    assert_eq!(previewed["change"].as_u64(), Some(2), "{previewed}");
+    let previewed = previewed_edit(ui, library, "rename-tag:People -> people", "Rename People to people");
+    assert_eq!(
+        previewed["change"].as_u64(),
+        Some(1),
+        "only the photo that carries it: {previewed}"
+    );
     ui.run(&["click", "Apply", "--role", "button"], library);
     let written = written(ui, library, "write", before);
-    assert_eq!(written["written"].as_u64(), Some(2), "{written}");
-    let batch = written["batch"].as_i64().unwrap();
+    assert_eq!(written["written"].as_u64(), Some(1), "{written}");
     let tags = tags_of(&kira);
     assert!(tags.contains(&"people/Kira".to_string()), "{tags:?}");
     assert!(tags.contains(&"people".to_string()), "every level is written: {tags:?}");
     assert!(!tags.contains(&"People/Kira".to_string()), "{tags:?}");
 
-    let taken_before = state(ui, library)["history"]["taken"]["batch"].as_i64().unwrap_or(0);
-    ui.run(&["act", "win.undo-pass", &format!("int64 {batch}")], library);
-    ui.run(&["click", "Take It Back", "--role", "button"], library);
-    for _ in 0..120 {
-        let now = state(ui, library);
-        if now["history"]["taken"]["batch"].as_i64().unwrap_or(0) > taken_before
-            && now["writing"] == false
-            && now["scanning"] == false
-        {
-            break;
-        }
-        std::thread::sleep(std::time::Duration::from_millis(500));
-    }
+    take_back(ui, library, written["batch"].as_i64().unwrap());
     assert_eq!(
         tags_of(&kira),
         ["People/Kira", "mixed/disgusting", "places/inIreland/Galway"]
-    );
-}
-
-/// A suggestion clicked open on the Suggestions tab: the Tag Vocabulary with its rules not kept
-/// yet, and the preview keeps them. Nothing is applied.
-fn opens_a_suggestion_and_previews_it(ui: &Ui, library: &Path) {
-    ui.run(&["click", "Suggestions", "--role", "tab"], library);
-    let mut listed = Value::Null;
-    for _ in 0..60 {
-        listed = state(ui, library)["suggestions"].clone();
-        if listed["busy"] == false && listed["open"].as_array().is_some_and(|open| !open.is_empty()) {
-            break;
-        }
-        std::thread::sleep(std::time::Duration::from_millis(500));
-    }
-    let flat = listed["open"]
-        .as_array()
-        .unwrap()
-        .iter()
-        .find(|one| one["key"] == "tags:flat")
-        .unwrap_or_else(|| panic!("no flat keywords suggested: {listed}"))
-        .clone();
-    let count = listed["open"].as_array().unwrap().len();
-    assert_eq!(listed["dashboard"], format!("{count} Suggestions"), "{listed}");
-
-    let title = flat["title"].as_str().unwrap();
-    ui.run(&["click", &format!("Open {title}"), "--role", "button"], library);
-    let opened = vocabulary(ui, library, |tags| {
-        tags["pending"].as_array().is_some_and(|pending| pending.len() == 2)
-    });
-    assert_eq!(state(ui, library)["view"], "tools");
-    assert_eq!(state(ui, library)["page"], "vocabulary");
-    assert_eq!(
-        opened["pending"],
-        serde_json::json!(["rename Funny -> mixed/funny", "rename inChina -> places/inChina"])
-    );
-
-    let named = format!("Tidy the tags with {} rules", opened["rules"].as_array().unwrap().len());
-    ui.run(&["act", "win.preview-tags"], library);
-    let mut previewed = Value::Null;
-    for _ in 0..60 {
-        previewed = state(ui, library)["preview"].clone();
-        if previewed["title"] == named.as_str() {
-            break;
-        }
-        std::thread::sleep(std::time::Duration::from_millis(500));
-    }
-    assert_eq!(previewed["title"], named.as_str(), "{previewed}");
-    assert!(previewed["change"].as_u64().unwrap() > 0);
-    let kept = state(ui, library)["vocabulary"].clone();
-    assert!(
-        kept["pending"].as_array().unwrap().is_empty(),
-        "the preview keeps them: {kept}"
     );
 }
 
@@ -831,7 +694,6 @@ fn opens_a_suggestion_and_previews_it(ui: &Ui, library: &Path) {
 /// taken back.
 fn gives_people_from_immich_and_takes_them_back(ui: &Ui, library: &Path) {
     use photomanager_core::immich::fake::{self, Data, FakeImmich};
-    const TOOL: &str = "people-from-immich";
     let immich = FakeImmich::serve(Data::over(library));
     let turned = library.join(fake::TURNED);
 
@@ -870,87 +732,60 @@ fn gives_people_from_immich_and_takes_them_back(ui: &Ui, library: &Path) {
         fetched["dashboard_toast"]
     );
 
-    ui.run(&["act", "win.show-view", "'tools'"], library);
-    ui.run(&["act", "win.tools-scope", "'all'"], library);
-    ui.run(&["act", "win.run-tool", &format!("'{TOOL}'")], library);
-    let asked = questions(ui, library, |questions| {
-        questions["tool"] == TOOL && questions["questions"].as_array().unwrap().len() == 4
-    });
-    assert_eq!(asked["questions"][0]["title"], "Ben", "{asked}");
-    assert_eq!(asked["questions"][0]["kind"], "person");
-    assert!(
-        asked["findings"]
+    let listed = suggestions(ui, library, |listed| {
+        listed["fixes"]
             .as_array()
             .unwrap()
             .iter()
-            .any(|finding| finding["title"] == "From Immich"),
-        "{asked}"
-    );
-    ui.run(&["act", "win.answer-exact", &format!("'{TOOL}'")], library);
-    ui.run(&["act", "win.answer", &format!("('{TOOL}', 'p-ann', 'best')")], library);
-    let answered = questions(ui, library, |questions| {
-        questions["questions"]
+            .any(|fix| fix["finder"] == "people")
+    });
+    let people: Vec<&str> = listed["fixes"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|fix| fix["finder"] == "people")
+        .map(|fix| fix["title"].as_str().unwrap())
+        .collect();
+    assert_eq!(people, ["Ben", "Kira"], "only the exact names are sure: {listed}");
+
+    ui.run(&["act", "win.fixes-select-all", "'people'"], library);
+    ui.run(&["act", "win.apply-fixes"], library);
+    let applied = suggestions(ui, library, |listed| listed["applied"].is_array());
+    let pass = applied["applied"][0].clone();
+    assert_eq!(pass["finder"], "people", "{applied}");
+    assert!(pass["written"].as_u64().unwrap() > 0, "{applied}");
+    assert!(
+        applied["fixes"]
             .as_array()
             .unwrap()
             .iter()
-            .filter(|question| !question["answer"].is_null())
-            .count()
-            == 3
-    });
+            .all(|fix| fix["finder"] != "people"),
+        "written, the people are no fix any more: {applied}"
+    );
+    let untagged = library.join(fake::BEN_UNTAGGED);
+    assert!(tags_of(&untagged).contains(&"people/groupChina/Ben".to_string()));
+    let batch = pass["batch"].as_i64().unwrap();
+    let regions = |photo: &Path| {
+        let out = Command::new("exiftool")
+            .args(["-j", "-struct", "-XMP-mwg-rs:RegionInfo"])
+            .arg(photo)
+            .output()
+            .expect("run exiftool");
+        let read: Value = serde_json::from_slice(&out.stdout).expect("exiftool json");
+        read[0]["RegionInfo"].clone()
+    };
+    assert_eq!(regions(&untagged)["RegionList"][0]["Name"], "Ben");
     assert!(
-        answered["settings"].as_str().unwrap().contains("people/family/Anna"),
-        "{answered}"
+        regions(&turned).is_null(),
+        "Anna is no exact name, so her photo is not written"
     );
 
-    let before = state(ui, library)["applied"]["batch"].as_i64().unwrap_or(0);
-    ui.run(&["act", "win.preview-answers"], library);
-    let mut previewed = Value::Null;
-    for _ in 0..60 {
-        previewed = state(ui, library)["preview"].clone();
-        if previewed["title"] == "Write people from Immich" {
-            break;
-        }
-        std::thread::sleep(std::time::Duration::from_millis(500));
-    }
-    assert_eq!(previewed["change"].as_u64(), Some(5), "{previewed}");
-    ui.run(&["click", "Apply", "--role", "button"], library);
-    let written = written(ui, library, "write", before);
-    assert_eq!(written["written"].as_u64(), Some(5), "{written}");
-    let batch = written["batch"].as_i64().unwrap();
-    let out = Command::new("exiftool")
-        .args(["-j", "-struct", "-XMP-mwg-rs:RegionInfo"])
-        .arg(&turned)
-        .output()
-        .expect("run exiftool");
-    let read: Value = serde_json::from_slice(&out.stdout).expect("exiftool json");
-    assert_eq!(read[0]["RegionInfo"]["RegionList"][0]["Name"], "Anna", "{read}");
-    assert_eq!(read[0]["RegionInfo"]["AppliedToDimensions"]["W"], 24, "{read}");
-    assert!(tags_of(&turned).contains(&"people/family/Anna".to_string()));
-
-    let taken_before = state(ui, library)["history"]["taken"]["batch"].as_i64().unwrap_or(0);
-    ui.run(&["act", "win.undo-pass", &format!("int64 {batch}")], library);
-    ui.run(&["click", "Take It Back", "--role", "button"], library);
-    for _ in 0..120 {
-        let now = state(ui, library);
-        if now["history"]["taken"]["batch"].as_i64().unwrap_or(0) > taken_before
-            && now["writing"] == false
-            && now["scanning"] == false
-        {
-            break;
-        }
-        std::thread::sleep(std::time::Duration::from_millis(500));
-    }
+    take_back(ui, library, batch);
     assert!(
-        !tags_of(&turned).contains(&"people/family/Anna".to_string()),
+        !tags_of(&untagged).contains(&"people/groupChina/Ben".to_string()),
         "the tag is gone again"
     );
-    let out = Command::new("exiftool")
-        .args(["-j", "-struct", "-XMP-mwg-rs:RegionInfo"])
-        .arg(&turned)
-        .output()
-        .expect("run exiftool");
-    let read: Value = serde_json::from_slice(&out.stdout).expect("exiftool json");
-    assert!(read[0]["RegionInfo"].is_null(), "and the region: {read}");
+    assert!(regions(&untagged).is_null(), "and the region");
 }
 
 /// The TagsList of a photo, as ExifTool reads it.
@@ -958,7 +793,6 @@ fn gives_people_from_immich_and_takes_them_back(ui: &Ui, library: &Path) {
 /// are, previewed as one folder that costs no traffic, moved by the apply with every photo as it
 /// was, and moved back by taking the pass back.
 fn moves_an_event_into_its_city_and_takes_it_back(ui: &Ui, library: &Path) {
-    const TOOL: &str = "folder-migration";
     const GARDEN: &str = "Germany/2013-05-18 Garden Party";
     const MOVED: &str = "Germany/Hamburg/2013-05-18 Garden Party";
     let photo = |dir: &str| library.join(dir).join("IMG_6001.JPG");
@@ -967,32 +801,16 @@ fn moves_an_event_into_its_city_and_takes_it_back(ui: &Ui, library: &Path) {
 
     ui.run(&["act", "win.show-view", "'tools'"], library);
     ui.run(&["act", "win.tools-scope", &format!("'{GARDEN}'")], library);
-    let tools = counted(ui, library, 5);
-    assert_eq!(tools["waiting"][TOOL].as_u64(), Some(1), "{tools}");
-    ui.run(&["act", "win.run-tool", &format!("'{TOOL}'")], library);
-    let asked = questions(ui, library, |questions| {
-        questions["tool"] == TOOL && questions["questions"].as_array().unwrap().len() == 1
-    });
-    assert_eq!(asked["questions"][0]["kind"], "folder", "{asked}");
-    ui.run(
-        &["act", "win.answer", &format!("('{TOOL}', '{GARDEN}', 'best')")],
-        library,
-    );
-    questions(ui, library, |questions| {
-        questions["questions"][0]["answer"] == format!("Into {MOVED}")
-    });
-
+    counted(ui, library, 5);
     let before = state(ui, library)["applied"]["batch"].as_i64().unwrap_or(0);
-    ui.run(&["act", "win.preview-answers"], library);
-    let mut previewed = Value::Null;
-    for _ in 0..60 {
-        previewed = state(ui, library)["preview"].clone();
-        if previewed["title"] == "Folder Migration" && previewed["change"].as_u64() == Some(1) {
-            break;
-        }
-        std::thread::sleep(std::time::Duration::from_millis(500));
-    }
+    let previewed = previewed_edit(
+        ui,
+        library,
+        &format!("move-event:{MOVED}"),
+        &format!("Move {GARDEN} to {MOVED}"),
+    );
     assert_eq!(previewed["change"].as_u64(), Some(1), "{previewed}");
+    assert_eq!(previewed["traffic"].as_u64(), Some(0), "a move sends nothing up again");
     ui.run(&["click", "Apply", "--role", "button"], library);
     let written = written(ui, library, "write", before);
     assert_eq!(written["written"].as_u64(), Some(1), "{written}");
@@ -1009,19 +827,7 @@ fn moves_an_event_into_its_city_and_takes_it_back(ui: &Ui, library: &Path) {
         "a move keeps the mtime"
     );
 
-    let taken_before = state(ui, library)["history"]["taken"]["batch"].as_i64().unwrap_or(0);
-    ui.run(&["act", "win.undo-pass", &format!("int64 {batch}")], library);
-    ui.run(&["click", "Take It Back", "--role", "button"], library);
-    for _ in 0..120 {
-        let now = state(ui, library);
-        if now["history"]["taken"]["batch"].as_i64().unwrap_or(0) > taken_before
-            && now["writing"] == false
-            && now["scanning"] == false
-        {
-            break;
-        }
-        std::thread::sleep(std::time::Duration::from_millis(500));
-    }
+    take_back(ui, library, batch);
     assert!(photo(GARDEN).is_file(), "back in its old folder");
     assert!(!library.join(MOVED).exists());
     assert!(
@@ -1049,18 +855,6 @@ fn tags_of(photo: &Path) -> Vec<String> {
     tags
 }
 
-/// The tag page once it has looked and matches what is waited for.
-fn vocabulary(ui: &Ui, library: &Path, ready: impl Fn(&Value) -> bool) -> Value {
-    for _ in 0..60 {
-        let tags = state(ui, library)["vocabulary"].clone();
-        if tags["busy"] == false && ready(&tags) {
-            return tags;
-        }
-        std::thread::sleep(std::time::Duration::from_millis(500));
-    }
-    panic!("the tag page never settled");
-}
-
 fn offset_of(photo: &Path) -> Option<String> {
     let out = Command::new("exiftool")
         .args(["-s3", "-ExifIFD:OffsetTimeOriginal"])
@@ -1069,18 +863,6 @@ fn offset_of(photo: &Path) -> Option<String> {
         .expect("run exiftool");
     let offset = String::from_utf8_lossy(&out.stdout).trim().to_string();
     (!offset.is_empty()).then_some(offset)
-}
-
-/// The questions on the page once they are asked and match what is waited for.
-fn questions(ui: &Ui, library: &Path, ready: impl Fn(&Value) -> bool) -> Value {
-    for _ in 0..60 {
-        let questions = state(ui, library)["questions"].clone();
-        if questions["busy"] == false && questions["questions"].is_array() && ready(&questions) {
-            return questions;
-        }
-        std::thread::sleep(std::time::Duration::from_millis(500));
-    }
-    panic!("the questions never arrived");
 }
 
 /// Latitude, how it was worked out, how far off it may be, and the city, as ExifTool reads them.
@@ -1210,7 +992,7 @@ fn settled_preview(ui: &Ui, library: &Path) -> Value {
     panic!("the preview never arrived");
 }
 
-/// Waits until the tools are counted for a scope of this many photos.
+/// Waits until the scope is counted at this many photos.
 fn counted(ui: &Ui, library: &Path, photos: u64) -> Value {
     let mut tools = Value::Null;
     for _ in 0..60 {

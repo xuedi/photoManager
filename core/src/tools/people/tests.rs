@@ -3,13 +3,14 @@ use std::sync::atomic::AtomicBool;
 use serde_json::Value;
 
 use super::*;
-use crate::changeset::{ChangeSet, Verdict};
+use crate::changeset::ChangeSet;
 use crate::immich::fake::{self, Data, FakeImmich};
-use crate::tools::testing::{Library, geo};
-use crate::tools::{self, AnyTool, Settings};
+use crate::tools::Settings;
+use crate::tools::testing::Library;
+use crate::tools::testing::{Driven, confirm_sure};
 
-fn tool() -> &'static dyn AnyTool {
-    tools::find("people-from-immich").expect("the tool is listed")
+fn tool() -> &'static PeopleFromImmich {
+    &PeopleFromImmich
 }
 
 fn whole() -> Scope {
@@ -38,7 +39,7 @@ fn fetch_again(library: &Library, immich: &FakeImmich) {
 
 fn answered(settings: Option<&str>, person: &str, tag: &str) -> String {
     tool()
-        .answer(settings, person, Some(Answer::Tag(tag.to_string())))
+        .answered(settings, person, Some(Answer::Tag(tag.to_string())))
         .unwrap()
 }
 
@@ -84,7 +85,7 @@ fn verdicts(set: &ChangeSet) -> Vec<(&str, String)> {
 #[test]
 fn every_named_person_is_asked_about_once_with_offers_from_the_people_tree() {
     let (library, _immich) = fetched("people-asked");
-    let questions = tool().questions(&library.cache, None, &whole(), None).unwrap();
+    let questions = tool().asked(&library.cache, None, &whole(), None).unwrap();
     let asked: Vec<(&str, &str, usize)> = questions
         .iter()
         .map(|question| (question.key.as_str(), question.title.as_str(), question.photos))
@@ -99,7 +100,6 @@ fn every_named_person_is_asked_about_once_with_offers_from_the_people_tree() {
         ],
         "neither the hidden nor the unnamed person, and only photos of the library"
     );
-    assert!(questions.iter().all(|question| question.kind == Kind::Person));
 
     let offered = |key: &str| -> Vec<(String, bool)> {
         let question = questions.iter().find(|question| question.key == key).unwrap();
@@ -132,14 +132,17 @@ fn every_named_person_is_asked_about_once_with_offers_from_the_people_tree() {
     );
     assert_eq!(offered("p-lena"), [("people/Lena Park".to_string(), false)]);
 
-    let settings = tools::confirm_sure(tool(), &questions, None).unwrap();
+    let settings = confirm_sure(&questions, None);
     let answers = Answers::read(&settings).unwrap();
     let confirmed: Vec<&String> = answers.0.keys().collect();
     assert_eq!(confirmed, ["p-ben", "p-kira"], "only the exact ones");
-    assert_eq!(
-        tools::waiting(tool(), &library.cache, None, &whole(), Some(&settings)).unwrap(),
-        2
-    );
+    let waiting = tool()
+        .asked(&library.cache, None, &whole(), Some(&settings))
+        .unwrap()
+        .iter()
+        .filter(|question| question.waits())
+        .count();
+    assert_eq!(waiting, 2);
 }
 
 #[test]
@@ -171,9 +174,7 @@ fn an_answer_outlives_a_new_fetch_and_a_rename_in_immich() {
     immich.change(|data| data.rename("p-ann", "Anna Maria"));
     fetch_again(&library, &immich);
 
-    let questions = tool()
-        .questions(&library.cache, None, &whole(), Some(&settings))
-        .unwrap();
+    let questions = tool().asked(&library.cache, None, &whole(), Some(&settings)).unwrap();
     let ann = questions.iter().find(|question| question.key == "p-ann").unwrap();
     assert_eq!(ann.title, "Anna Maria", "the name is Immich's newest");
     assert_eq!(ann.answer, Some(Answer::Tag("people/family/Anna".to_string())));
@@ -182,65 +183,29 @@ fn an_answer_outlives_a_new_fetch_and_a_rename_in_immich() {
 #[test]
 fn nothing_fetched_asks_nothing_and_says_so() {
     let library = Library::new("people-none");
-    assert!(
-        tool()
-            .questions(&library.cache, None, &whole(), None)
-            .unwrap()
-            .is_empty()
-    );
-    assert!(
-        tool()
-            .change_set(&library.cache, None, &whole(), None)
-            .unwrap()
-            .is_empty()
-    );
-    let report = tool().report(&library.cache, None, &whole(), None).unwrap();
-    assert_eq!(report[0].title, "Nothing Fetched from Immich Yet");
+    assert!(tool().asked(&library.cache, None, &whole(), None).unwrap().is_empty());
+    assert!(tool().built(&library.cache, None, &whole(), None).unwrap().is_empty());
+    assert!(sure(&library.cache).unwrap().is_empty());
 }
 
 #[test]
-fn the_report_counts_what_immich_knows_that_the_files_do_not() {
-    let (library, _immich) = fetched("people-report");
-    let report = tool().report(&library.cache, None, &whole(), None).unwrap();
-    let find = |title: &str| report.iter().find(|finding| finding.title == title).cloned().unwrap();
-    assert!(find("From Immich").detail.starts_with("4 named persons, fetched on "));
-    assert!(
-        find("From Immich")
-            .detail
-            .contains("1 photo Immich knows lies outside the library")
-    );
-    assert_eq!(
-        find("Photos Immich Names People In").detail,
-        "6 photos of the scope do not say someone Immich found in them.",
-        "Ben's and Kira's tagged photos say it by their tag's name"
-    );
-    let rows = find("People Tags Immich Has No Face For").rows;
-    let tags: Vec<&str> = rows.iter().map(|(tag, _)| tag.as_str()).collect();
-    assert_eq!(
-        tags,
-        [
-            "People/Kira",
-            "people/family/Anna",
-            "people/family/Tom",
-            "people/groupChina/Ben",
-            "people/me"
-        ]
-    );
-    assert!(rows[0].1.ends_with("no person from Immich is answered with it"));
-    assert_eq!(
-        find("Persons without a Name").detail.split('.').next(),
-        Some("1 person Immich found faces of has no name")
-    );
+fn the_sure_persons_are_the_exact_ones_until_their_photos_say_them() {
+    let (mut library, _immich) = fetched("people-sure");
+    let found = sure(&library.cache).unwrap();
+    let persons: Vec<(&str, bool)> = found
+        .iter()
+        .map(|(question, photos)| (question.key.as_str(), *photos > 0))
+        .collect();
+    assert_eq!(persons, [("p-ben", true), ("p-kira", true)], "only the exact ones");
 
-    let settings = every_answer();
-    let report = tool().report(&library.cache, None, &whole(), Some(&settings)).unwrap();
-    let find = |title: &str| report.iter().find(|finding| finding.title == title).cloned().unwrap();
-    let rows = find("People Tags Immich Has No Face For").rows;
-    let tags: Vec<&str> = rows.iter().map(|(tag, _)| tag.as_str()).collect();
-    assert_eq!(
-        tags,
-        ["people/family/Tom", "people/me"],
-        "a tag answered for a person Immich found there has its face"
+    let questions = tool().asked(&library.cache, None, &whole(), None).unwrap();
+    let settings = confirm_sure(&questions, None);
+    let set = tool().built(&library.cache, None, &whole(), Some(&settings)).unwrap();
+    library.apply(&set);
+    library.rescan();
+    assert!(
+        sure(&library.cache).unwrap().is_empty(),
+        "written, nothing is left to suggest"
     );
 }
 
@@ -250,10 +215,7 @@ fn a_photo_gets_its_regions_persons_and_tags_and_a_second_run_nothing() {
     let settings = every_answer();
     let before = read_back(&library, fake::TURNED);
 
-    let set = tool()
-        .change_set(&library.cache, None, &whole(), Some(&settings))
-        .unwrap();
-    assert_eq!(set.title, "Write people from Immich");
+    let set = tool().built(&library.cache, None, &whole(), Some(&settings)).unwrap();
     assert_eq!(
         verdicts(&set),
         [
@@ -332,9 +294,7 @@ fn a_photo_gets_its_regions_persons_and_tags_and_a_second_run_nothing() {
     );
 
     library.rescan();
-    let again = tool()
-        .change_set(&library.cache, None, &whole(), Some(&settings))
-        .unwrap();
+    let again = tool().built(&library.cache, None, &whole(), Some(&settings)).unwrap();
     assert_eq!(
         again.counts().change,
         0,
@@ -345,9 +305,7 @@ fn a_photo_gets_its_regions_persons_and_tags_and_a_second_run_nothing() {
 
     immich.change(|data| data.add_face(fake::LENA, Some("p-ben"), 0.05, 0.05, 0.2, 0.3));
     fetch_again(&library, &immich);
-    let more = tool()
-        .change_set(&library.cache, None, &whole(), Some(&settings))
-        .unwrap();
+    let more = tool().built(&library.cache, None, &whole(), Some(&settings)).unwrap();
     let changed: Vec<&str> = more
         .rows
         .iter()
@@ -363,42 +321,4 @@ fn a_photo_gets_its_regions_persons_and_tags_and_a_second_run_nothing() {
         before,
         "every field exactly as it was"
     );
-}
-
-#[test]
-fn run_together_with_the_tags_it_is_refused_and_with_time_zones_one_write() {
-    let (mut library, _immich) = fetched("people-together");
-    let settings = every_answer();
-    let scope = Scope::Filter(Filter::all().within("Germany/2019-07-13 Sommerfest"));
-    let vocabulary = tools::find("tag-vocabulary").unwrap();
-    let clash = tools::together(
-        &[(tool(), Some(&settings)), (vocabulary, None)],
-        &library.cache,
-        None,
-        &scope,
-    )
-    .unwrap();
-    let two = clash.rows.iter().find(|row| row.rel_path == fake::TWO).unwrap();
-    assert_eq!(
-        two.verdict,
-        Verdict::Refused("People from Immich and Tag Vocabulary would both set the tags".to_string())
-    );
-
-    let zones = tools::find("time-zones").unwrap();
-    let geo = geo();
-    let set = tools::together(
-        &[(zones, None), (tool(), Some(&settings))],
-        &library.cache,
-        Some(&geo),
-        &scope,
-    )
-    .unwrap();
-    let turned = set.rows.iter().find(|row| row.rel_path == fake::TURNED).unwrap();
-    let kinds: Vec<&str> = turned.change.fields.iter().map(tools::field_name).collect();
-    assert_eq!(kinds, ["date", "tags", "faces"]);
-    let summary = library.apply(&set);
-    assert_eq!(summary.written, set.counts().change, "one write per photo: {summary:?}");
-    let fields = read_back(&library, fake::TURNED);
-    assert!(fields.contains_key("XMP-mwg-rs:RegionInfo"));
-    assert_eq!(library.dates(fake::TURNED)["ExifIFD:OffsetTimeOriginal"], "+02:00");
 }

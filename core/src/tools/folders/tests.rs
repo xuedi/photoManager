@@ -4,8 +4,10 @@ use super::*;
 use crate::changeset::{self, ChangeSet, Verdict};
 use crate::filter::Filter;
 use crate::immich::{self, fake};
+use crate::tools::Settings;
+use crate::tools::people::PeopleFromImmich;
+use crate::tools::testing::{Driven, confirm_sure};
 use crate::tools::testing::{Library, geo};
-use crate::tools::{self, AnyTool, Settings};
 use crate::write::{Engine, Outcome};
 
 const BEN: &str = "China/2006-09-00 Besuch Ben";
@@ -19,8 +21,8 @@ const ISLANDS: &str = "Greece/0000-00-00 Aeron ilands";
 const IN_A_CITY: &str = "Germany/Hamburg/2014-08-00 Wedding";
 const LOOSE: &str = "China/IMG_3140.JPG";
 
-fn tool() -> &'static dyn AnyTool {
-    tools::find("folder-migration").expect("the tool is listed")
+fn tool() -> &'static FolderMigration {
+    &FolderMigration
 }
 
 fn whole() -> Scope {
@@ -28,9 +30,7 @@ fn whole() -> Scope {
 }
 
 fn asked(library: &Library, settings: Option<&str>) -> Vec<Question> {
-    tool()
-        .questions(&library.cache, Some(&geo()), &whole(), settings)
-        .unwrap()
+    tool().asked(&library.cache, Some(&geo()), &whole(), settings).unwrap()
 }
 
 fn question<'a>(questions: &'a [Question], key: &str) -> &'a Question {
@@ -54,15 +54,13 @@ fn offered(question: &Question) -> Vec<(&str, Option<usize>)> {
 
 fn answered(settings: Option<&str>, key: &str, folder: &str) -> String {
     tool()
-        .answer(settings, key, Some(Answer::Folder(folder.to_string())))
+        .answered(settings, key, Some(Answer::Folder(folder.to_string())))
         .unwrap()
 }
 
 /// The change set as the window builds it: from the cache, then a look at the folders.
 fn looked(library: &Library, settings: Option<&str>) -> ChangeSet {
-    let mut set = tool()
-        .change_set(&library.cache, Some(&geo()), &whole(), settings)
-        .unwrap();
+    let mut set = tool().built(&library.cache, Some(&geo()), &whole(), settings).unwrap();
     set.look(&library.root);
     set
 }
@@ -101,12 +99,11 @@ fn one_question_per_event_not_in_a_city_and_per_loose_photo() {
     );
     assert!(keys.contains(&LOOSE));
     assert_eq!(keys.len(), 14, "{keys:?}");
-    assert!(questions.iter().all(|question| question.kind == Kind::Folder));
     assert_eq!(question(&questions, RAIL).photos, 3);
     assert_eq!(question(&questions, RAIL).title, RAIL, "the whole path before");
 
     let germany = tool()
-        .questions(
+        .asked(
             &library.cache,
             None,
             &Scope::Filter(Filter::all().within("Germany")),
@@ -114,11 +111,15 @@ fn one_question_per_event_not_in_a_city_and_per_loose_photo() {
         )
         .unwrap();
     assert_eq!(germany.len(), 5, "the scope narrows the events");
-    assert_eq!(tools::count(tool(), &library.cache, None, &whole(), None).unwrap(), 0);
     assert_eq!(
-        tools::waiting(tool(), &library.cache, None, &whole(), None).unwrap(),
-        14
+        tool()
+            .built(&library.cache, None, &whole(), None)
+            .unwrap()
+            .counts()
+            .change,
+        0
     );
+    assert!(questions.iter().all(Question::waits));
 }
 
 #[test]
@@ -139,7 +140,7 @@ fn one_city_on_every_photo_is_sure_and_one_on_some_is_offered_with_its_count() {
     assert!(sommerfest.offers[0].words.ends_with("the places tag of 2 of 3 photos"));
     assert!(sommerfest.sure().is_none());
 
-    let settings = tools::confirm_sure(tool(), &questions, None).unwrap();
+    let settings = confirm_sure(&questions, None);
     let answers = Answers::read(&settings).unwrap();
     assert_eq!(answers.0.keys().collect::<Vec<_>>(), [BEN], "only the sure one");
 }
@@ -180,7 +181,7 @@ fn an_event_without_a_city_tag_is_offered_where_its_photos_are() {
             .words
             .ends_with("where 3 of its photos are")
     );
-    let without = tool().questions(&library.cache, None, &whole(), None).unwrap();
+    let without = tool().asked(&library.cache, None, &whole(), None).unwrap();
     assert!(
         question(&without, HARBOUR).offers.is_empty(),
         "without place data nothing is known of the positions"
@@ -205,20 +206,6 @@ fn a_country_mismatch_is_said_and_the_other_country_offered() {
             .as_deref()
             .unwrap()
             .starts_with("1 of 2 photos say Netherlands")
-    );
-    let report = tool().report(&library.cache, Some(&geo()), &whole(), None).unwrap();
-    let other = report
-        .iter()
-        .find(|finding| finding.title == "Events Another Country Names")
-        .unwrap();
-    assert_eq!(
-        other.rows,
-        [(GALWAY.to_string(), "1 of 2 photos say Netherlands".to_string())]
-    );
-    assert!(
-        report[0]
-            .detail
-            .starts_with("In the layout Country / (City) / Event already: 1. Not yet: 13")
     );
 }
 
@@ -277,7 +264,12 @@ fn typed(country: &str, city: &str, date: &str, name: &str) -> Result<Answer, St
         name: name.to_string(),
         date_fixed: true,
     };
-    tools::folder_answer(&Layout::default(), &parts)
+    Ok(Answer::Folder(assembled(
+        &Layout::default(),
+        &parts.named,
+        &parts.date,
+        &parts.name,
+    )?))
 }
 
 #[test]
@@ -313,7 +305,6 @@ fn two_events_move_the_cache_follows_and_a_second_run_asks_nothing() {
     let settings = answered(None, GARDEN, "Germany/Hamburg/2013-05-18 Garden Party");
     let settings = answered(Some(&settings), AUTUMN, "Denmark/Copenhagen/2017-09-00 Autumn Walk");
     let set = looked(&library, Some(&settings));
-    assert_eq!(set.title, "Folder Migration");
     assert!(set.moves());
     assert_eq!(set.counts().change, 2);
     assert_eq!(set.counts().traffic, 0, "a move uploads nothing");
@@ -356,7 +347,7 @@ fn two_events_move_the_cache_follows_and_a_second_run_asks_nothing() {
     assert_eq!(looked(&library, Some(&settings)).counts().change, 0);
 
     let pass = crate::history::pass(&library.journal, summary.batch).unwrap();
-    assert_eq!((pass.title.as_str(), pass.written), ("Folder Migration", 7));
+    assert_eq!(pass.written, 7);
     assert!(pass.can_take_back());
     let taken = changeset::take_back(
         &mut Engine::new(&library.root).unwrap(),
@@ -438,19 +429,12 @@ fn an_event_whose_people_only_immich_knows_waits_for_them() {
             (GARDEN, "would change".to_string()),
         ]
     );
-    let report = tool().report(&library.cache, None, &whole(), None).unwrap();
-    let waiting = report
-        .iter()
-        .find(|finding| finding.title == "Events Waiting for Their People")
-        .unwrap();
-    assert!(waiting.rows.contains(&(BEN.to_string(), "Ben".to_string())));
-
-    let people = tools::find("people-from-immich").unwrap();
+    let people = &PeopleFromImmich;
     let answers = people
-        .answer(None, "p-ben", Some(Answer::Tag("people/groupChina/Ben".to_string())))
+        .answered(None, "p-ben", Some(Answer::Tag("people/groupChina/Ben".to_string())))
         .unwrap();
     let written = people
-        .change_set(
+        .built(
             &library.cache,
             None,
             &Scope::Filter(Filter::all().within(BEN)),
@@ -478,17 +462,6 @@ fn a_loose_photo_goes_into_the_chosen_event() {
         asked(&library, Some(&settings))
             .iter()
             .all(|question| question.key != LOOSE)
-    );
-}
-
-#[test]
-fn it_never_runs_together_with_a_tool_that_writes() {
-    let library = Library::new("folders-together");
-    let zones = tools::find("time-zones").unwrap();
-    let error = tools::together(&[(zones, None), (tool(), None)], &library.cache, None, &whole()).unwrap_err();
-    assert_eq!(
-        error,
-        "Folder Migration moves folders and runs alone, never together with a tool that writes"
     );
 }
 
@@ -529,10 +502,10 @@ fn by_year_and_country_the_date_and_the_folders_are_sure() {
     assert_eq!(sure(islands), None, "an event without a year is asked about");
     assert_eq!(offered(islands), [("0000/Greece/0000-00-00 Aeron ilands", None)]);
 
-    let report = tool().report(&library.cache, Some(&geo()), &whole(), None).unwrap();
     assert_eq!(
-        report[0].detail,
-        "In the layout Year / Country / Event already: 0. Not yet: 14. Sure where they go: 13."
+        questions.iter().filter(|question| question.sure().is_some()).count(),
+        13,
+        "sure where they go"
     );
 }
 

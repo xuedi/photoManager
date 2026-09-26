@@ -9,7 +9,7 @@
 use std::collections::{BTreeMap, HashMap};
 
 use super::gps_from_places::{deepest, names_a_country};
-use super::{Answer, Answers, Located, Offer, Question, Tool, Wording};
+use super::{Answer, Answers, Located, Offer, Question, Tool};
 use crate::cache::{self, Cache};
 use crate::changeset::Wanted;
 use crate::geo::Geo;
@@ -25,45 +25,6 @@ pub struct GpsFromEvent;
 
 impl Tool for GpsFromEvent {
     type Settings = Answers;
-
-    fn key(&self) -> &'static str {
-        "gps-from-the-event"
-    }
-
-    fn title(&self) -> &'static str {
-        "GPS from the Event"
-    }
-
-    fn fixes(&self) -> &'static str {
-        "Gives photos without GPS or a city tag the position of their event"
-    }
-
-    fn named(&self, _answers: &Answers) -> String {
-        "Set GPS from the event".to_string()
-    }
-
-    fn answers<'a>(&self, answers: &'a mut Answers) -> Option<&'a mut Answers> {
-        Some(answers)
-    }
-
-    fn waiting(&self, open: usize) -> String {
-        match open {
-            1 => "1 event waits for an answer".to_string(),
-            open => format!("{open} events wait for an answer"),
-        }
-    }
-
-    fn wording(&self) -> Wording {
-        Wording {
-            asked: "Events",
-            one: "event",
-            many: "events",
-            confirm: "Confirm Where the Rest Is",
-            sure_one: "has all its located photos in one place",
-            sure_many: "have all their located photos in one place",
-            ..Wording::default()
-        }
-    }
 
     fn questions(
         &self,
@@ -249,7 +210,8 @@ mod tests {
     use crate::changeset::Verdict;
     use crate::filter::Filter;
     use crate::filter::tests::scanned;
-    use crate::tools::{self, AnyTool, PIN_METRES, PLACE_METRES, Settings};
+    use crate::tools::testing::{Driven, confirm_sure};
+    use crate::tools::{self, PIN_METRES, PLACE_METRES, Settings};
     use crate::write::Field;
     use crate::write::change::Derived;
 
@@ -273,16 +235,25 @@ mod tests {
         Geo::open(&file).unwrap()
     }
 
-    fn tool() -> &'static dyn AnyTool {
-        tools::find("gps-from-the-event").expect("the tool is listed")
+    fn tool() -> &'static GpsFromEvent {
+        &GpsFromEvent
     }
 
     fn whole() -> Scope {
         Scope::Filter(Filter::all())
     }
 
+    fn waiting(cache: &Cache, settings: Option<&str>) -> usize {
+        tool()
+            .asked(cache, None, &whole(), settings)
+            .unwrap()
+            .iter()
+            .filter(|question| question.waits())
+            .count()
+    }
+
     fn asked_all(cache: &Cache, settings: Option<&str>) -> Vec<Question> {
-        tool().questions(cache, Some(&geo()), &whole(), settings).unwrap()
+        tool().asked(cache, Some(&geo()), &whole(), settings).unwrap()
     }
 
     fn question<'a>(questions: &'a [Question], key: &str) -> &'a Question {
@@ -293,7 +264,7 @@ mod tests {
     }
 
     fn answered(settings: Option<&str>, key: &str, answer: Answer) -> String {
-        tool().answer(settings, key, Some(answer)).unwrap()
+        tool().answered(settings, key, Some(answer)).unwrap()
     }
 
     fn names(question: &Question) -> Vec<(&str, &str)> {
@@ -330,12 +301,11 @@ mod tests {
             "the loose file, the located photos and the city-tagged ones are not asked about"
         );
         assert_eq!(question(&questions, HARBOUR).title, "2016-06-00 Harbour Walk");
-        assert_eq!(tools::waiting(tool(), &cache, None, &whole(), None).unwrap(), 6);
-        assert_eq!(tool().waiting(6), "6 events wait for an answer");
-        assert_eq!(tools::count(tool(), &cache, None, &whole(), None).unwrap(), 0);
+        assert_eq!(waiting(&cache, None), 6);
+        assert_eq!(tool().built(&cache, None, &whole(), None).unwrap().counts().change, 0);
         assert!(
             tool()
-                .questions(&cache, None, &whole(), None)
+                .asked(&cache, None, &whole(), None)
                 .unwrap()
                 .iter()
                 .all(|question| question.offers.is_empty()),
@@ -343,7 +313,7 @@ mod tests {
         );
 
         let germany = tool()
-            .questions(
+            .asked(
                 &cache,
                 Some(&geo()),
                 &Scope::Filter(Filter::all().within("Germany")),
@@ -422,8 +392,7 @@ mod tests {
     fn confirm_where_the_rest_is_answers_exactly_the_sure_ones() {
         let cache = scanned("event-confirm");
         let questions = asked_all(&cache, None);
-        assert_eq!(tool().wording().confirm, "Confirm Where the Rest Is");
-        let settings = tools::confirm_sure(tool(), &questions, None).unwrap();
+        let settings = confirm_sure(&questions, None);
         let answers = Answers::read(&settings).unwrap();
         let confirmed: Vec<&str> = answers.0.keys().map(String::as_str).collect();
         assert_eq!(confirmed, [HARBOUR]);
@@ -442,8 +411,7 @@ mod tests {
         let pin = Answer::pin(55.6800, 12.5900, &at).expect("a place near the point");
         let settings = answered(Some(&answered(None, HARBOUR, hamburg)), COPENHAGEN, pin);
 
-        let set = tool().change_set(&cache, None, &whole(), Some(&settings)).unwrap();
-        assert_eq!(set.title, "Set GPS from the event");
+        let set = tool().built(&cache, None, &whole(), Some(&settings)).unwrap();
         let rows: Vec<&str> = set.rows.iter().map(|row| row.rel_path.as_str()).collect();
         assert_eq!(
             rows,
@@ -481,10 +449,7 @@ mod tests {
                 assert_eq!(words.country_code.as_deref(), Some("DK"));
             }
         }
-        assert_eq!(
-            tools::waiting(tool(), &cache, None, &whole(), Some(&settings)).unwrap(),
-            4
-        );
+        assert_eq!(waiting(&cache, Some(&settings)), 4);
     }
 
     #[test]
@@ -501,7 +466,7 @@ mod tests {
         let questions = asked_all(&cache, None);
         let beijing = question(&questions, RAIL).offers[0].place().unwrap().clone();
         let settings = answered(None, RAIL, Answer::Place(beijing));
-        let set = tool().change_set(&cache, None, &whole(), Some(&settings)).unwrap();
+        let set = tool().built(&cache, None, &whole(), Some(&settings)).unwrap();
         assert_eq!(set.rows.len(), 1);
         assert_eq!(set.rows[0].rel_path, RAIL_BARE);
         assert_eq!(set.rows[0].change.fields.len(), 1, "{:?}", set.rows[0].change);
@@ -518,22 +483,19 @@ mod tests {
         }
         assert!(
             tool()
-                .change_set(&cache, None, &whole(), Some(&settings))
+                .built(&cache, None, &whole(), Some(&settings))
                 .unwrap()
                 .is_empty()
         );
-        assert_eq!(
-            tools::waiting(tool(), &cache, None, &whole(), Some(&settings)).unwrap(),
-            0
-        );
+        assert_eq!(waiting(&cache, Some(&settings)), 0);
 
         let hamburg = Answer::Place(question(&questions, HARBOUR).offers[0].place().unwrap().clone());
         let settings = answered(None, HARBOUR, hamburg.clone());
-        let bare = tool().questions(&cache, None, &whole(), Some(&settings)).unwrap();
+        let bare = tool().asked(&cache, None, &whole(), Some(&settings)).unwrap();
         assert_eq!(question(&bare, HARBOUR).answer, Some(hamburg));
         assert_eq!(
             tool()
-                .change_set(&cache, None, &whole(), Some(&settings))
+                .built(&cache, None, &whole(), Some(&settings))
                 .unwrap()
                 .rows
                 .len(),

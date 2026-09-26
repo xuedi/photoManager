@@ -7,7 +7,7 @@
 
 use std::collections::BTreeMap;
 
-use super::{Answer, Answers, Offer, Question, Tool, Wording};
+use super::{Answer, Answers, Offer, Question, Tool};
 use crate::cache::{self, Cache};
 use crate::changeset::Wanted;
 use crate::geo::Geo;
@@ -20,45 +20,6 @@ pub struct GpsFromPlacesTag;
 
 impl Tool for GpsFromPlacesTag {
     type Settings = Answers;
-
-    fn key(&self) -> &'static str {
-        "gps-from-places-tag"
-    }
-
-    fn title(&self) -> &'static str {
-        "GPS from the Places Tag"
-    }
-
-    fn fixes(&self) -> &'static str {
-        "Gives photos without GPS the coordinates of the city their places tag names"
-    }
-
-    fn named(&self, _answers: &Answers) -> String {
-        "Set GPS from the places tag".to_string()
-    }
-
-    fn answers<'a>(&self, answers: &'a mut Answers) -> Option<&'a mut Answers> {
-        Some(answers)
-    }
-
-    fn waiting(&self, open: usize) -> String {
-        match open {
-            1 => "1 tag waits for an answer".to_string(),
-            open => format!("{open} tags wait for an answer"),
-        }
-    }
-
-    fn wording(&self) -> Wording {
-        Wording {
-            asked: "Tags",
-            one: "tag",
-            many: "tags",
-            confirm: "Confirm Exact Matches",
-            sure_one: "matches a place by its exact name",
-            sure_many: "match a place by its exact name",
-            ..Wording::default()
-        }
-    }
 
     fn questions(
         &self,
@@ -123,6 +84,40 @@ impl Tool for GpsFromPlacesTag {
         wanted.sort_by(|one, other| one.rel_path.cmp(&other.rel_path));
         Ok(wanted)
     }
+}
+
+/// The tags whose place is sure, each with how many photos placing them would change: a photo
+/// another tag of which is not sure yet waits, and is not counted.
+pub fn sure(cache: &Cache, geo: Option<&Geo>) -> Result<Vec<(Question, usize)>, String> {
+    let whole = Scope::Filter(crate::filter::Filter::all());
+    let asked: Vec<Question> = GpsFromPlacesTag
+        .questions(cache, geo, &whole, &Answers::default())?
+        .into_iter()
+        .filter(Question::confirmable)
+        .collect();
+    let mut answers = Answers::default();
+    for question in &asked {
+        answers.set(&question.key, question.sure().map(|offer| offer.answer.clone()));
+    }
+    let failed = |error: rusqlite::Error| error.to_string();
+    let changed: std::collections::HashSet<String> = GpsFromPlacesTag
+        .wanted(cache, geo, &whole, &answers)
+        .map_err(failed)?
+        .into_iter()
+        .filter(|wanted| wanted.refused.is_none())
+        .map(|wanted| wanted.rel_path)
+        .collect();
+    let photos = without_gps(cache, &whole).map_err(failed)?;
+    Ok(asked
+        .into_iter()
+        .filter_map(|question| {
+            let count = photos
+                .iter()
+                .filter(|(rel_path, tags)| changed.contains(rel_path) && tags.contains(&question.key))
+                .count();
+            (count > 0).then_some((question, count))
+        })
+        .collect())
 }
 
 enum Decision<'a> {
@@ -228,7 +223,8 @@ mod tests {
     use crate::changeset::Verdict;
     use crate::filter::Filter;
     use crate::filter::tests::scanned;
-    use crate::tools::{self, AnyTool, EXACT, Settings};
+    use crate::tools::testing::{Driven, confirm_sure};
+    use crate::tools::{self, EXACT, Settings};
     use crate::write::Field;
     use crate::write::change::Derived;
 
@@ -253,16 +249,25 @@ mod tests {
         Geo::open(&file).unwrap()
     }
 
-    fn tool() -> &'static dyn AnyTool {
-        tools::find("gps-from-places-tag").expect("the tool is listed")
+    fn tool() -> &'static GpsFromPlacesTag {
+        &GpsFromPlacesTag
     }
 
     fn whole() -> Scope {
         Scope::Filter(Filter::all())
     }
 
+    fn waiting(cache: &Cache, settings: Option<&str>) -> usize {
+        tool()
+            .asked(cache, None, &whole(), settings)
+            .unwrap()
+            .iter()
+            .filter(|question| question.waits())
+            .count()
+    }
+
     fn asked(cache: &Cache, settings: Option<&str>) -> Vec<Question> {
-        tool().questions(cache, Some(&geo()), &whole(), settings).unwrap()
+        tool().asked(cache, Some(&geo()), &whole(), settings).unwrap()
     }
 
     fn question<'a>(questions: &'a [Question], key: &str) -> &'a Question {
@@ -273,7 +278,7 @@ mod tests {
     }
 
     fn answered(settings: Option<&str>, key: &str, answer: Answer) -> String {
-        tool().answer(settings, key, Some(answer)).unwrap()
+        tool().answered(settings, key, Some(answer)).unwrap()
     }
 
     fn best(questions: &[Question], key: &str) -> Answer {
@@ -305,10 +310,9 @@ mod tests {
             "most photos first, the countries apart at the end, and the Hamburg photo with GPS not at all"
         );
         assert_eq!(question(&questions, BEIJING).title, "inChina/Beijing");
-        assert_eq!(tools::waiting(tool(), &cache, None, &whole(), None).unwrap(), 8);
-        assert_eq!(tool().waiting(8), "8 tags wait for an answer");
+        assert_eq!(waiting(&cache, None), 8);
         assert_eq!(
-            tools::count(tool(), &cache, None, &whole(), None).unwrap(),
+            tool().built(&cache, None, &whole(), None).unwrap().counts().change,
             0,
             "nothing is answered"
         );
@@ -323,7 +327,7 @@ mod tests {
         let pseudo = question(&questions, "places/inGreece/AthensSeaSide");
         assert!(pseudo.offers.first().is_none_or(|offer| offer.confidence < EXACT));
 
-        let bare = tool().questions(&cache, None, &whole(), None).unwrap();
+        let bare = tool().asked(&cache, None, &whole(), None).unwrap();
         assert!(
             bare.iter().all(|question| question.offers.is_empty()),
             "no place data, no offers"
@@ -339,7 +343,7 @@ mod tests {
         assert_eq!(china.answer, Some(Answer::Leave));
         assert!(!china.waits());
 
-        let confirmed = tools::confirm_sure(tool(), &questions, None).unwrap();
+        let confirmed = confirm_sure(&questions, None);
         assert!(
             !confirmed.contains("\"places/inChina\""),
             "never confirmed in bulk: {confirmed}"
@@ -347,7 +351,7 @@ mod tests {
 
         let beijing = best(&questions, BEIJING);
         let by_hand = answered(None, "places/inChina", beijing);
-        let set = tool().change_set(&cache, None, &whole(), Some(&by_hand)).unwrap();
+        let set = tool().built(&cache, None, &whole(), Some(&by_hand)).unwrap();
         let rows: Vec<&str> = set.rows.iter().map(|row| row.rel_path.as_str()).collect();
         assert_eq!(
             rows,
@@ -363,8 +367,7 @@ mod tests {
         let cache = scanned("gps-confirmed");
         let questions = asked(&cache, None);
         let settings = answered(None, BEIJING, best(&questions, BEIJING));
-        let set = tool().change_set(&cache, None, &whole(), Some(&settings)).unwrap();
-        assert_eq!(set.title, "Set GPS from the places tag");
+        let set = tool().built(&cache, None, &whole(), Some(&settings)).unwrap();
         assert_eq!(set.rows.len(), 2);
         for row in &set.rows {
             assert!(
@@ -393,13 +396,14 @@ mod tests {
             assert!(row.tells().contains("(derived)"), "{}", row.tells());
         }
         assert_eq!(
-            tools::count(tool(), &cache, None, &whole(), Some(&settings)).unwrap(),
+            tool()
+                .built(&cache, None, &whole(), Some(&settings))
+                .unwrap()
+                .counts()
+                .change,
             2
         );
-        assert_eq!(
-            tools::waiting(tool(), &cache, None, &whole(), Some(&settings)).unwrap(),
-            7
-        );
+        assert_eq!(waiting(&cache, Some(&settings)), 7);
     }
 
     #[test]
@@ -408,7 +412,7 @@ mod tests {
         let questions = asked(&cache, None);
         assert_eq!(question(&questions, AMSTERDAM).offers[0].place().unwrap().code, "NL");
         let settings = answered(None, AMSTERDAM, best(&questions, AMSTERDAM));
-        let set = tool().change_set(&cache, None, &whole(), Some(&settings)).unwrap();
+        let set = tool().built(&cache, None, &whole(), Some(&settings)).unwrap();
         assert_eq!(set.rows.len(), 1);
         assert_eq!(set.rows[0].rel_path, WITH_TEXT);
         assert_eq!(set.rows[0].change.fields.len(), 1, "{:?}", set.rows[0].change);
@@ -420,7 +424,7 @@ mod tests {
         let cache = scanned("gps-located");
         let questions = asked(&cache, None);
         let hamburg = tool()
-            .questions(
+            .asked(
                 &cache,
                 Some(&geo()),
                 &Scope::Filter(Filter::all().within("Germany")),
@@ -428,11 +432,11 @@ mod tests {
             )
             .unwrap();
         assert_eq!(question(&hamburg, "places/inGermany/Hamburg").photos, 1);
-        let mut settings = tools::confirm_sure(tool(), &questions, None).unwrap();
+        let mut settings = confirm_sure(&questions, None);
         for key in ["places/inChina", "places/inGermany"] {
             settings = answered(Some(&settings), key, best(&questions, BEIJING));
         }
-        let set = tool().change_set(&cache, None, &whole(), Some(&settings)).unwrap();
+        let set = tool().built(&cache, None, &whole(), Some(&settings)).unwrap();
         assert!(set.rows.iter().all(|row| row.rel_path != LOCATED));
         assert!(!set.rows.is_empty());
     }
@@ -443,7 +447,7 @@ mod tests {
         let questions = asked(&cache, None);
         let athens = best(&questions, ATHENS);
         let row_of = |settings: &str| {
-            let set = tool().change_set(&cache, None, &whole(), Some(settings)).unwrap();
+            let set = tool().built(&cache, None, &whole(), Some(settings)).unwrap();
             set.rows.into_iter().find(|row| row.rel_path == TWO_TAGS)
         };
 
@@ -479,22 +483,19 @@ mod tests {
         }
         assert!(
             tool()
-                .change_set(&cache, None, &whole(), Some(&settings))
+                .built(&cache, None, &whole(), Some(&settings))
                 .unwrap()
                 .is_empty()
         );
-        assert!(tool().change_set(&cache, None, &whole(), None).unwrap().is_empty());
-        assert_eq!(
-            tools::waiting(tool(), &cache, None, &whole(), Some(&settings)).unwrap(),
-            0
-        );
+        assert!(tool().built(&cache, None, &whole(), None).unwrap().is_empty());
+        assert_eq!(waiting(&cache, Some(&settings)), 0);
     }
 
     #[test]
     fn confirm_exact_matches_confirms_exactly_the_exact_ones() {
         let cache = scanned("gps-exact");
         let questions = asked(&cache, None);
-        let settings = tools::confirm_sure(tool(), &questions, None).unwrap();
+        let settings = confirm_sure(&questions, None);
         let answers = Answers::read(&settings).unwrap();
         let confirmed: Vec<&str> = answers.0.keys().map(String::as_str).collect();
         let expected: Vec<&str> = questions
@@ -509,7 +510,7 @@ mod tests {
         assert!(!confirmed.contains(&ATENS));
 
         let kept = answered(Some(&settings), ATENS, Answer::Leave);
-        let again = tools::confirm_sure(tool(), &asked(&cache, Some(&kept)), Some(&kept)).unwrap();
+        let again = confirm_sure(&asked(&cache, Some(&kept)), Some(&kept));
         assert_eq!(
             Answers::read(&again).unwrap(),
             Answers::read(&kept).unwrap(),
@@ -537,10 +538,10 @@ mod tests {
         assert!(Answers::read(r#"{"places/inChina/Beijing": 3}"#).is_err());
         assert_eq!(Answers::read("").unwrap(), Answers::default());
 
-        let before = tool().change_set(&cache, None, &whole(), Some(&settings)).unwrap();
-        let without_data = tool().questions(&cache, None, &whole(), Some(&settings)).unwrap();
+        let before = tool().built(&cache, None, &whole(), Some(&settings)).unwrap();
+        let without_data = tool().asked(&cache, None, &whole(), Some(&settings)).unwrap();
         assert_eq!(question(&without_data, BEIJING).answer, Some(best(&questions, BEIJING)));
-        let after = tool().change_set(&cache, None, &whole(), Some(&settings)).unwrap();
+        let after = tool().built(&cache, None, &whole(), Some(&settings)).unwrap();
         assert_eq!(
             before.rows.iter().map(|row| &row.change).collect::<Vec<_>>(),
             after.rows.iter().map(|row| &row.change).collect::<Vec<_>>(),
@@ -554,7 +555,7 @@ mod tests {
         let mut questions = asked(&cache, None);
         let beijing = best(&questions, BEIJING);
         let settings = answered(None, BEIJING, beijing.clone());
-        tools::answer_again(tool(), &mut questions, Some(&settings)).unwrap();
+        questions = asked(&cache, Some(&settings));
         assert_eq!(question(&questions, BEIJING).answer, Some(beijing.clone()));
         assert_eq!(question(&questions, "places/inChina").answer, Some(Answer::Leave));
         assert!(question(&questions, ATENS).waits());
@@ -592,7 +593,7 @@ mod tests {
     fn a_pin_gives_its_photos_the_point_the_mark_and_the_words() {
         let cache = scanned("gps-pin");
         let settings = answered(None, BEIJING, pin(39.9300, 116.4200));
-        let set = tool().change_set(&cache, None, &whole(), Some(&settings)).unwrap();
+        let set = tool().built(&cache, None, &whole(), Some(&settings)).unwrap();
         assert_eq!(set.rows.len(), 2);
         for row in &set.rows {
             let Field::Gps(Some(gps)) = &row.change.fields[0] else {
@@ -618,7 +619,7 @@ mod tests {
     fn two_tags_pinned_to_one_point_agree_and_to_two_points_refuse() {
         let cache = scanned("gps-two-pins");
         let row_of = |settings: &str| {
-            let set = tool().change_set(&cache, None, &whole(), Some(settings)).unwrap();
+            let set = tool().built(&cache, None, &whole(), Some(settings)).unwrap();
             set.rows.into_iter().find(|row| row.rel_path == TWO_TAGS).unwrap()
         };
         let here = pin(37.9500, 23.7000);

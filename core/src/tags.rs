@@ -6,8 +6,8 @@
 //! set. A rule that could never do anything, or would take a tag back to where an earlier rule
 //! moved it from, is refused when it is entered, with why.
 //!
-//! What the tree already shows - case twins, look-alikes, the `mixed` bucket - is offered as
-//! [`Suggestion`]s, each one or two rules a click away.
+//! What the shape of the tree says is off - roots spelled two ways, flat keywords, leaves above
+//! their branch's usual depth - is found here, for the fixes to make rules of.
 
 use std::collections::BTreeSet;
 
@@ -22,10 +22,6 @@ pub enum Rule {
 const RENAME: &str = "rename ";
 const DELETE: &str = "delete ";
 const ARROW: &str = " -> ";
-
-/// Where the `mixed` bucket's leaves are offered to go.
-pub const MIXED: &str = "mixed";
-pub const TOPICS: &str = "topics";
 
 impl Rule {
     /// A rename, its paths checked.
@@ -213,77 +209,6 @@ pub fn without_bare_roots(tags: Vec<String>, tree: &TagTree) -> Vec<String> {
         .collect()
 }
 
-/// What the tree offers to tidy, and the rules that would.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct Suggestion {
-    /// What Leave Alone is remembered under.
-    pub key: String,
-    /// `People and people`.
-    pub title: String,
-    /// `Merge Into people`.
-    pub offer: String,
-    /// Photos carrying any of the tags it would move.
-    pub photos: i64,
-    pub rules: Vec<Rule>,
-}
-
-/// Case twins, look-alikes and the leaves of `mixed`, from the tree after the rules so far. A
-/// suggestion left alone, or one the rules would refuse, is not offered.
-pub fn suggestions(tree: &TagTree, rules: &Rules, left: &BTreeSet<String>) -> Vec<Suggestion> {
-    let count = |path: &str| tree.count(path).unwrap_or_default();
-    let mut found = Vec::new();
-
-    for spellings in tree.case_twins() {
-        let lower = spellings[0].to_lowercase();
-        let into = twin_into(tree, &spellings);
-        let moved: Vec<&String> = spellings.iter().filter(|spelling| **spelling != into).collect();
-        found.push(Suggestion {
-            key: format!("twin:{lower}"),
-            title: spellings.join(" and "),
-            offer: format!("Merge Into {into}"),
-            photos: moved.iter().map(|path| count(path)).sum(),
-            rules: moved.iter().filter_map(|from| Rule::rename(from, &into).ok()).collect(),
-        });
-    }
-
-    for (one, other) in tree.look_alikes() {
-        let (from, into) = match count(&one).cmp(&count(&other)) {
-            std::cmp::Ordering::Greater => (other.clone(), one.clone()),
-            std::cmp::Ordering::Less => (one.clone(), other.clone()),
-            std::cmp::Ordering::Equal if leaf(&one).len() >= leaf(&other).len() => (other.clone(), one.clone()),
-            std::cmp::Ordering::Equal => (one.clone(), other.clone()),
-        };
-        found.push(Suggestion {
-            key: format!("alike:{one}|{other}"),
-            title: format!("{one} and {other}"),
-            offer: format!("Merge Into {into}"),
-            photos: count(&from),
-            rules: Rule::rename(&from, &into).into_iter().collect(),
-        });
-    }
-
-    for name in tree.children(MIXED) {
-        let from = format!("{MIXED}/{name}");
-        let into = format!("{TOPICS}/{name}");
-        found.push(Suggestion {
-            key: format!("mixed:{name}"),
-            title: from.clone(),
-            offer: format!("Move to {into}"),
-            photos: count(&from),
-            rules: Rule::rename(&from, &into).into_iter().collect(),
-        });
-    }
-
-    found
-        .into_iter()
-        .filter(|suggestion| !left.contains(&suggestion.key) && !suggestion.rules.is_empty())
-        .filter(|suggestion| {
-            let mut tried = rules.clone();
-            suggestion.rules.iter().all(|rule| tried.add(rule.clone()).is_ok())
-        })
-        .collect()
-}
-
 /// The spelling twins are merged into: the one in lower case, or else the one most photos carry.
 fn twin_into(tree: &TagTree, spellings: &[String]) -> String {
     let count = |path: &str| tree.count(path).unwrap_or_default();
@@ -300,7 +225,7 @@ fn twin_into(tree: &TagTree, spellings: &[String]) -> String {
         .clone()
 }
 
-/// The rules that merge every pair of case twins, as their suggestions would.
+/// The rules that merge every pair of case twins.
 fn twin_rules(tree: &TagTree) -> Rules {
     let mut rules = Rules::default();
     for spellings in tree.case_twins() {
@@ -418,28 +343,6 @@ pub fn misplaced(tree: &TagTree, branches: &[Branch]) -> Vec<(String, String)> {
         }
     }
     found
-}
-
-/// Roots with tags below them that stand apart from the others: spelled in another case than
-/// most roots are, and carried by far fewer photos than the biggest. Case twins are not among
-/// them; they are merged.
-pub fn strays(tree: &TagTree, branches: &[Branch]) -> Vec<String> {
-    let twins: BTreeSet<String> = tree
-        .case_twins()
-        .into_iter()
-        .flatten()
-        .filter(|path| !path.contains('/'))
-        .collect();
-    let others: Vec<&Branch> = branches.iter().filter(|branch| !twins.contains(&branch.root)).collect();
-    let lower = |root: &str| root == root.to_lowercase();
-    let in_lower = others.iter().filter(|branch| lower(&branch.root)).count();
-    let most_lower = in_lower * 2 > others.len();
-    let biggest = branches.iter().map(|branch| branch.photos).max().unwrap_or_default();
-    others
-        .iter()
-        .filter(|branch| lower(&branch.root) != most_lower && branch.photos * 5 < biggest)
-        .map(|branch| branch.root.clone())
-        .collect()
 }
 
 /// The roots spelled two ways, each with the spelling they merge into.
@@ -622,11 +525,6 @@ mod tests {
                 ("topics", 2),
             ]
         );
-        assert_eq!(
-            strays(&tree, &found),
-            ["Apartmens"],
-            "spelled unlike the others, and small"
-        );
         assert_eq!(twin_roots(&tree), [(tags(&["People", "people"]), "people".to_string())]);
     }
 
@@ -657,45 +555,5 @@ mod tests {
             misplaced(&tree, &branches(&tree)),
             [("places/Hamburg".to_string(), "places/inGermany/Hamburg".to_string())]
         );
-    }
-
-    #[test]
-    fn suggestions_come_from_the_tree_and_leave_alone_is_kept() {
-        let photos = vec![
-            tags(&["People/Kira"]),
-            tags(&["people/Ben"]),
-            tags(&["people/Anna"]),
-            tags(&["mixed/discusting"]),
-            tags(&["mixed/disgusting"]),
-            tags(&["mixed/disgusting", "mixed/food"]),
-        ];
-        let none = Rules::default();
-        let found = suggestions(&mapped_tree(&none, &photos), &none, &BTreeSet::new());
-        let offers: Vec<(&str, &str)> = found
-            .iter()
-            .map(|suggestion| (suggestion.key.as_str(), suggestion.offer.as_str()))
-            .collect();
-        assert_eq!(
-            offers,
-            [
-                ("twin:people", "Merge Into people"),
-                ("alike:mixed/discusting|mixed/disgusting", "Merge Into mixed/disgusting"),
-                ("mixed:discusting", "Move to topics/discusting"),
-                ("mixed:disgusting", "Move to topics/disgusting"),
-                ("mixed:food", "Move to topics/food"),
-            ]
-        );
-        assert_eq!(found[0].photos, 1);
-
-        let confirmed = Rules(found[0].rules.clone());
-        let after = suggestions(&mapped_tree(&confirmed, &photos), &confirmed, &BTreeSet::new());
-        assert!(
-            after.iter().all(|suggestion| suggestion.key != "twin:people"),
-            "a merged twin is gone"
-        );
-
-        let left = BTreeSet::from(["mixed:food".to_string()]);
-        let after = suggestions(&mapped_tree(&none, &photos), &none, &left);
-        assert!(after.iter().all(|suggestion| suggestion.key != "mixed:food"));
     }
 }

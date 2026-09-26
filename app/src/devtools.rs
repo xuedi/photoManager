@@ -181,107 +181,29 @@ fn state(window: &Window, paths: &Paths, library: Option<&Library>) -> String {
         Scope::Filter(filter) => serde_json::json!({ "filter": filter.to_string(), "title": filter.title() }),
         Scope::Photos { title, paths } => serde_json::json!({ "title": title, "paths": paths }),
     };
-    let tools = window.tools().counted().map(|counted| {
-        let tools: serde_json::Map<String, serde_json::Value> = counted
-            .tools
-            .iter()
-            .map(|(key, count)| {
-                let count = match count {
-                    Ok(count) => serde_json::json!(count),
-                    Err(why) => serde_json::json!({ "failed": why }),
-                };
-                (key.clone(), count)
-            })
-            .collect();
-        let waiting: serde_json::Map<String, serde_json::Value> = counted
-            .waiting
-            .iter()
-            .map(|(key, waiting)| (key.clone(), serde_json::json!(waiting)))
-            .collect();
-        serde_json::json!({ "photos": counted.photos, "counts": tools, "waiting": waiting })
-    });
-    let page = window.tools().questions();
-    let questions = page.key().map(|key| {
-        let asked: Vec<serde_json::Value> = page
-            .questions()
-            .iter()
-            .map(|question| {
-                serde_json::json!({
-                    "key": question.key,
-                    "title": question.title,
-                    "photos": question.photos,
-                    "apart": question.apart,
-                    "sure": question.sure().is_some(),
-                    "note": question.note,
-                    "kind": format!("{:?}", question.kind).to_lowercase(),
-                    "offers": question.offers.iter().map(|offer| offer.words.clone()).collect::<Vec<String>>(),
-                    "best": question.offers.first().map(|offer| serde_json::json!({
-                        "words": offer.words,
-                        "name": offer.place().map(|place| place.name.clone()),
-                        "code": offer.place().map(|place| place.code.clone()),
-                        "confidence": offer.confidence,
-                        "located": offer.located,
-                    })),
-                    "answer": question.answer.as_ref().map(|answer| match answer {
-                        photomanager_core::tools::Answer::Place(place) => serde_json::json!(place.name),
-                        photomanager_core::tools::Answer::Pin { lat, lon, near } => {
-                            serde_json::json!({ "pin": [lat, lon], "near": near.name })
-                        }
-                        photomanager_core::tools::Answer::Leave => serde_json::json!("leave"),
-                        other => serde_json::json!(other.tells()),
-                    }),
-                })
-            })
-            .collect();
-        serde_json::json!({
-            "tool": key,
-            "busy": page.is_busy(),
-            "settings": page.settings(),
-            "questions": asked,
-            "findings": page.findings().iter().map(|finding| serde_json::json!({
-                "title": finding.title,
-                "detail": finding.detail,
-                "rows": finding.rows.len(),
-            })).collect::<Vec<_>>(),
-            "toast": page.toast(),
-            "picking": page.picking().map(|(question, _)| question),
-        })
-    });
-    let vocabulary = window.tools().vocabulary();
-    let tags = vocabulary.key().map(|key| {
-        let overview = vocabulary.overview();
-        serde_json::json!({
-            "tool": key,
-            "busy": vocabulary.is_busy(),
-            "settings": vocabulary.settings(),
-            "rules": overview.as_ref().map(|overview| overview.rules.iter().map(|(rule, photos)| serde_json::json!({
-                "rule": rule.written(),
-                "photos": photos,
-            })).collect::<Vec<_>>()),
-            "suggestions": overview.as_ref().map(|overview| overview.suggestions.iter().map(|suggestion| serde_json::json!({
-                "key": suggestion.key,
-                "title": suggestion.title,
-                "offer": suggestion.offer,
-                "photos": suggestion.photos,
-            })).collect::<Vec<_>>()),
-            "tree": overview.as_ref().map(|overview| overview.tree.nodes().map(|(path, count)| (path.to_string(), serde_json::json!(count))).collect::<serde_json::Map<String, serde_json::Value>>()),
-            "pending": vocabulary.pending().iter().map(|rule| rule.written()).collect::<Vec<_>>(),
-            "editing": vocabulary.editing(),
-            "refused": vocabulary.refused(),
-            "toast": vocabulary.toast(),
-        })
+    let tools = serde_json::json!({
+        "photos": window.tools().scope_photos(),
+        "toast": window.tools().toast(),
     });
     let listed = window.suggestions();
+    let ticked = listed.ticked();
     let suggestions = serde_json::json!({
         "busy": listed.is_busy(),
-        "open": listed.open().iter().map(|suggestion| serde_json::json!({
-            "key": suggestion.key,
-            "title": suggestion.title,
-            "tool": suggestion.tool,
-            "photos": suggestion.photos,
-            "sure": suggestion.sure,
+        "fixes": listed.found().iter().map(|fix| serde_json::json!({
+            "key": fix.key,
+            "finder": fix.finder,
+            "title": fix.title,
+            "detail": fix.detail,
+            "photos": fix.photos,
+            "lines": fix.lines.len(),
+            "ticked": ticked.contains(&fix.key),
         })).collect::<Vec<_>>(),
-        "found": listed.found().len(),
+        "applied": listed.applied().map(|passes| passes.iter().map(|pass| serde_json::json!({
+            "finder": pass.finder,
+            "batch": pass.summary.batch,
+            "written": pass.summary.written,
+            "refused": pass.summary.refused,
+        })).collect::<Vec<_>>()),
         "dashboard": dashboard.suggestions_line(),
         "toast": listed.toast(),
     });
@@ -323,8 +245,6 @@ fn state(window: &Window, paths: &Paths, library: Option<&Library>) -> String {
         "photo": photo,
         "scope": scope,
         "tools": tools,
-        "questions": questions,
-        "vocabulary": tags,
         "suggestions": suggestions,
         "page": window.tools().showing(),
         "preview": previewed,

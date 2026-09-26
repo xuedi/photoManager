@@ -4,6 +4,7 @@ pub mod dashboard;
 #[cfg(feature = "devtools")]
 pub mod devtools;
 pub mod edit;
+pub mod forms;
 pub mod gallery;
 pub mod history;
 pub mod layout_editor;
@@ -12,12 +13,10 @@ pub mod panel;
 pub mod photo;
 pub mod preferences;
 pub mod preview;
-pub mod questions;
 pub mod secrets;
 pub mod suggestions;
 pub mod thumbnails;
 pub mod tools;
-pub mod vocabulary;
 pub mod window;
 
 use gtk::gio;

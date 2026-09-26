@@ -1,19 +1,20 @@
-//! The Suggestions view: what the tools found in the library on their own, grouped by tool, the
-//! biggest first. Open hands a suggestion's scope and settings to its tool, whose page, preview
-//! and apply do the rest; nothing is ever written from here. Dismiss remembers the key.
+//! The Suggestions view: every fix the app is sure about, grouped by finder in the order they are
+//! applied, each with a check. Apply Selected writes the ticked ones, a pass for each finder, and
+//! the list is found again: what was applied is gone because the photos now say it.
 //!
-//! The tools are asked off the main thread, after every scan and whenever the view is shown.
+//! The checks live only here, in memory. The fixes are found off the main thread, after every
+//! scan and whenever the view is shown.
 
 use std::cell::{Cell, RefCell};
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 use std::rc::Rc;
 
 use adw::prelude::*;
 use adw::subclass::prelude::*;
 use gtk::glib;
-use photomanager_core::tools::{self, Suggestion};
+use photomanager_core::fixes::{FINDERS, Fix, Pass};
 
-use crate::library::Library;
+use crate::library::{Event, Library};
 
 type Listener = Box<dyn Fn(usize)>;
 
@@ -26,23 +27,31 @@ mod imp {
         pub content: gtk::Box,
         pub loading: adw::StatusPage,
         pub none: adw::StatusPage,
-        pub dismissed_group: adw::PreferencesGroup,
-        pub show_dismissed: adw::SwitchRow,
         pub groups: RefCell<Vec<adw::PreferencesGroup>>,
+        pub checks: RefCell<BTreeMap<String, gtk::CheckButton>>,
+        pub bar: gtk::ActionBar,
+        pub chosen: gtk::Label,
+        pub apply: gtk::Button,
+        pub cancel: gtk::Button,
+        pub progress: gtk::ProgressBar,
         pub library: RefCell<Option<Rc<Library>>>,
         /// The newest that arrived, `None` until the first did.
-        pub found: RefCell<Option<Vec<Suggestion>>>,
-        pub dismissed: RefCell<BTreeSet<String>>,
-        /// Which asking is the newest, so one that arrives late is dropped.
+        pub found: RefCell<Option<Vec<Fix>>>,
+        pub ticked: RefCell<BTreeSet<String>>,
+        /// Which finding is the newest, so one that arrives late is dropped.
         pub asking: Cell<u64>,
         pub busy: Cell<bool>,
+        pub applying: Cell<bool>,
+        /// Checks set from code, which are no clicks.
+        pub setting: Cell<bool>,
         pub toast: RefCell<String>,
+        pub applied: RefCell<Option<Vec<Pass>>>,
         pub listeners: RefCell<Vec<Listener>>,
     }
 
     impl std::fmt::Debug for Suggestions {
         fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-            write!(f, "{:?} suggestions", self.found.borrow().as_ref().map(Vec::len))
+            write!(f, "{:?} fixes", self.found.borrow().as_ref().map(Vec::len))
         }
     }
 
@@ -79,7 +88,6 @@ impl Default for Suggestions {
 impl Suggestions {
     pub fn set_library(&self, library: Option<Rc<Library>>) {
         if let Some(library) = &library {
-            *self.imp().dismissed.borrow_mut() = library.dismissed();
             let page = self.downgrade();
             library.connect_changed(move || {
                 if let Some(page) = page.upgrade() {
@@ -91,12 +99,12 @@ impl Suggestions {
         self.ask();
     }
 
-    /// Told how many suggestions there are, not counting the dismissed, whenever that changes.
+    /// Told how many fixes there are, whenever that changes.
     pub fn connect_listed(&self, listed: impl Fn(usize) + 'static) {
         self.imp().listeners.borrow_mut().push(Box::new(listed));
     }
 
-    /// Asks every tool again. One asked before that arrives later is dropped.
+    /// Finds the fixes again. One found before that arrives later is dropped.
     pub fn ask(&self) {
         let imp = self.imp();
         let Some(library) = imp.library.borrow().clone() else {
@@ -105,10 +113,9 @@ impl Suggestions {
         let asking = imp.asking.get() + 1;
         imp.asking.set(asking);
         imp.busy.set(true);
-        self.show();
 
         let page = self.downgrade();
-        library.suggestions(move |found| {
+        library.fixes(move |found| {
             let Some(page) = page.upgrade() else {
                 return;
             };
@@ -118,8 +125,12 @@ impl Suggestions {
             }
             imp.busy.set(false);
             match found {
-                Ok(found) => *imp.found.borrow_mut() = Some(found),
-                Err(why) => tracing::error!(why, "the tools could not be asked for suggestions"),
+                Ok(found) => {
+                    let keys: BTreeSet<String> = found.iter().map(|fix| fix.key.clone()).collect();
+                    imp.ticked.borrow_mut().retain(|key| keys.contains(key));
+                    *imp.found.borrow_mut() = Some(found);
+                }
+                Err(why) => tracing::error!(why, "the suggestions could not be found"),
             }
             page.show();
             page.tell();
@@ -127,71 +138,169 @@ impl Suggestions {
     }
 
     pub fn is_busy(&self) -> bool {
-        self.imp().busy.get()
+        self.imp().busy.get() || self.imp().applying.get()
     }
 
-    /// Every suggestion found, the dismissed too.
-    pub fn found(&self) -> Vec<Suggestion> {
+    pub fn found(&self) -> Vec<Fix> {
         self.imp().found.borrow().clone().unwrap_or_default()
     }
 
-    /// The ones not dismissed.
-    pub fn open(&self) -> Vec<Suggestion> {
-        let dismissed = self.imp().dismissed.borrow();
-        self.found()
-            .into_iter()
-            .filter(|suggestion| !dismissed.contains(&suggestion.key))
-            .collect()
-    }
-
-    pub fn find(&self, key: &str) -> Option<Suggestion> {
-        self.found().into_iter().find(|suggestion| suggestion.key == key)
+    pub fn ticked(&self) -> Vec<String> {
+        self.imp().ticked.borrow().iter().cloned().collect()
     }
 
     pub fn toast(&self) -> String {
         self.imp().toast.borrow().clone()
     }
 
-    pub fn set_show_dismissed(&self, show: bool) {
-        self.imp().show_dismissed.set_active(show);
+    /// What the last Apply Selected came to, a pass for each finder.
+    pub fn applied(&self) -> Option<Vec<Pass>> {
+        self.imp().applied.borrow().clone()
     }
 
-    /// Dismisses a suggestion for good, or brings it back.
-    pub fn dismiss(&self, key: &str, dismissed: bool) {
+    /// Ticks one fix, or takes the tick away.
+    pub fn tick(&self, key: &str, ticked: bool) {
+        let check = self.imp().checks.borrow().get(key).cloned();
+        match check {
+            Some(check) => check.set_active(ticked),
+            None => tracing::warn!(fix = key, "no such suggestion"),
+        }
+    }
+
+    /// Ticks every fix of a finder, or of all of them with `all`, or takes the ticks away.
+    pub fn tick_every(&self, finder: &str, ticked: bool) {
+        let keys: Vec<String> = self
+            .found()
+            .iter()
+            .filter(|fix| finder == "all" || fix.finder == finder)
+            .map(|fix| fix.key.clone())
+            .collect();
+        for key in keys {
+            self.tick(&key, ticked);
+        }
+    }
+
+    /// Asks before the first write of all, then writes the ticked fixes.
+    pub fn apply(&self) {
         let imp = self.imp();
         let Some(library) = imp.library.borrow().clone() else {
             return;
         };
-        library.set_dismissed(key, dismissed);
-        *imp.dismissed.borrow_mut() = library.dismissed();
-        tracing::info!(suggestion = key, dismissed, "suggestion dismissed");
-        if dismissed {
-            let title = self
-                .find(key)
-                .map(|suggestion| suggestion.title)
-                .unwrap_or_else(|| key.to_string());
-            let toast = adw::Toast::builder()
-                .title(format!("Dismissed: {title}"))
-                .button_label("Undo")
-                .action_name("win.restore-suggestion")
-                .action_target(&key.to_variant())
-                .build();
-            self.say(toast);
+        if library.is_busy() || self.is_busy() {
+            return;
         }
-        self.show();
-        self.tell();
+        let ticked = imp.ticked.borrow().clone();
+        let chosen: Vec<Fix> = self
+            .found()
+            .into_iter()
+            .filter(|fix| ticked.contains(&fix.key))
+            .collect();
+        if chosen.is_empty() {
+            return;
+        }
+        let page = self.downgrade();
+        crate::confirm::before_first_write(self, &library, move || {
+            let Some(page) = page.upgrade() else {
+                return;
+            };
+            let Some(library) = page.imp().library.borrow().clone() else {
+                return;
+            };
+            if library.is_busy() {
+                page.say("Something else is running, so nothing was written.");
+                return;
+            }
+            tracing::info!(fixes = chosen.len(), "suggestions applied");
+            page.running(true);
+            let told = page.downgrade();
+            library.apply_fixes(chosen.clone(), move |event| {
+                if let Some(page) = told.upgrade() {
+                    page.report(event);
+                }
+            });
+        });
     }
 
-    fn say(&self, toast: adw::Toast) {
-        *self.imp().toast.borrow_mut() = toast.title().map(|title| title.to_string()).unwrap_or_default();
+    pub fn cancel(&self) {
+        if let Some(library) = self.imp().library.borrow().as_ref() {
+            library.cancel();
+            self.imp().progress.set_text(Some("Stopping after this pass"));
+        }
+    }
+
+    fn report(&self, event: Event) {
+        let imp = self.imp();
+        match event {
+            Event::Done(done, total) => {
+                imp.progress.set_fraction(done as f64 / total.max(1) as f64);
+                imp.progress.set_text(Some(&format!("{done} of {total}")));
+            }
+            Event::Note(note) => {
+                imp.progress.pulse();
+                imp.progress.set_text(Some(&note));
+            }
+            Event::Fixed(passes) => {
+                self.running(false);
+                imp.ticked.borrow_mut().clear();
+                self.say(&told(&passes));
+                *imp.applied.borrow_mut() = Some(passes);
+                self.show();
+                if let Some(window) = self.root().and_downcast::<crate::window::Window>() {
+                    window.scan(photomanager_core::scan::Mode::Reconcile);
+                }
+            }
+            Event::Failed(why) => {
+                self.running(false);
+                self.say(&format!("Did not work: {why}"));
+                tracing::error!(why, "the suggestions were not applied");
+            }
+            _ => {}
+        }
+    }
+
+    fn say(&self, text: &str) {
+        *self.imp().toast.borrow_mut() = text.to_string();
+        let toast = adw::Toast::new(text);
+        if text.starts_with("Written") {
+            toast.set_button_label(Some("History"));
+            toast.set_action_name(Some("win.show-history"));
+        }
         self.imp().toasts.add_toast(toast);
     }
 
+    fn running(&self, busy: bool) {
+        let imp = self.imp();
+        imp.applying.set(busy);
+        imp.apply.set_visible(!busy);
+        imp.cancel.set_visible(busy);
+        imp.progress.set_visible(busy);
+        imp.chosen.set_visible(!busy);
+        imp.content.set_sensitive(!busy);
+        if busy {
+            imp.progress.set_fraction(0.0);
+            imp.progress.set_text(Some("Writing"));
+        }
+    }
+
     fn tell(&self) {
-        let count = self.open().len();
+        let count = self.found().len();
         for listener in self.imp().listeners.borrow().iter() {
             listener(count);
         }
+    }
+
+    /// The action bar says what is ticked; only the ticks changed, so nothing else is drawn again.
+    fn show_ticked(&self) {
+        let imp = self.imp();
+        let ticked = imp.ticked.borrow();
+        let found = self.found();
+        let chosen = found.iter().filter(|fix| ticked.contains(&fix.key)).count();
+        imp.chosen.set_label(&match chosen {
+            0 => "Tick the fixes to apply".to_string(),
+            1 => "1 fix selected".to_string(),
+            count => format!("{count} fixes selected"),
+        });
+        imp.apply.set_sensitive(chosen > 0);
     }
 
     fn show(&self) {
@@ -199,57 +308,96 @@ impl Suggestions {
         for group in imp.groups.borrow_mut().drain(..) {
             imp.content.remove(&group);
         }
+        imp.checks.borrow_mut().clear();
         let found = imp.found.borrow().clone();
         imp.loading.set_visible(found.is_none());
-        let Some(found) = found else {
-            imp.none.set_visible(false);
-            imp.dismissed_group.set_visible(false);
-            return;
-        };
-        let dismissed = imp.dismissed.borrow().clone();
-        let showing_dismissed = imp.show_dismissed.is_active();
-        let shown: Vec<&Suggestion> = found
-            .iter()
-            .filter(|suggestion| showing_dismissed || !dismissed.contains(&suggestion.key))
-            .collect();
-
-        let mut by_tool: Vec<(&'static str, Vec<&Suggestion>)> = Vec::new();
-        for suggestion in &shown {
-            match by_tool.iter_mut().find(|(tool, _)| *tool == suggestion.tool) {
-                Some((_, listed)) => listed.push(suggestion),
-                None => by_tool.push((suggestion.tool, vec![suggestion])),
-            }
-        }
-        let size = |listed: &Vec<&Suggestion>| listed.iter().map(|suggestion| suggestion.photos).sum::<usize>();
-        by_tool.sort_by_key(|(_, listed)| std::cmp::Reverse(size(listed)));
+        let found = found.unwrap_or_default();
+        imp.none.set_visible(imp.found.borrow().is_some() && found.is_empty());
+        imp.bar.set_revealed(!found.is_empty());
 
         let mut after: gtk::Widget = imp.none.clone().upcast();
-        for (key, listed) in &by_tool {
-            let tool = tools::find(key);
-            let group = adw::PreferencesGroup::builder()
-                .title(tool.map(|tool| tool.title()).unwrap_or(key))
-                .build();
-            if let Some(tool) = tool {
-                group.set_description(Some(tool.fixes()));
+        for finder in &FINDERS {
+            let own: Vec<&Fix> = found.iter().filter(|fix| fix.finder == finder.key).collect();
+            if own.is_empty() {
+                continue;
             }
-            for suggestion in listed {
-                group.add(&row(suggestion, dismissed.contains(&suggestion.key)));
+            let group = adw::PreferencesGroup::builder()
+                .title(finder.title)
+                .description(finder.fixes)
+                .build();
+            let every = gtk::Button::builder()
+                .label("Select All")
+                .valign(gtk::Align::Center)
+                .action_name("win.fixes-select-all")
+                .action_target(&finder.key.to_variant())
+                .build();
+            every.add_css_class("flat");
+            every.update_property(&[gtk::accessible::Property::Label(&format!(
+                "Select All of {}",
+                finder.title
+            ))]);
+            group.set_header_suffix(Some(&every));
+            for fix in own {
+                group.add(&self.row(fix));
             }
             imp.content.insert_child_after(&group, Some(&after));
             after = group.clone().upcast();
             imp.groups.borrow_mut().push(group);
         }
+        self.show_ticked();
+    }
 
-        imp.none.set_visible(shown.is_empty());
-        let hidden = found
-            .iter()
-            .filter(|suggestion| dismissed.contains(&suggestion.key))
-            .count();
-        imp.dismissed_group.set_visible(hidden > 0 || showing_dismissed);
-        imp.show_dismissed.set_subtitle(&match hidden {
-            1 => "1 dismissed".to_string(),
-            count => format!("{count} dismissed"),
-        });
+    /// One fix: its check, what it is about and how many photos, and its lines below it where it
+    /// has any.
+    fn row(&self, fix: &Fix) -> gtk::Widget {
+        let imp = self.imp();
+        let check = gtk::CheckButton::builder()
+            .valign(gtk::Align::Center)
+            .active(imp.ticked.borrow().contains(&fix.key))
+            .build();
+        check.update_property(&[gtk::accessible::Property::Label(&fix.title)]);
+        let key = fix.key.clone();
+        check.connect_toggled(glib::clone!(
+            #[weak(rename_to = page)]
+            self,
+            move |check| {
+                match check.is_active() {
+                    true => page.imp().ticked.borrow_mut().insert(key.clone()),
+                    false => page.imp().ticked.borrow_mut().remove(&key),
+                };
+                page.show_ticked();
+            }
+        ));
+        imp.checks.borrow_mut().insert(fix.key.clone(), check.clone());
+        let title = glib::markup_escape_text(&fix.title);
+        let subtitle = glib::markup_escape_text(&format!("{} - {}", fix.detail, photos_of(fix.photos)));
+
+        if fix.lines.is_empty() {
+            let row = adw::ActionRow::builder()
+                .title(title)
+                .subtitle(subtitle)
+                .subtitle_lines(2)
+                .activatable_widget(&check)
+                .build();
+            row.add_prefix(&check);
+            return row.upcast();
+        }
+        let row = adw::ExpanderRow::builder()
+            .title(title)
+            .subtitle(subtitle)
+            .subtitle_lines(2)
+            .build();
+        row.add_prefix(&check);
+        for (name, said) in &fix.lines {
+            row.add_row(
+                &adw::ActionRow::builder()
+                    .title(glib::markup_escape_text(name))
+                    .subtitle(glib::markup_escape_text(said))
+                    .subtitle_selectable(true)
+                    .build(),
+            );
+        }
+        row.upcast()
     }
 
     fn build(&self) {
@@ -259,22 +407,13 @@ impl Suggestions {
         imp.loading.set_child(Some(&adw::Spinner::new()));
         imp.loading.add_css_class("compact");
 
-        imp.none.set_icon_name(Some("starred-symbolic"));
+        imp.none.set_icon_name(Some("object-select-symbolic"));
         imp.none.set_title("No Suggestions");
         imp.none.set_description(Some(
-            "The tools found nothing they can fix on their own. They look again after every scan.",
+            "Nothing the app is sure it can fix. What needs a decision is done with the tools.",
         ));
         imp.none.add_css_class("compact");
         imp.none.set_visible(false);
-
-        imp.show_dismissed.set_title("Show Dismissed");
-        imp.show_dismissed.connect_active_notify(glib::clone!(
-            #[weak(rename_to = page)]
-            self,
-            move |_| page.show()
-        ));
-        imp.dismissed_group.add(&imp.show_dismissed);
-        imp.dismissed_group.set_visible(false);
 
         imp.content.set_orientation(gtk::Orientation::Vertical);
         imp.content.set_spacing(24);
@@ -284,7 +423,24 @@ impl Suggestions {
         imp.content.set_margin_end(12);
         imp.content.append(&imp.loading);
         imp.content.append(&imp.none);
-        imp.content.append(&imp.dismissed_group);
+
+        imp.chosen.add_css_class("dim-label");
+        imp.progress.set_show_text(true);
+        imp.progress.set_hexpand(true);
+        imp.progress.set_valign(gtk::Align::Center);
+        imp.progress.set_visible(false);
+        imp.apply.set_label("Apply Selected");
+        imp.apply.add_css_class("suggested-action");
+        imp.apply.set_action_name(Some("win.apply-fixes"));
+        imp.apply.set_sensitive(false);
+        imp.cancel.set_label("Cancel");
+        imp.cancel.set_action_name(Some("win.cancel-fixes"));
+        imp.cancel.set_visible(false);
+        imp.bar.pack_start(&imp.chosen);
+        imp.bar.pack_start(&imp.progress);
+        imp.bar.pack_end(&imp.apply);
+        imp.bar.pack_end(&imp.cancel);
+        imp.bar.set_revealed(false);
 
         let clamp = adw::Clamp::builder().maximum_size(720).child(&imp.content).build();
         let scrolled = gtk::ScrolledWindow::builder()
@@ -292,82 +448,38 @@ impl Suggestions {
             .vexpand(true)
             .child(&clamp)
             .build();
-        imp.toasts.set_child(Some(&scrolled));
+        let view = adw::ToolbarView::new();
+        view.set_content(Some(&scrolled));
+        view.add_bottom_bar(&imp.bar);
+        imp.toasts.set_child(Some(&view));
         self.set_child(Some(&imp.toasts));
     }
 }
 
-/// One suggestion: what it is about, Open, and Dismiss or Restore. What it is made of opens below
-/// it where there is anything.
-fn row(suggestion: &Suggestion, dismissed: bool) -> gtk::Widget {
-    let subtitle = match (dismissed, photos(suggestion.photos)) {
-        (true, photos) => format!("Dismissed - {} - {photos}", suggestion.detail),
-        (false, photos) => format!("{} - {photos}", suggestion.detail),
+/// `Written 12 photos in 2 passes. 1 refused.`
+fn told(passes: &[Pass]) -> String {
+    let written: usize = passes.iter().map(|pass| pass.summary.written).sum();
+    let refused: usize = passes.iter().map(|pass| pass.summary.refused).sum();
+    let failed: usize = passes.iter().map(|pass| pass.summary.failed).sum();
+    let cancelled = passes.iter().any(|pass| pass.summary.cancelled);
+    let mut said = match passes.len() {
+        0 => "Nothing was left to write".to_string(),
+        1 => format!("Written {} in 1 pass", photos_of(written)),
+        count => format!("Written {} in {count} passes", photos_of(written)),
     };
-    let title = glib::markup_escape_text(&suggestion.title);
-    let subtitle = glib::markup_escape_text(&subtitle);
-    let open = gtk::Button::builder()
-        .label("Open")
-        .valign(gtk::Align::Center)
-        .action_name("win.open-suggestion")
-        .action_target(&suggestion.key.to_variant())
-        .tooltip_text(match suggestion.sure {
-            true => "Open it in its tool, to preview and apply",
-            false => "Open its tool, to decide there",
-        })
-        .build();
-    // A button is named by its label unless told otherwise; each row's Open needs its own name.
-    open.reset_relation(gtk::AccessibleRelation::LabelledBy);
-    open.update_property(&[gtk::accessible::Property::Label(&format!("Open {}", suggestion.title))]);
-    let other = match dismissed {
-        true => gtk::Button::builder()
-            .label("Restore")
-            .action_name("win.restore-suggestion")
-            .build(),
-        false => gtk::Button::builder()
-            .icon_name("window-close-symbolic")
-            .tooltip_text("Dismiss")
-            .action_name("win.dismiss-suggestion")
-            .build(),
-    };
-    other.set_valign(gtk::Align::Center);
-    other.set_action_target_value(Some(&suggestion.key.to_variant()));
-    other.add_css_class("flat");
-    other.update_property(&[gtk::accessible::Property::Label(&match dismissed {
-        true => format!("Restore {}", suggestion.title),
-        false => format!("Dismiss {}", suggestion.title),
-    })]);
-
-    if suggestion.rows.is_empty() {
-        let row = adw::ActionRow::builder()
-            .title(title)
-            .subtitle(subtitle)
-            .subtitle_lines(3)
-            .build();
-        row.add_suffix(&open);
-        row.add_suffix(&other);
-        return row.upcast();
+    if refused > 0 {
+        said.push_str(&format!(", {refused} refused"));
     }
-    let row = adw::ExpanderRow::builder()
-        .title(title)
-        .subtitle(subtitle)
-        .subtitle_lines(3)
-        .build();
-    // An expander row puts each suffix before the ones it has.
-    row.add_suffix(&other);
-    row.add_suffix(&open);
-    for (name, said) in &suggestion.rows {
-        row.add_row(
-            &adw::ActionRow::builder()
-                .title(glib::markup_escape_text(name))
-                .subtitle(glib::markup_escape_text(said))
-                .build(),
-        );
+    if failed > 0 {
+        said.push_str(&format!(", {failed} failed"));
     }
-    row.upcast()
+    if cancelled {
+        said.push_str(", then stopped");
+    }
+    said
 }
 
-fn photos(count: usize) -> String {
+fn photos_of(count: usize) -> String {
     match count {
         1 => "1 photo".to_string(),
         count => format!("{count} photos"),
