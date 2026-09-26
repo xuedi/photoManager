@@ -412,17 +412,13 @@ mod tests {
     }
 
     #[test]
-    fn written_every_field_agrees_and_the_undo_puts_them_back_exactly() {
+    fn written_every_field_agrees() {
         let mut library = Library::new("tags-write");
         let rules = kept(&["rename People -> people"]);
         let scope = Scope::Photos {
             title: "three".to_string(),
             paths: vec![KIRA.to_string(), LABELLED.to_string(), CATALOGUED.to_string()],
         };
-        let before: Vec<Vec<(String, String)>> = [KIRA, LABELLED, CATALOGUED]
-            .iter()
-            .map(|path| fields(&library, path))
-            .collect();
         let set = built(&library, renamed(&library.cache, &scope, &rules, true));
         assert_eq!(set.counts().change, 3);
         let summary = library.apply(&set);
@@ -447,14 +443,6 @@ mod tests {
         library.rescan();
         let again = built(&library, renamed(&library.cache, &scope, &rules, true));
         assert!(again.is_empty(), "a second run changes nothing: {:?}", again.rows);
-
-        let undone = library.undo();
-        assert_eq!(undone.written, 3, "{undone:?}");
-        let after: Vec<Vec<(String, String)>> = [KIRA, LABELLED, CATALOGUED]
-            .iter()
-            .map(|path| fields(&library, path))
-            .collect();
-        assert_eq!(after, before, "every field is back exactly");
     }
 
     #[test]
@@ -515,7 +503,6 @@ mod tests {
         assert!(tags.contains(&"places/inChina".to_string()), "{tags:?}");
         assert!(tags.contains(&"mixed/funny".to_string()), "{tags:?}");
 
-        let before = fields(&library, FLAT);
         assert_eq!(library.apply(&set).written, 1);
         library.rescan();
         let said = library.cache.stated(&[FLAT.to_string()]).unwrap()[FLAT]
@@ -529,8 +516,5 @@ mod tests {
             .map(|one| one.rule.written())
             .collect();
         assert_eq!(again, ["rename People -> people"], "nothing flat is left to move");
-
-        assert_eq!(library.undo().written, 1);
-        assert_eq!(fields(&library, FLAT), before, "taken back exactly");
     }
 }

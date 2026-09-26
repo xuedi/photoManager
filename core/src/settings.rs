@@ -1,17 +1,14 @@
 //! The few things the application has to remember that are not in the photos.
 //!
-//! They live in a table of their own in `app.db`, next to the [journal](crate::journal), because
-//! like the journal they have to outlive a cache rebuild: the cache is thrown away whenever it is
-//! convenient, and an acknowledgement the user gave once must not be asked for again because of
-//! it. The table is created if it is not there and the journal's schema version is left alone, so
-//! either of the two can open the file first.
+//! They live in `app.db` and not in the cache, because they have to outlive a cache rebuild: the
+//! cache is thrown away whenever it is convenient, and an acknowledgement the user gave once must
+//! not be asked for again because of it.
 
 use std::path::{Path, PathBuf};
 
 use rusqlite::{Connection, OptionalExtension, params};
 
 use crate::clock::{now, stamp};
-use crate::journal::{self, Journal};
 use crate::layout::Layout;
 
 const SCHEMA: &str = "
@@ -20,6 +17,10 @@ CREATE TABLE IF NOT EXISTS setting (
     value  TEXT NOT NULL,
     set_at TEXT NOT NULL
 )";
+
+/// The tables older versions kept a journal of every write in, for an undo. A change is not taken
+/// back any more, the user's backup is the way back, so they are dropped on open.
+const OLD_JOURNAL: [&str; 5] = ["swap", "relocated", "entry", "relocation", "batch"];
 
 /// That the user said, once, that their photos are backed up somewhere else.
 pub const BACKUP_ACKNOWLEDGED: &str = "backup-acknowledged";
@@ -60,6 +61,7 @@ impl Settings {
         connection.busy_timeout(std::time::Duration::from_secs(5))?;
         connection.execute_batch(SCHEMA)?;
         move_out_left_over(&connection, file)?;
+        drop_the_old_journal(&connection, file)?;
         Ok(Settings {
             connection,
             file: file.to_path_buf(),
@@ -135,6 +137,60 @@ fn move_out_left_over(connection: &Connection, file: &Path) -> Result<()> {
     Ok(())
 }
 
+/// Drops the tables of the old journal. A copy of the whole file is made beside it first, as
+/// SQLite sees it, named after the version the journal was; a copy there already is from a drop
+/// that did not finish, and is kept. Something written by the old journal means the backup
+/// question was answered then, so it is not asked again.
+fn drop_the_old_journal(connection: &Connection, file: &Path) -> Result<()> {
+    let tables: Vec<String> = {
+        let mut statement = connection.prepare("SELECT name FROM sqlite_master WHERE type = 'table'")?;
+        statement
+            .query_map([], |row| row.get(0))?
+            .collect::<Result<Vec<String>>>()?
+            .into_iter()
+            .filter(|name| OLD_JOURNAL.contains(&name.as_str()))
+            .collect()
+    };
+    if tables.is_empty() {
+        return Ok(());
+    }
+    let version: i64 = connection.query_row("PRAGMA user_version", [], |row| row.get(0))?;
+    let mut name = file.file_name().unwrap_or_default().to_os_string();
+    name.push(format!(".v{version}"));
+    let copy = file.with_file_name(name);
+    if !copy.exists() {
+        connection.execute("VACUUM INTO ?1", params![copy.to_string_lossy()])?;
+    }
+
+    let has = |table: &str| tables.iter().any(|name| name == table);
+    let mut written = Vec::new();
+    if has("entry") {
+        written.push("EXISTS(SELECT 1 FROM entry WHERE outcome = 'written')");
+    }
+    if has("relocation") {
+        written.push("EXISTS(SELECT 1 FROM relocation WHERE outcome = 'written')");
+    }
+    let ever_written = !written.is_empty()
+        && connection.query_row(&format!("SELECT {}", written.join(" OR ")), [], |row| {
+            row.get::<_, bool>(0)
+        })?;
+
+    let change = connection.unchecked_transaction()?;
+    if ever_written {
+        change.execute(
+            "INSERT OR IGNORE INTO setting (name, value, set_at) VALUES (?1, 'yes', ?2)",
+            params![BACKUP_ACKNOWLEDGED, now()],
+        )?;
+    }
+    for table in OLD_JOURNAL.iter().filter(|table| has(table)) {
+        change.execute_batch(&format!("DROP TABLE {table}"))?;
+    }
+    change.pragma_update(None, "user_version", 0)?;
+    change.commit()?;
+    tracing::info!(copy = %copy.display(), "the old journal was dropped");
+    Ok(())
+}
+
 /// The folder layout the user chose, or the default when they chose none or it no longer reads.
 pub fn layout(settings: &Settings) -> Layout {
     match settings.get(FOLDER_LAYOUT) {
@@ -196,9 +252,9 @@ pub fn look_at(path: &Path) -> Backup {
 }
 
 /// Whether the user still has to be asked before anything is ever written to a photo. Once they
-/// have acknowledged it, or once something has been written, the question is settled for good.
-pub fn must_ask(journal: &Journal, settings: &Settings) -> journal::Result<bool> {
-    Ok(settings.get(BACKUP_ACKNOWLEDGED)?.is_none() && !journal.ever_written()?)
+/// have acknowledged it, the question is settled for good.
+pub fn must_ask(settings: &Settings) -> Result<bool> {
+    Ok(settings.get(BACKUP_ACKNOWLEDGED)?.is_none())
 }
 
 /// Records the acknowledgement, and the backup location if the user named one.
@@ -251,30 +307,55 @@ mod tests {
     }
 
     #[test]
-    fn the_settings_and_the_journal_share_one_file_in_either_order() {
-        for settings_first in [true, false] {
-            let file = temp(&format!("shared-{settings_first}")).join("app.db");
-            if settings_first {
-                Settings::open(&file).unwrap().put("a", "1").unwrap();
-                Journal::open(&file).unwrap();
-            } else {
-                Journal::open(&file).unwrap();
-                Settings::open(&file).unwrap().put("a", "1").unwrap();
-            }
-            assert_eq!(Settings::open(&file).unwrap().get("a").unwrap().as_deref(), Some("1"));
-            assert!(Journal::open(&file).is_ok(), "the journal still opens its own tables");
+    fn the_old_journal_is_copied_and_dropped_and_what_it_wrote_settles_the_question() {
+        for (name, written) in [("old-journal-written", true), ("old-journal-unwritten", false)] {
+            let file = temp(name).join("app.db");
+            std::fs::create_dir_all(file.parent().unwrap()).unwrap();
+            let old = Connection::open(&file).unwrap();
+            old.execute_batch(
+                "CREATE TABLE batch (id INTEGER PRIMARY KEY, kind TEXT);
+                 CREATE TABLE entry (id INTEGER PRIMARY KEY, batch_id INTEGER, outcome TEXT);
+                 CREATE TABLE swap (entry_id INTEGER, tag TEXT);
+                 CREATE TABLE relocation (id INTEGER PRIMARY KEY, batch_id INTEGER, outcome TEXT);
+                 CREATE TABLE relocated (relocation_id INTEGER, rel_path TEXT);
+                 INSERT INTO batch VALUES (1, 'write');
+                 PRAGMA user_version = 3;",
+            )
+            .unwrap();
+            let outcome = if written { "written" } else { "refused" };
+            old.execute("INSERT INTO entry VALUES (1, 1, ?1)", params![outcome])
+                .unwrap();
+            drop(old);
+
+            let settings = Settings::open(&file).unwrap();
+            assert_eq!(must_ask(&settings).unwrap(), !written, "{name}");
+            let left: i64 = settings
+                .connection
+                .query_row(
+                    "SELECT count(*) FROM sqlite_master WHERE name IN ('batch', 'entry', 'swap', 'relocation', 'relocated')",
+                    [],
+                    |row| row.get(0),
+                )
+                .unwrap();
+            assert_eq!(left, 0, "{name}");
+            let copy = Connection::open(file.with_file_name("app.db.v3")).unwrap();
+            let kept: i64 = copy
+                .query_row("SELECT count(*) FROM batch", [], |row| row.get(0))
+                .unwrap();
+            assert_eq!(kept, 1, "the copy holds the journal as it was");
+            drop(settings);
+            assert!(Settings::open(&file).is_ok(), "and it opens again with nothing to drop");
         }
     }
 
     #[test]
     fn the_acknowledgement_is_asked_for_once() {
         let file = temp("ask").join("app.db");
-        let journal = Journal::open(&file).unwrap();
         let mut settings = Settings::open(&file).unwrap();
-        assert!(must_ask(&journal, &settings).unwrap());
+        assert!(must_ask(&settings).unwrap());
 
         acknowledge(&mut settings, None).unwrap();
-        assert!(!must_ask(&journal, &settings).unwrap());
+        assert!(!must_ask(&settings).unwrap());
         assert_eq!(settings.get(BACKUP_LOCATION).unwrap(), None);
     }
 
@@ -330,8 +411,7 @@ mod tests {
         cache.rebuild().unwrap();
 
         let settings = Settings::open(&file).unwrap();
-        let journal = Journal::open(&file).unwrap();
-        assert!(!must_ask(&journal, &settings).unwrap());
+        assert!(!must_ask(&settings).unwrap());
         assert_eq!(
             settings.get(BACKUP_LOCATION).unwrap().as_deref(),
             Some(dir.display().to_string().as_str())

@@ -81,7 +81,7 @@ impl Edit {
         ALL.iter().copied().find(|edit| edit.key() == key)
     }
 
-    /// Stays the same for as long as the edit exists: the journal keeps it.
+    /// Stays the same for as long as the edit exists: actions and tests name an edit by it.
     pub fn key(self) -> &'static str {
         match self {
             Edit::SetPlace => "set-place",
@@ -249,9 +249,7 @@ impl Edit {
             ),
             (edit, value) => return Err(format!("{} does not take {value:?}", edit.title())),
         };
-        let mut set = ChangeSet::build(cache, &title, &wanted).map_err(failed)?;
-        set.tool = Some(self.key().to_string());
-        Ok(set)
+        ChangeSet::build(cache, &title, &wanted).map_err(failed)
     }
 }
 
@@ -493,7 +491,6 @@ mod tests {
         let add = Value::Tag("people/family/Anna".to_string());
         let set = Edit::AddTag.change_set(&add, &library.cache, None, &picked()).unwrap();
         assert_eq!(set.title, "Add the tag people/family/Anna");
-        assert_eq!(set.tool.as_deref(), Some("add-tag"));
         let rows: Vec<&str> = set.rows.iter().map(|row| row.rel_path.as_str()).collect();
         assert_eq!(rows, PICKED);
         assert!(set.rows.iter().all(|row| row.verdict == Verdict::Change));

@@ -3,7 +3,7 @@
 //! A tool decides what a set of photos should say and hands the decision over as a `ChangeSet`.
 //! Nothing else about a tool reaches the write engine: the preview knows only this type, and apply
 //! feeds the rows the user kept back to the engine. So every tool inherits the preview, the
-//! traffic estimate, the confirmation and the undo without asking for them.
+//! traffic estimate and the confirmation without asking for them.
 //!
 //! A change set is built from the [cache](crate::cache) alone, which is what makes a preview over
 //! a whole library a database query instead of thousands of ExifTool runs. The exact tag-level
@@ -15,12 +15,8 @@ use std::path::Path;
 use std::sync::atomic::AtomicBool;
 
 use crate::cache::{Cache, Said, Stated};
-use crate::journal::{self, Journal, Kind};
 use crate::metadata::Regions;
 use crate::write::{self, Assignment, Change, Engine, Field, Move, Outcome, Summary, Target, change};
-
-/// How far back the undo looks for the pass it can take back.
-const RECENT: i64 = 50;
 
 const NONE: &str = "none";
 /// What a photo's tags say when its tag fields disagree or hold leftovers.
@@ -185,8 +181,6 @@ pub struct Counts {
 #[derive(Debug, Clone)]
 pub struct ChangeSet {
     pub title: String,
-    /// The key of the tool that built it. A change set made by hand has none.
-    pub tool: Option<String>,
     pub rows: Vec<Row>,
 }
 
@@ -201,7 +195,6 @@ impl ChangeSet {
         let known = cache.stated(&paths)?;
         Ok(ChangeSet {
             title: title.to_string(),
-            tool: None,
             rows: wanted
                 .iter()
                 .map(|one| match &one.moved {
@@ -304,7 +297,7 @@ impl ChangeSet {
     }
 
     /// The exact tag-level diff of one row: one ExifTool read, the same code path a write takes,
-    /// and nothing written or journaled. A refusal comes back as its reason.
+    /// and nothing written. A refusal comes back as its reason.
     pub fn exact(&self, index: usize, engine: &mut Engine) -> Result<Vec<Assignment>, String> {
         let row = self.rows.get(index).ok_or("there is no such row")?;
         if row.moved.is_some() {
@@ -316,24 +309,6 @@ impl ChangeSet {
             change: row.change.clone(),
         };
         engine.dry_run(&target).map_err(|error| error.to_string())
-    }
-
-    /// An undo puts the photos back, so the rows it touched are open for applying again. They are
-    /// left deselected: taking a change back and putting it straight back on is never accidental.
-    pub fn unsettle(&mut self, summary: &Summary) {
-        let put_back: HashMap<&str, &Outcome> = summary
-            .outcomes
-            .iter()
-            .map(|(rel_path, outcome)| (rel_path.as_str(), outcome))
-            .collect();
-        for row in &mut self.rows {
-            if put_back.get(row.rel_path.as_str()) == Some(&&Outcome::Written)
-                && row.verdict == Verdict::Done(Outcome::Written)
-            {
-                row.verdict = Verdict::Change;
-                row.selected = false;
-            }
-        }
     }
 
     /// Carries what became of every photo back into the rows it came from.
@@ -352,12 +327,11 @@ impl ChangeSet {
     }
 }
 
-/// Applies the rows the user kept, as one journal batch named after the change set. Every write
-/// is the engine's; all this does is choose which photos it is handed.
+/// Applies the rows the user kept. Every write is the engine's; all this does is choose which
+/// photos it is handed.
 pub fn apply(
     set: &ChangeSet,
     engine: &mut Engine,
-    journal: &mut Journal,
     cache: &mut Cache,
     progress: &(dyn Fn(usize, usize) + Sync),
     cancel: &AtomicBool,
@@ -367,68 +341,13 @@ pub fn apply(
         if moves.is_empty() {
             return Err(write::Error::Refusing("no folder is selected".to_string()));
         }
-        return engine.relocate(
-            journal,
-            cache,
-            &set.title,
-            set.tool.as_deref(),
-            &moves,
-            progress,
-            cancel,
-        );
+        return engine.relocate(cache, &set.title, &moves, progress, cancel);
     }
     let targets = set.targets(engine.library());
     if targets.is_empty() {
         return Err(write::Error::Refusing("no photo is selected".to_string()));
     }
-    engine.write(
-        journal,
-        cache,
-        &set.title,
-        set.tool.as_deref(),
-        &targets,
-        progress,
-        cancel,
-    )
-}
-
-/// The pass the last applied change set left behind, if it can still be taken back: what the
-/// toast's Undo means. Any other pass is taken back from the history with [`take_back`].
-pub fn undoable(journal: &Journal) -> journal::Result<Option<journal::Pass>> {
-    let last = journal
-        .passes(RECENT)?
-        .into_iter()
-        .find(|pass| pass.kind == Kind::Write.as_str() && pass.written > 0);
-    let Some(pass) = last else { return Ok(None) };
-    Ok(journal.undo_of(pass.id)?.is_none().then_some(pass))
-}
-
-/// Puts the last applied change set back, through the engine that already knows how.
-pub fn undo_last(
-    engine: &mut Engine,
-    journal: &mut Journal,
-    cache: &mut Cache,
-    progress: &(dyn Fn(usize, usize) + Sync),
-    cancel: &AtomicBool,
-) -> write::Result<Summary> {
-    let pass = undoable(journal)?.ok_or_else(|| write::Error::Refusing("there is nothing to take back".to_string()))?;
-    engine.undo(journal, cache, pass.id, progress, cancel)
-}
-
-/// Takes back any pass that can still be taken back, not only the last. A photo a later pass
-/// changed again is refused by the engine and keeps what it says now.
-pub fn take_back(
-    engine: &mut Engine,
-    journal: &mut Journal,
-    cache: &mut Cache,
-    batch: i64,
-    progress: &(dyn Fn(usize, usize) + Sync),
-    cancel: &AtomicBool,
-) -> write::Result<Summary> {
-    if !crate::history::pass(journal, batch)?.can_take_back() {
-        return Err(write::Error::Refusing(format!("pass {batch} cannot be taken back")));
-    }
-    engine.undo(journal, cache, batch, progress, cancel)
+    engine.write(cache, &set.title, &targets, progress, cancel)
 }
 
 fn row(wanted: &Wanted, known: Option<&Stated>) -> Row {

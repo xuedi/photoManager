@@ -2,8 +2,8 @@
 //!
 //! A `Change` is an intent: these tags, this position, this date, this rating, these faces. It
 //! turns into a flat list of `Assign`s, one per tag ExifTool is asked to set, and everything the
-//! engine does afterwards - deciding there is nothing left to do, writing the journal, proving the
-//! result - works on that one list.
+//! engine does afterwards - deciding there is nothing left to do, writing, proving the result -
+//! works on that one list.
 //!
 //! Every assignment carries two names: the one ExifTool is *written* with (`EXIF:GPSLatitude`) and
 //! the one the same value comes *back* under when the file is read with `-G1` (`GPS:GPSLatitude`).

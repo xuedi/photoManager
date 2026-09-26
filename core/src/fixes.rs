@@ -6,7 +6,7 @@
 //! applied is gone because the photos now say it.
 //!
 //! The ticked fixes are applied finder by finder, in the order of [`FINDERS`], each finder one
-//! pass in the journal, with the library read again in between: the tags before the people, the
+//! pass, with the library read again in between: the tags before the people, the
 //! people before any folder moves, so the people gate lets an event go once its people are
 //! written.
 
@@ -17,7 +17,6 @@ use crate::cache::Cache;
 use crate::changeset::{self, ChangeSet, Wanted};
 use crate::filter::Filter;
 use crate::geo::Geo;
-use crate::journal::Journal;
 use crate::scope::Scope;
 use crate::tags::{Rule, Rules};
 use crate::tools::folders::{self, FolderMigration};
@@ -34,7 +33,7 @@ pub struct Finder {
     pub title: &'static str,
     /// What its fixes fix, in one line.
     pub fixes: &'static str,
-    /// What the pass is called in the history.
+    /// What the pass is called: the title of its change set.
     pub pass: &'static str,
 }
 
@@ -283,9 +282,7 @@ pub fn change_set(finder: &Finder, fixes: &[&Fix], cache: &Cache, geo: Option<&G
             one.refused.is_none() || finder.key != "people" || cache.known(&one.rel_path).ok().flatten().is_some()
         })
         .collect();
-    let mut set = ChangeSet::build(cache, finder.pass, &wanted).map_err(failed)?;
-    set.tool = Some(finder.key.to_string());
-    Ok(set)
+    ChangeSet::build(cache, finder.pass, &wanted).map_err(failed)
 }
 
 /// What one finder's pass came to.
@@ -304,7 +301,6 @@ pub fn apply(
     cache: &mut Cache,
     geo: Option<&Geo>,
     engine: &mut Engine,
-    journal: &mut Journal,
     rescan: &mut dyn FnMut(&mut Cache) -> Result<(), String>,
     progress: &(dyn Fn(usize, usize) + Sync),
     cancel: &AtomicBool,
@@ -328,8 +324,7 @@ pub fn apply(
             tracing::info!(finder = finder.key, "nothing left to write");
             continue;
         }
-        let summary =
-            changeset::apply(&set, engine, journal, cache, progress, cancel).map_err(|error| error.to_string())?;
+        let summary = changeset::apply(&set, engine, cache, progress, cancel).map_err(|error| error.to_string())?;
         stale = summary.written > 0;
         passes.push(Pass {
             finder: finder.key,
@@ -378,7 +373,6 @@ mod tests {
             &mut library.cache,
             Some(&geo),
             &mut engine,
-            &mut library.journal,
             &mut rescan,
             &|_, _| {},
             &AtomicBool::new(false),
@@ -389,6 +383,20 @@ mod tests {
     #[test]
     fn each_finder_finds_one_fix_per_thing_and_writes_nothing() {
         let library = Library::new("fixes-find");
+        let stamps = || -> Vec<(std::path::PathBuf, std::time::SystemTime)> {
+            walkdir::WalkDir::new(&library.root)
+                .sort_by_file_name()
+                .into_iter()
+                .flatten()
+                .map(|entry| {
+                    (
+                        entry.path().to_path_buf(),
+                        entry.metadata().unwrap().modified().unwrap(),
+                    )
+                })
+                .collect()
+        };
+        let untouched = stamps();
         let fixes = find(&library.cache, Some(&geo()));
         let places = keys(&fixes, "places-from-tags");
         assert_eq!(places.len(), 6, "{places:?}");
@@ -417,7 +425,7 @@ mod tests {
         let mut sorted = order.clone();
         sorted.sort_by_key(|key| FINDERS.iter().position(|finder| finder.key == *key));
         assert_eq!(order, sorted, "finder by finder, in the order they are applied");
-        assert!(!library.journal.ever_written().unwrap(), "finding writes nothing");
+        assert_eq!(stamps(), untouched, "finding writes nothing");
     }
 
     #[test]
@@ -460,9 +468,7 @@ mod tests {
             ["places-from-tags", "folders"],
             "places are written before the move"
         );
-        let history = library.journal.passes(10).unwrap();
-        assert_eq!(history.len(), 2, "one pass each: {history:?}");
-        assert_eq!(history[0].tool.as_deref(), Some("folders"));
+        assert!(passes.iter().all(|pass| pass.summary.written > 0), "{passes:?}");
 
         library.rescan();
         let again = find(&library.cache, Some(&geo()));

@@ -10,9 +10,6 @@
 //! same, is ExifTool's `ImageDataHash` the same, and does every field we set read back as what we
 //! asked for. The first two are what "never lose a byte of the original image data" means in code.
 //!
-//! Before any of it, the whole intent is written down in the journal and committed. Nothing is
-//! written to a photo that is not already in the journal, so every change can be taken back.
-//!
 //! The modification time is deliberately not preserved: Nextcloud and Immich both notice a changed
 //! file only by its mtime, and a write nothing notices is worse than no write at all.
 
@@ -32,7 +29,6 @@ use tool::Tool;
 
 use crate::cache::Cache;
 use crate::identity::content_id;
-use crate::journal::{self, Journal, Kind};
 
 #[derive(Debug)]
 pub enum Error {
@@ -45,7 +41,6 @@ pub enum Error {
     ToolGone(String),
     /// This one photo will not be touched, and why. Never fatal to a pass.
     Refusing(String),
-    Journal(journal::Error),
 }
 
 impl std::fmt::Display for Error {
@@ -55,18 +50,11 @@ impl std::fmt::Display for Error {
             Error::Stuck(seconds) => write!(f, "exiftool said nothing for {seconds} seconds"),
             Error::ToolGone(why) => write!(f, "exiftool went away: {why}"),
             Error::Refusing(why) => write!(f, "{why}"),
-            Error::Journal(error) => write!(f, "the journal: {error}"),
         }
     }
 }
 
 impl std::error::Error for Error {}
-
-impl From<journal::Error> for Error {
-    fn from(error: journal::Error) -> Error {
-        Error::Journal(error)
-    }
-}
 
 pub type Result<T> = std::result::Result<T, Error>;
 
@@ -82,17 +70,6 @@ pub enum Outcome {
     Failed(String),
 }
 
-impl Outcome {
-    fn settlement(&self) -> (&'static str, Option<&str>) {
-        match self {
-            Outcome::Written => (journal::WRITTEN, None),
-            Outcome::Skipped => (journal::REFUSED, Some("there was nothing left to do")),
-            Outcome::Refused(why) => (journal::REFUSED, Some(why)),
-            Outcome::Failed(why) => (journal::FAILED, Some(why)),
-        }
-    }
-}
-
 /// One photo and what it should say.
 #[derive(Debug, Clone)]
 pub struct Target {
@@ -104,7 +81,6 @@ pub struct Target {
 
 #[derive(Debug, Clone, Default)]
 pub struct Summary {
-    pub batch: i64,
     pub written: usize,
     pub skipped: usize,
     pub refused: usize,
@@ -148,16 +124,6 @@ struct Intent {
     want: Vec<Assign>,
 }
 
-/// Either a fresh intent, or the values a batch is putting back.
-enum Wish<'a> {
-    New(&'a Change),
-    /// Put these values back, but only if the photo still says what the write left in it.
-    Back {
-        want: Vec<Assign>,
-        expect: Vec<Assign>,
-    },
-}
-
 #[derive(Debug)]
 pub struct Engine {
     tool: Tool,
@@ -180,69 +146,37 @@ impl Engine {
         &self.library
     }
 
-    /// One photo, in a batch of its own. A batch is the unit an undo works on, so a single write
-    /// gets one too.
-    pub fn write_one(
-        &mut self,
-        journal: &mut Journal,
-        cache: &mut Cache,
-        title: &str,
-        target: &Target,
-    ) -> Result<Outcome> {
-        let batch = journal.start(Kind::Write, None, title, None)?;
-        let outcome = self.one(
-            journal,
-            cache,
-            batch,
-            &target.path,
-            &target.content_id,
-            Wish::New(&target.change),
-        );
-        journal.finish(batch)?;
-        outcome
+    /// One photo on its own.
+    pub fn write_one(&mut self, cache: &mut Cache, target: &Target) -> Result<Outcome> {
+        self.one(cache, &target.path, &target.content_id, &target.change)
     }
 
-    /// Photos one after another on one process. A refusal on one does not stop the others. The
-    /// batch is named by `title`, and by the key of the tool that asked, if one did.
-    #[allow(clippy::too_many_arguments)]
+    /// Photos one after another on one process. A refusal on one does not stop the others.
+    /// `title` names the pass in the log.
     pub fn write(
         &mut self,
-        journal: &mut Journal,
         cache: &mut Cache,
         title: &str,
-        tool: Option<&str>,
         targets: &[Target],
         progress: &(dyn Fn(usize, usize) + Sync),
         cancel: &AtomicBool,
     ) -> Result<Summary> {
         let started = Instant::now();
-        let batch = journal.start(Kind::Write, None, title, tool)?;
-        let mut summary = Summary {
-            batch,
-            ..Summary::default()
-        };
+        let mut summary = Summary::default();
 
         for (done, target) in targets.iter().enumerate() {
             if cancel.load(Ordering::Relaxed) {
                 summary.cancelled = true;
                 break;
             }
-            let outcome = self.one(
-                journal,
-                cache,
-                batch,
-                &target.path,
-                &target.content_id,
-                Wish::New(&target.change),
-            )?;
+            let outcome = self.one(cache, &target.path, &target.content_id, &target.change)?;
             summary.note(&self.name(&target.path), outcome);
             progress(done + 1, targets.len());
         }
 
-        journal.finish(batch)?;
         summary.seconds = started.elapsed().as_secs();
         tracing::info!(
-            batch,
+            title,
             written = summary.written,
             skipped = summary.skipped,
             refused = summary.refused,
@@ -253,140 +187,9 @@ impl Engine {
         Ok(summary)
     }
 
-    /// Puts a batch back: the old value of every field it changed, and away with the fields that
-    /// were not there before. Through the same engine, with the same proof, journaled itself.
-    pub fn undo(
-        &mut self,
-        journal: &mut Journal,
-        cache: &mut Cache,
-        undoes: i64,
-        progress: &(dyn Fn(usize, usize) + Sync),
-        cancel: &AtomicBool,
-    ) -> Result<Summary> {
-        let started = Instant::now();
-        if let Some(already) = journal.undo_of(undoes)? {
-            return Err(Error::Refusing(format!(
-                "batch {undoes} was already undone by {already}"
-            )));
-        }
-        let entries = journal.written(undoes)?;
-        let moves: Vec<journal::Moved> = journal
-            .moves(undoes)?
-            .into_iter()
-            .filter(|moved| moved.outcome.as_deref() == Some(journal::WRITTEN))
-            .rev()
-            .collect();
-        if entries.is_empty() && moves.is_empty() {
-            return Err(Error::Refusing(format!("batch {undoes} changed no photo")));
-        }
-        let total = entries.len() + moves.len();
-
-        let taken_back = journal.pass(undoes)?;
-        let batch = journal.start(
-            Kind::Undo,
-            Some(undoes),
-            &format!("Take back: {}", taken_back.title()),
-            taken_back.tool.as_deref(),
-        )?;
-        let mut summary = Summary {
-            batch,
-            ..Summary::default()
-        };
-        for (done, entry) in entries.iter().enumerate() {
-            if cancel.load(Ordering::Relaxed) {
-                summary.cancelled = true;
-                break;
-            }
-            let path = self.found(cache, &entry.rel_path, &entry.content_id);
-            let mut want = Vec::new();
-            let mut expect = Vec::new();
-            for swap in &entry.swaps {
-                want.push(Assign {
-                    tag: swap.tag.clone(),
-                    key: swap.key.clone(),
-                    value: stored(swap.old.as_deref()),
-                });
-                expect.push(Assign {
-                    tag: swap.tag.clone(),
-                    key: swap.key.clone(),
-                    value: stored(swap.new.as_deref()),
-                });
-            }
-            let outcome = self.one(
-                journal,
-                cache,
-                batch,
-                &path,
-                &entry.content_id,
-                Wish::Back { want, expect },
-            )?;
-            summary.note(&entry.rel_path, outcome);
-            progress(done + 1, total);
-        }
-        for (done, moved) in moves.iter().enumerate() {
-            if summary.cancelled || cancel.load(Ordering::Relaxed) {
-                summary.cancelled = true;
-                break;
-            }
-            let there = Move {
-                from: moved.from.clone(),
-                to: moved.to.clone(),
-                photos: moved.photos.clone(),
-            };
-            let outcome = self.shift(journal, cache, batch, &there.back())?;
-            summary.note(&moved.from, outcome);
-            progress(entries.len() + done + 1, total);
-        }
-
-        journal.finish(batch)?;
-        summary.seconds = started.elapsed().as_secs();
-        tracing::info!(batch, undoes, written = summary.written, "undo pass done");
-        Ok(summary)
-    }
-
-    /// Where a photo of an older pass is now: where the pass left it, or when that is gone, where
-    /// the cache last saw its image data - so a pass can be taken back after its folder moved.
-    fn found(&self, cache: &Cache, rel_path: &str, content: &str) -> PathBuf {
-        let path = self.library.join(rel_path);
-        if path.exists() {
-            return path;
-        }
-        let name = Path::new(rel_path).file_name();
-        let elsewhere: Vec<String> = cache
-            .paths_of(content)
-            .unwrap_or_default()
-            .into_iter()
-            .filter(|other| self.library.join(other).exists())
-            .collect();
-        let named: Vec<&String> = elsewhere
-            .iter()
-            .filter(|other| Path::new(other).file_name() == name)
-            .collect();
-        let now = match (named.as_slice(), elsewhere.as_slice()) {
-            ([one], _) => Some(*one),
-            (_, [one]) => Some(one),
-            _ => None,
-        };
-        match now {
-            Some(now) => {
-                tracing::debug!(was = rel_path, now, "followed by its image data");
-                self.library.join(now)
-            }
-            None => path,
-        }
-    }
-
     /// A refusal is about this photo alone, so it never comes back as an error.
-    fn one(
-        &mut self,
-        journal: &mut Journal,
-        cache: &mut Cache,
-        batch: i64,
-        path: &Path,
-        expected: &str,
-        wish: Wish<'_>,
-    ) -> Result<Outcome> {
-        match self.attempt(journal, cache, batch, path, expected, wish) {
+    fn one(&mut self, cache: &mut Cache, path: &Path, expected: &str, change: &Change) -> Result<Outcome> {
+        match self.attempt(cache, path, expected, change) {
             Err(Error::Refusing(why)) => {
                 tracing::debug!(photo = %path.display(), why, "not written");
                 Ok(Outcome::Refused(why))
@@ -396,10 +199,10 @@ impl Engine {
     }
 
     /// What one write would do, tag by tag, without doing any of it. The same code path as a
-    /// write, up to and not including the journal: one read of the photo, nothing written,
-    /// nothing left behind.
+    /// write, up to and not including the copy: one read of the photo, nothing written, nothing
+    /// left behind.
     pub fn dry_run(&mut self, target: &Target) -> Result<Vec<Assignment>> {
-        let intent = self.intent(&target.path, &target.content_id, &Wish::New(&target.change))?;
+        let intent = self.intent(&target.path, &target.content_id, &target.change)?;
         Ok(intent
             .want
             .iter()
@@ -407,7 +210,7 @@ impl Engine {
             .collect())
     }
 
-    fn intent(&mut self, path: &Path, expected: &str, wish: &Wish<'_>) -> Result<Intent> {
+    fn intent(&mut self, path: &Path, expected: &str, change: &Change) -> Result<Intent> {
         let rel_path = self.inside(path)?;
         let bytes = std::fs::read(path).map_err(|error| Error::Refusing(format!("cannot be read: {error}")))?;
         let found = content_id(&bytes).ok_or_else(|| Error::Refusing("not a JPEG we understand".to_string()))?;
@@ -418,18 +221,7 @@ impl Engine {
         }
 
         let before = self.look(path)?;
-        let mut want = match wish {
-            Wish::New(change) => change.assigns().map_err(Error::Refusing)?,
-            Wish::Back { want, expect } => {
-                if let Some(drifted) = expect.iter().find(|assign| !change::settled(assign, &before.fields)) {
-                    return Err(Error::Refusing(format!(
-                        "{} no longer says what the write left in it",
-                        drifted.tag
-                    )));
-                }
-                want.clone()
-            }
-        };
+        let mut want = change.assigns().map_err(Error::Refusing)?;
         want.retain(|assign| !change::settled(assign, &before.fields));
         Ok(Intent {
             rel_path,
@@ -439,59 +231,31 @@ impl Engine {
         })
     }
 
-    fn attempt(
-        &mut self,
-        journal: &mut Journal,
-        cache: &mut Cache,
-        batch: i64,
-        path: &Path,
-        expected: &str,
-        wish: Wish<'_>,
-    ) -> Result<Outcome> {
+    fn attempt(&mut self, cache: &mut Cache, path: &Path, expected: &str, change: &Change) -> Result<Outcome> {
+        let intent = self.intent(path, expected, change)?;
+        if intent.want.is_empty() {
+            return Ok(Outcome::Skipped);
+        }
+        self.put(cache, path, intent)
+    }
+
+    /// Writes what the intent still wants, on a copy that has to prove itself first.
+    fn put(&mut self, cache: &mut Cache, path: &Path, intent: Intent) -> Result<Outcome> {
         let Intent {
             rel_path,
             content_id: found,
             before,
             want,
-        } = self.intent(path, expected, &wish)?;
-        if want.is_empty() {
-            return Ok(Outcome::Skipped);
-        }
-
-        let entry = journal::Entry {
-            rel_path: rel_path.clone(),
-            content_id: found.clone(),
-            before: Value::Object(before.fields.clone()).to_string(),
-            image_hash: Some(before.image_hash.clone()),
-            swaps: want
-                .iter()
-                .map(|assign| journal::Swap {
-                    tag: assign.tag.clone(),
-                    key: assign.key.clone(),
-                    old: as_stored(before.fields.get(&assign.key)),
-                    new: as_stored(Some(&assign.value)),
-                })
-                .collect(),
-        };
-        let recorded = journal.record(batch, &entry)?;
-
+        } = intent;
         let temp = beside(path)?;
         let attempt = self.write_copy(&temp, path, &want, &before, &found);
         if !matches!(attempt, Ok(None)) {
             let _ = std::fs::remove_file(&temp);
         }
-        let outcome = match attempt {
-            Ok(None) => Outcome::Written,
-            Ok(Some(why)) => Outcome::Failed(why),
-            Err(error) => {
-                let (name, detail) = (journal::FAILED, error.to_string());
-                let _ = journal.settle(recorded, name, Some(&detail));
-                return Err(error);
-            }
+        let outcome = match attempt? {
+            None => Outcome::Written,
+            Some(why) => Outcome::Failed(why),
         };
-
-        let (name, detail) = outcome.settlement();
-        journal.settle(recorded, name, detail)?;
         if outcome == Outcome::Written {
             if let Err(error) = cache.forget(std::slice::from_ref(&rel_path)) {
                 tracing::warn!(%error, photo = rel_path, "the cache row stayed behind");
@@ -641,20 +405,6 @@ fn beside(original: &Path) -> Result<PathBuf> {
         .and_then(|name| name.to_str())
         .ok_or_else(|| Error::Refusing(format!("{} has no name we can copy", original.display())))?;
     Ok(parent.join(format!(".{name}.writing-{}", std::process::id())))
-}
-
-/// A value as the journal keeps it: the JSON ExifTool gave us, or nothing for a tag that is not
-/// there and is not to be there.
-fn as_stored(value: Option<&Value>) -> Option<String> {
-    match value {
-        None | Some(Value::Null) => None,
-        Some(value) => Some(value.to_string()),
-    }
-}
-
-fn stored(text: Option<&str>) -> Value {
-    text.and_then(|text| serde_json::from_str(text).ok())
-        .unwrap_or(Value::Null)
 }
 
 #[cfg(all(test, feature = "fixtures"))]

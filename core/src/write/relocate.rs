@@ -1,9 +1,8 @@
-//! Taking a folder or a photo to another place in the library, and back.
+//! Taking a folder or a photo to another place in the library.
 //!
 //! A move is one rename on one filesystem, so it is atomic: an event is in its old folder or in
 //! its new one, never half in each. Before it, every file in what moves is proved to be a photo
-//! the move was built against, by its content id; it is written down in the journal with every
-//! photo that goes with it; then renamed; then proved to be all there, file by file, in the new
+//! the move was built against, by its content id; then renamed; then proved to be all there, file by file, in the new
 //! place. Nothing is ever overwritten, nothing is copied, and not a byte of a photo changes: a
 //! rename keeps the content and the modification time.
 
@@ -16,7 +15,6 @@ use std::time::Instant;
 use super::{Engine, Error, Outcome, Result, Summary};
 use crate::cache::Cache;
 use crate::identity::content_id;
-use crate::journal::{self, Journal, Kind, Relocation};
 
 /// A folder or a photo, where it goes, and every photo that goes with it.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -28,67 +26,35 @@ pub struct Move {
     pub photos: Vec<(String, String)>,
 }
 
-impl Move {
-    /// The same move the other way, for photos recorded where they were before it.
-    pub fn back(&self) -> Move {
-        Move {
-            from: self.to.clone(),
-            to: self.from.clone(),
-            photos: self
-                .photos
-                .iter()
-                .map(|(rel_path, content)| (rebased(rel_path, &self.from, &self.to), content.clone()))
-                .collect(),
-        }
-    }
-}
-
-/// A path under `from` as it is under `to`.
-pub fn rebased(rel_path: &str, from: &str, to: &str) -> String {
-    match rel_path.strip_prefix(from) {
-        Some("") => to.to_string(),
-        Some(rest) if rest.starts_with('/') => format!("{to}{rest}"),
-        _ => rel_path.to_string(),
-    }
-}
-
 /// Every file in what moves, by its path relative to it (empty for a photo moved on its own),
 /// with its inode: what a rename keeps, and so what proves nothing was lost on the way.
 type Inventory = HashMap<String, u64>;
 
 impl Engine {
-    /// Folders and photos one after another. A refusal on one does not stop the others. The
-    /// batch is named by `title`, and by the key of the tool that asked, if one did.
-    #[allow(clippy::too_many_arguments)]
+    /// Folders and photos one after another. A refusal on one does not stop the others.
+    /// `title` names the pass in the log.
     pub fn relocate(
         &mut self,
-        journal: &mut Journal,
         cache: &mut Cache,
         title: &str,
-        tool: Option<&str>,
         moves: &[Move],
         progress: &(dyn Fn(usize, usize) + Sync),
         cancel: &AtomicBool,
     ) -> Result<Summary> {
         let started = Instant::now();
-        let batch = journal.start(Kind::Write, None, title, tool)?;
-        let mut summary = Summary {
-            batch,
-            ..Summary::default()
-        };
+        let mut summary = Summary::default();
         for (done, one) in moves.iter().enumerate() {
             if cancel.load(Ordering::Relaxed) {
                 summary.cancelled = true;
                 break;
             }
-            let outcome = self.shift(journal, cache, batch, one)?;
+            let outcome = self.shift(cache, one)?;
             summary.note(&one.from, outcome);
             progress(done + 1, moves.len());
         }
-        journal.finish(batch)?;
         summary.seconds = started.elapsed().as_secs();
         tracing::info!(
-            batch,
+            title,
             moved = summary.written,
             refused = summary.refused,
             failed = summary.failed,
@@ -99,14 +65,8 @@ impl Engine {
     }
 
     /// One move. A refusal is about it alone, so it never comes back as an error.
-    pub(super) fn shift(
-        &mut self,
-        journal: &mut Journal,
-        cache: &mut Cache,
-        batch: i64,
-        one: &Move,
-    ) -> Result<Outcome> {
-        match self.try_shift(journal, cache, batch, one) {
+    fn shift(&mut self, cache: &mut Cache, one: &Move) -> Result<Outcome> {
+        match self.try_shift(cache, one) {
             Err(Error::Refusing(why)) => {
                 tracing::debug!(from = one.from, to = one.to, why, "not moved");
                 Ok(Outcome::Refused(why))
@@ -115,7 +75,7 @@ impl Engine {
         }
     }
 
-    fn try_shift(&mut self, journal: &mut Journal, cache: &mut Cache, batch: i64, one: &Move) -> Result<Outcome> {
+    fn try_shift(&mut self, cache: &mut Cache, one: &Move) -> Result<Outcome> {
         let from = self.within(&one.from)?;
         let to = self.within(&one.to)?;
         if one.from == one.to {
@@ -155,26 +115,14 @@ impl Engine {
         let before = inventory(&from, &one.from)?;
         prove(&from, &before, one)?;
 
-        let relocation = Relocation {
-            from: one.from.clone(),
-            to: one.to.clone(),
-            photos: one.photos.clone(),
-        };
-        let recorded = journal.record_move(batch, &relocation)?;
-
         let made = missing_parents(&to);
         if let Some(parent) = to.parent()
             && let Err(error) = std::fs::create_dir_all(parent)
         {
-            return self.failed(
-                journal,
-                recorded,
-                &made,
-                format!("its new folder could not be made: {error}"),
-            );
+            return Ok(failed(&made, format!("its new folder could not be made: {error}")));
         }
         if let Err(error) = std::fs::rename(&from, &to) {
-            return self.failed(journal, recorded, &made, format!("it could not be moved: {error}"));
+            return Ok(failed(&made, format!("it could not be moved: {error}")));
         }
         for dir in [from.parent(), to.parent()].into_iter().flatten() {
             let _ = std::fs::File::open(dir).and_then(|dir| dir.sync_all());
@@ -184,31 +132,25 @@ impl Engine {
         if after != before {
             let why = "not every file arrived as it left".to_string();
             if std::fs::rename(&to, &from).is_ok() {
-                return self.failed(journal, recorded, &made, why);
+                return Ok(failed(&made, why));
             }
-            tracing::error!(from = one.from, to = one.to, "moved, not proved, and not moved back");
-            journal.settle_move(recorded, journal::WRITTEN, Some(&why))?;
+            tracing::error!(
+                from = one.from,
+                to = one.to,
+                why,
+                "moved, not proved, and not moved back"
+            );
             return Ok(Outcome::Written);
         }
 
         if let Some(parent) = from.parent() {
             self.prune(parent);
         }
-        journal.settle_move(recorded, journal::WRITTEN, None)?;
         if let Err(error) = cache.relocate(&one.from, &one.to) {
             tracing::warn!(%error, from = one.from, "the cache rows stayed behind");
         }
         tracing::info!(from = one.from, to = one.to, photos = one.photos.len(), "moved");
         Ok(Outcome::Written)
-    }
-
-    /// A move that did not happen: the folders it made for itself go again.
-    fn failed(&self, journal: &mut Journal, recorded: i64, made: &[PathBuf], why: String) -> Result<Outcome> {
-        for dir in made {
-            let _ = std::fs::remove_dir(dir);
-        }
-        journal.settle_move(recorded, journal::FAILED, Some(&why))?;
-        Ok(Outcome::Failed(why))
     }
 
     /// A path inside the library, spelled only with names: no root, no `.` and no `..`.
@@ -221,7 +163,7 @@ impl Engine {
     }
 
     /// Takes away the folders a move left empty, from `dir` upwards, never the library itself.
-    pub(super) fn prune(&self, dir: &Path) {
+    fn prune(&self, dir: &Path) {
         let mut dir = dir.to_path_buf();
         while dir != self.library && dir.starts_with(&self.library) {
             let empty = std::fs::read_dir(&dir).is_ok_and(|mut entries| entries.next().is_none());
@@ -235,55 +177,14 @@ impl Engine {
             }
         }
     }
+}
 
-    /// Moves that were written down and never settled, because the process stopped between the
-    /// record and the outcome: settled now by looking where the folder is. Returns how many.
-    pub fn resolve(&self, journal: &mut Journal, cache: &mut Cache) -> Result<usize> {
-        let unsettled = journal.unsettled_moves()?;
-        for moved in &unsettled {
-            let (from, to) = (self.library.join(&moved.from), self.library.join(&moved.to));
-            let there = |path: &Path| std::fs::symlink_metadata(path).is_ok();
-            let (outcome, detail) = match (there(&from), there(&to)) {
-                (true, false) => {
-                    if let Some(parent) = to.parent() {
-                        self.prune(parent);
-                    }
-                    (
-                        journal::REFUSED,
-                        Some("stopped before the move, so it stayed where it was"),
-                    )
-                }
-                (false, true) => {
-                    if let Some(parent) = from.parent() {
-                        self.prune(parent);
-                    }
-                    if let Err(error) = cache.relocate(&moved.from, &moved.to) {
-                        tracing::warn!(%error, from = moved.from, "the cache rows stayed behind");
-                    }
-                    (journal::WRITTEN, None)
-                }
-                (true, true) => (
-                    journal::FAILED,
-                    Some("stopped during the move, and both places are there"),
-                ),
-                (false, false) => (
-                    journal::FAILED,
-                    Some("stopped during the move, and neither place is there"),
-                ),
-            };
-            journal.settle_move(moved.id, outcome, detail)?;
-            if journal.settled(moved.batch_id)? {
-                journal.finish(moved.batch_id)?;
-            }
-            tracing::warn!(
-                from = moved.from,
-                to = moved.to,
-                outcome,
-                "an interrupted move was settled"
-            );
-        }
-        Ok(unsettled.len())
+/// A move that did not happen: the folders it made for itself go again.
+fn failed(made: &[PathBuf], why: String) -> Outcome {
+    for dir in made {
+        let _ = std::fs::remove_dir(dir);
     }
+    Outcome::Failed(why)
 }
 
 /// The nearest folder of `path` that is there already.

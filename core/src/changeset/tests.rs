@@ -4,7 +4,6 @@
 use std::sync::atomic::{AtomicBool, Ordering};
 
 use super::*;
-use crate::journal::Journal;
 use crate::metadata::Exiv2;
 use crate::scan::{self, Mode};
 use crate::thumbs::Thumbs;
@@ -19,7 +18,6 @@ struct Setup {
     base: std::path::PathBuf,
     root: std::path::PathBuf,
     cache: Cache,
-    journal: Journal,
 }
 
 impl Setup {
@@ -42,12 +40,7 @@ impl Setup {
         )
         .expect("scan the stand-in library");
 
-        Setup {
-            journal: Journal::open(&base.join("data/app.db")).unwrap(),
-            base,
-            root,
-            cache,
-        }
+        Setup { base, root, cache }
     }
 
     fn rescan(&mut self) {
@@ -82,15 +75,7 @@ impl Setup {
 
     fn apply(&mut self, set: &ChangeSet) -> Summary {
         let mut engine = self.engine();
-        apply(
-            set,
-            &mut engine,
-            &mut self.journal,
-            &mut self.cache,
-            &|_, _| {},
-            &AtomicBool::new(false),
-        )
-        .expect("apply the change set")
+        apply(set, &mut engine, &mut self.cache, &|_, _| {}, &AtomicBool::new(false)).expect("apply the change set")
     }
 
     fn rating_of(&self, rel_path: &str) -> Option<i64> {
@@ -326,10 +311,6 @@ fn building_one_reads_no_photo_file_and_writes_nothing() {
 
     std::fs::rename(setup.base.join("moved-away"), &setup.root).unwrap();
     assert_eq!(setup.image_data(), before);
-    assert!(
-        setup.journal.passes(10).unwrap().is_empty(),
-        "a preview journals nothing"
-    );
 }
 
 // Phase 2 - the exact diff of one photo
@@ -350,11 +331,12 @@ fn the_exact_diff_names_every_tag_a_write_then_changes() {
 
     let summary = setup.apply(&set);
     assert_eq!(summary.written, 1);
-    let entries = setup.journal.entries(summary.batch).unwrap();
-    let swaps: Vec<&str> = entries[0].swaps.iter().map(|swap| swap.tag.as_str()).collect();
-    assert_eq!(swaps, ["XMP-xmp:Rating"], "the write changed what the dry run named");
-    assert_eq!(entries[0].swaps[0].old, None);
-    assert_eq!(entries[0].swaps[0].new.as_deref(), Some("4"));
+    assert_eq!(setup.rating_of(BARE), Some(4), "the write did what the dry run named");
+    let mut engine = setup.engine();
+    assert!(
+        set.exact(0, &mut engine).expect("a dry run").is_empty(),
+        "and nothing else is left to do"
+    );
 }
 
 #[test]
@@ -385,7 +367,7 @@ fn the_exact_diff_of_a_tag_write_names_all_five_fields() {
 }
 
 #[test]
-fn a_dry_run_writes_nothing_journals_nothing_and_leaves_nothing_behind() {
+fn a_dry_run_writes_nothing_and_leaves_nothing_behind() {
     let setup = Setup::new("dry");
     let before = setup.image_data();
     let set = setup.set("Rate everything", &setup.rate_everything(5));
@@ -396,7 +378,6 @@ fn a_dry_run_writes_nothing_journals_nothing_and_leaves_nothing_behind() {
     }
 
     assert_eq!(setup.image_data(), before, "a dry run moved image data");
-    assert!(setup.journal.passes(10).unwrap().is_empty());
     assert!(setup.leftovers().is_empty(), "{:?}", setup.leftovers());
 }
 
@@ -473,7 +454,7 @@ fn a_photo_edited_between_the_preview_and_the_apply_is_refused_not_written() {
 }
 
 #[test]
-fn a_cancelled_apply_stops_between_photos_and_leaves_the_journal_consistent() {
+fn a_cancelled_apply_stops_between_photos() {
     let mut setup = Setup::new("cancel");
     let set = setup.set("Rate everything", &setup.rate_everything(1));
     let cancel = AtomicBool::new(false);
@@ -482,7 +463,6 @@ fn a_cancelled_apply_stops_between_photos_and_leaves_the_journal_consistent() {
     let summary = apply(
         &set,
         &mut engine,
-        &mut setup.journal,
         &mut setup.cache,
         &|done, _| {
             if done >= 2 {
@@ -495,162 +475,19 @@ fn a_cancelled_apply_stops_between_photos_and_leaves_the_journal_consistent() {
 
     assert!(summary.cancelled);
     assert_eq!(summary.written, 2, "it stopped between photos, not inside one");
-    assert!(setup.journal.unfinished().unwrap().is_empty(), "the batch was closed");
-    assert_eq!(setup.journal.written(summary.batch).unwrap().len(), 2);
     assert!(setup.leftovers().is_empty());
 }
 
 #[test]
-fn undo_puts_the_last_applied_change_set_back_and_refuses_a_second_time() {
-    let mut setup = Setup::new("undo");
-    assert!(undoable(&setup.journal).unwrap().is_none(), "nothing to take back yet");
-
-    let set = setup.set("Rate two", &setup.rate_everything(5)[..2]);
-    let applied = setup.apply(&set);
-    assert_eq!(setup.rating_of(crate::fixtures::photo_paths()[0]), Some(5));
-    assert_eq!(
-        undoable(&setup.journal).unwrap().map(|pass| pass.id),
-        Some(applied.batch)
-    );
-
-    let mut engine = setup.engine();
-    let undone = undo_last(
-        &mut engine,
-        &mut setup.journal,
-        &mut setup.cache,
-        &|_, _| {},
-        &AtomicBool::new(false),
-    )
-    .unwrap();
-    assert_eq!(undone.written, 2);
-    for path in &crate::fixtures::photo_paths()[..2] {
-        assert_eq!(setup.rating_of(path), None, "{path} kept its new rating");
-    }
-
-    assert!(undoable(&setup.journal).unwrap().is_none());
-    let refused = undo_last(
-        &mut engine,
-        &mut setup.journal,
-        &mut setup.cache,
-        &|_, _| {},
-        &AtomicBool::new(false),
-    )
-    .unwrap_err();
-    assert!(refused.to_string().contains("nothing to take back"), "{refused}");
-}
-
-#[test]
-fn applying_nothing_is_refused_rather_than_journaled() {
+fn applying_nothing_is_refused() {
     let mut setup = Setup::new("empty");
     let mut set = setup.set("Rate everything", &setup.rate_everything(3));
     set.select_none();
 
     let mut engine = setup.engine();
-    let refused = apply(
-        &set,
-        &mut engine,
-        &mut setup.journal,
-        &mut setup.cache,
-        &|_, _| {},
-        &AtomicBool::new(false),
-    )
-    .unwrap_err();
+    let refused = apply(&set, &mut engine, &mut setup.cache, &|_, _| {}, &AtomicBool::new(false)).unwrap_err();
     assert!(refused.to_string().contains("no photo is selected"), "{refused}");
-    assert!(setup.journal.passes(10).unwrap().is_empty());
-}
-
-// 3.0 - the history, and taking back any pass
-
-fn rate(setup: &mut Setup, title: &str, paths: &[&str], stars: i64) -> Summary {
-    setup.rescan();
-    let wanted: Vec<Wanted> = paths
-        .iter()
-        .map(|path| Wanted::new(*path, Change::of([Field::Rating(Some(stars))])))
-        .collect();
-    let mut set = setup.set(title, &wanted);
-    set.tool = Some("rating".to_string());
-    setup.apply(&set)
-}
-
-fn take(setup: &mut Setup, batch: i64) -> write::Result<Summary> {
-    let mut engine = setup.engine();
-    take_back(
-        &mut engine,
-        &mut setup.journal,
-        &mut setup.cache,
-        batch,
-        &|_, _| {},
-        &AtomicBool::new(false),
-    )
-}
-
-#[test]
-fn an_older_pass_is_taken_back_and_leaves_a_photo_changed_since_alone() {
-    let mut setup = Setup::new("take-back-older");
-    let all = crate::fixtures::photo_paths();
-    let first = rate(&mut setup, "Rate three", &all[0..3], 3).batch;
-    let second = rate(&mut setup, "Rate four", &all[2..4], 4).batch;
-
-    let passes = crate::history::passes(&setup.journal, 0, 50).unwrap();
-    assert_eq!(passes.iter().map(|pass| pass.id).collect::<Vec<_>>(), [second, first]);
-    assert_eq!(passes[1].title, "Rate three");
-    assert_eq!(passes[1].tool.as_deref(), Some("rating"));
-    assert!(passes.iter().all(|pass| pass.can_take_back()));
-    assert_eq!(
-        passes[1].changed_since, 1,
-        "the second pass rated one of its photos again"
-    );
-    assert_eq!(passes[0].changed_since, 0);
-
-    let undone = take(&mut setup, first).unwrap();
-    assert_eq!((undone.written, undone.refused), (2, 1));
-    assert_eq!(setup.rating_of(all[0]), None);
-    assert_eq!(setup.rating_of(all[1]), None);
-    assert_eq!(setup.rating_of(all[2]), Some(4), "the newer change was kept");
-    assert_eq!(setup.rating_of(all[3]), Some(4));
-
-    let passes = crate::history::passes(&setup.journal, 0, 50).unwrap();
-    let (undo, second_pass, first_pass) = (&passes[0], &passes[1], &passes[2]);
-    assert_eq!(undo.kind, Kind::Undo);
-    assert_eq!(undo.undoes, Some(first));
-    assert_eq!(undo.title, "Take back: Rate three");
-    assert!(!undo.can_take_back(), "an undo is not offered");
-    assert_eq!(first_pass.undone_by, Some(undo.id));
-    assert!(!first_pass.can_take_back(), "a pass is taken back once");
-    assert!(second_pass.can_take_back());
-
-    let refused = take(&mut setup, first).unwrap_err();
-    assert!(refused.to_string().contains("cannot be taken back"), "{refused}");
-    assert!(take(&mut setup, undo.id).is_err());
-
-    let photos = crate::history::photos(&setup.journal, first).unwrap();
-    assert_eq!(photos.len(), 3);
-    assert!(photos.iter().all(|photo| photo.outcome.as_deref() == Some("written")));
-    assert_eq!(crate::history::told(&photos[0]), "XMP-xmp:Rating: none -> 3");
-    assert_eq!(
-        crate::history::photos(&setup.journal, undo.id).unwrap().len(),
-        2,
-        "a refusal is decided before anything is written down"
-    );
-}
-
-#[test]
-fn a_later_pass_taken_back_no_longer_counts_as_a_change_since() {
-    let mut setup = Setup::new("take-back-later");
-    let all = crate::fixtures::photo_paths();
-    let first = rate(&mut setup, "Rate three", &all[0..3], 3).batch;
-    let second = rate(&mut setup, "Rate four", &all[2..4], 4).batch;
-    assert_eq!(crate::history::pass(&setup.journal, first).unwrap().changed_since, 1);
-
-    take(&mut setup, second).unwrap();
-    assert_eq!(setup.rating_of(all[2]), Some(3), "back to what the first pass left");
-    assert_eq!(crate::history::pass(&setup.journal, first).unwrap().changed_since, 0);
-
-    let undone = take(&mut setup, first).unwrap();
-    assert_eq!((undone.written, undone.refused), (3, 0));
-    for path in &all[0..4] {
-        assert_eq!(setup.rating_of(path), None, "{path}");
-    }
+    assert_eq!(setup.rating_of(BARE), None);
 }
 
 #[test]

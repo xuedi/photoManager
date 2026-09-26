@@ -1,7 +1,7 @@
 use std::sync::atomic::AtomicBool;
 
 use super::*;
-use crate::changeset::{self, ChangeSet, Verdict};
+use crate::changeset::{ChangeSet, Verdict};
 use crate::filter::Filter;
 use crate::immich::{self, fake};
 use crate::tools::Settings;
@@ -345,28 +345,6 @@ fn two_events_move_the_cache_follows_and_a_second_run_asks_nothing() {
             .all(|question| question.key != GARDEN && question.key != AUTUMN)
     );
     assert_eq!(looked(&library, Some(&settings)).counts().change, 0);
-
-    let pass = crate::history::pass(&library.journal, summary.batch).unwrap();
-    assert_eq!(pass.written, 7);
-    assert!(pass.can_take_back());
-    let taken = changeset::take_back(
-        &mut Engine::new(&library.root).unwrap(),
-        &mut library.journal,
-        &mut library.cache,
-        summary.batch,
-        &|_, _| {},
-        &AtomicBool::new(false),
-    )
-    .unwrap();
-    assert_eq!(taken.written, 2, "{taken:?}");
-    assert_eq!(tree(&library), before, "and back again");
-    assert!(!library.root.join("Denmark/Copenhagen").exists());
-    library.rescan();
-    assert_eq!(
-        looked(&library, Some(&settings)).counts().change,
-        2,
-        "running the tool again puts it back on"
-    );
 }
 
 #[test]
@@ -547,9 +525,8 @@ fn a_region_comes_from_the_city() {
 }
 
 #[test]
-fn an_answer_off_the_layout_is_refused_and_a_move_is_taken_back_under_another() {
+fn an_answer_off_the_layout_is_refused() {
     let mut library = Library::new("folders-other-layout");
-    let before = tree(&library);
     laid_out(&mut library, "year/country");
     let settings = answered(None, BEN, "2006/China/2006-09-00 Besuch Ben");
     let settings = answered(Some(&settings), GARDEN, "Germany/Hamburg/2013-05-18 Garden Party");
@@ -574,11 +551,6 @@ fn an_answer_off_the_layout_is_refused_and_a_move_is_taken_back_under_another() 
             .all(|question| question.key != BEN),
         "it is in the layout now"
     );
-
-    laid_out(&mut library, "country/city?");
-    library.undo();
-    assert_eq!(tree(&library), before, "back where it was, whatever the layout");
-    assert!(!library.root.join("2006").exists());
 }
 
 #[test]

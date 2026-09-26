@@ -18,7 +18,6 @@ use photomanager_core::geo::import::Imported;
 use photomanager_core::geo::lookup::Candidate;
 use photomanager_core::geo::reverse::At;
 use photomanager_core::immich::{self, Fetched, Snapshot};
-use photomanager_core::journal::Journal;
 use photomanager_core::layout::{Layout, Placement};
 use photomanager_core::metadata::Exiv2;
 use photomanager_core::paths::Paths;
@@ -66,10 +65,9 @@ pub struct Library {
     thumbs: Thumbs,
     cache: RefCell<Option<Cache>>,
     geo: RefCell<Option<Geo>>,
-    journal: RefCell<Option<Journal>>,
     settings: RefCell<Option<Settings>>,
     scanning: Cell<bool>,
-    /// The cache is out for something that is not a scan: a preview, an apply, an undo.
+    /// The cache is out for something that is not a scan: a preview or an apply.
     working: Cell<bool>,
     cancel: Arc<AtomicBool>,
     last: RefCell<Option<Summary>>,
@@ -107,15 +105,6 @@ impl Library {
         let geo = Geo::open(&paths.geo_db())
             .map_err(|error| tracing::error!(%error, "the place data cannot be opened"))
             .ok();
-        let mut journal = Journal::open(&paths.app_db())
-            .map_err(|error| tracing::error!(%error, "the journal cannot be opened, so nothing can be written"))
-            .ok();
-        if let Some(journal) = journal.as_mut() {
-            let settled = Engine::new(paths.library()).and_then(|engine| engine.resolve(journal, &mut cache));
-            if let Err(error) = settled {
-                tracing::error!(%error, "an interrupted move could not be settled");
-            }
-        }
         let settings = Settings::open(&paths.app_db())
             .map_err(|error| tracing::error!(%error, "the settings cannot be opened"))
             .ok();
@@ -125,7 +114,6 @@ impl Library {
         }
         Ok(Rc::new(Library {
             geo: RefCell::new(geo),
-            journal: RefCell::new(journal),
             settings: RefCell::new(settings),
             thumbs: Thumbs::new(paths.thumbs_dir()),
             paths,
@@ -643,9 +631,9 @@ impl Library {
 
     /// Whether the user still has to be asked before anything is ever written to a photo.
     pub fn must_ask(&self) -> bool {
-        match (self.journal.borrow().as_ref(), self.settings.borrow().as_ref()) {
-            (Some(journal), Some(settings)) => settings::must_ask(journal, settings).unwrap_or(true),
-            _ => true,
+        match self.settings.borrow().as_ref() {
+            Some(settings) => settings::must_ask(settings).unwrap_or(true),
+            None => true,
         }
     }
 
@@ -728,7 +716,7 @@ impl Library {
         });
     }
 
-    /// Writes the selected rows, as one journal batch.
+    /// Writes the selected rows.
     pub fn apply<F: Fn(Event) + 'static>(self: &Rc<Self>, set: &ChangeSet, report: F) {
         self.write(Job::Apply(set.clone()), report);
     }
@@ -742,14 +730,7 @@ impl Library {
         if self.is_busy() {
             return;
         }
-        let Some(mut journal) = self.journal.borrow_mut().take() else {
-            report(Event::Failed(
-                "the journal is not open, so nothing is written".to_string(),
-            ));
-            return;
-        };
         let Some(mut cache) = self.cache.borrow_mut().take() else {
-            *self.journal.borrow_mut() = Some(journal);
             report(Event::Failed("the cache is busy".to_string()));
             return;
         };
@@ -783,27 +764,22 @@ impl Library {
                             &mut cache,
                             geo.as_ref(),
                             &mut engine,
-                            &mut journal,
                             &mut rescan,
                             &told,
                             &cancel,
                         )
                     });
-                let _ = sender.send_blocking(Message::Fixed(outcome, cache, journal));
+                let _ = sender.send_blocking(Message::Fixed(outcome, cache));
                 return;
             }
             let outcome = match Engine::new(&library) {
                 Ok(mut engine) => match &job {
                     Job::Fixes(_) => unreachable!("the fixes are applied above"),
-                    Job::Apply(set) => changeset::apply(set, &mut engine, &mut journal, &mut cache, &told, &cancel),
+                    Job::Apply(set) => changeset::apply(set, &mut engine, &mut cache, &told, &cancel),
                 },
                 Err(error) => Err(error),
             };
-            let _ = sender.send_blocking(Message::Applied(
-                outcome.map_err(|error| error.to_string()),
-                cache,
-                journal,
-            ));
+            let _ = sender.send_blocking(Message::Applied(outcome.map_err(|error| error.to_string()), cache));
         });
 
         let this = self.clone();
@@ -812,18 +788,16 @@ impl Library {
                 let event = match message {
                     Message::Done(done, total) => Event::Done(done, total),
                     Message::Note(note) => Event::Note(note),
-                    Message::Fixed(outcome, cache, journal) => {
+                    Message::Fixed(outcome, cache) => {
                         *this.cache.borrow_mut() = Some(cache);
-                        *this.journal.borrow_mut() = Some(journal);
                         this.working.set(false);
                         match outcome {
                             Ok(passes) => Event::Fixed(passes),
                             Err(why) => Event::Failed(why),
                         }
                     }
-                    Message::Applied(outcome, cache, journal) => {
+                    Message::Applied(outcome, cache) => {
                         *this.cache.borrow_mut() = Some(cache);
-                        *this.journal.borrow_mut() = Some(journal);
                         this.working.set(false);
                         match outcome {
                             Ok(summary) => Event::Applied(summary),
@@ -1004,7 +978,7 @@ enum Message {
     People(std::result::Result<Fetched, String>),
     Note(String),
     Previewed(std::result::Result<ChangeSet, String>, Cache),
-    Applied(std::result::Result<Applied, String>, Cache, Journal),
-    Fixed(std::result::Result<Vec<FixPass>, String>, Cache, Journal),
+    Applied(std::result::Result<Applied, String>, Cache),
+    Fixed(std::result::Result<Vec<FixPass>, String>, Cache),
     Failed(String, Cache),
 }

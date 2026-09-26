@@ -6,7 +6,6 @@ use std::os::unix::fs::PermissionsExt;
 use std::sync::atomic::{AtomicBool, Ordering};
 
 use super::*;
-use crate::journal::{self, Journal};
 
 const RATED: &str = "Denmark/2018-10-00 Wedding Trip to Copenhagen/DSCF0001.JPG";
 const BARE: &str = "Denmark/2018-10-00 Wedding Trip to Copenhagen/DSCF0002.JPG";
@@ -15,7 +14,6 @@ const TAGGED: &str = "China/2006-09-00 Besuch Ben/P1000001.JPG";
 struct Setup {
     root: PathBuf,
     engine: Engine,
-    journal: Journal,
     cache: Cache,
 }
 
@@ -28,7 +26,6 @@ impl Setup {
 
         Setup {
             engine: Engine::new(&root).unwrap(),
-            journal: Journal::open(&base.join("data/app.db")).unwrap(),
             cache: Cache::open(&base.join("cache/cache.db")).unwrap(),
             root,
         }
@@ -49,9 +46,7 @@ impl Setup {
 
     fn write(&mut self, rel_path: &str, change: Change) -> Outcome {
         let target = self.target(rel_path, change);
-        self.engine
-            .write_one(&mut self.journal, &mut self.cache, "Edit", &target)
-            .unwrap()
+        self.engine.write_one(&mut self.cache, &target).unwrap()
     }
 
     /// Everything one photo says now, as ExifTool reads it.
@@ -114,7 +109,7 @@ fn quiet() -> impl Fn(usize, usize) {
     |_, _| {}
 }
 
-// Phase 1 - one photo, written safely
+// One photo, written safely
 
 #[test]
 fn a_rating_is_written_and_reads_back() {
@@ -174,22 +169,13 @@ fn a_write_that_cannot_be_proved_leaves_the_original_alone() {
         key: "XMP-xmp:NoSuchTag".to_string(),
         value: Value::from(3),
     };
-    let batch = setup.journal.start(journal::Kind::Write, None, "Pass", None).unwrap();
     let id = content_id(&before).unwrap();
-    let outcome = setup
+    let mut intent = setup
         .engine
-        .one(
-            &mut setup.journal,
-            &mut setup.cache,
-            batch,
-            &file,
-            &id,
-            Wish::Back {
-                want: vec![wrong],
-                expect: vec![],
-            },
-        )
+        .intent(&file, &id, &Change::of([Field::Rating(Some(3))]))
         .unwrap();
+    intent.want = vec![wrong];
+    let outcome = setup.engine.put(&mut setup.cache, &file, intent).unwrap();
 
     match &outcome {
         Outcome::Failed(why) => assert!(why.contains("did not read back"), "{why}"),
@@ -207,10 +193,7 @@ fn a_missing_file_is_a_reason_not_a_panic() {
         content_id: "0".repeat(32),
         change: Change::of([Field::Rating(Some(1))]),
     };
-    let outcome = setup
-        .engine
-        .write_one(&mut setup.journal, &mut setup.cache, "Edit", &target)
-        .unwrap();
+    let outcome = setup.engine.write_one(&mut setup.cache, &target).unwrap();
     assert!(matches!(outcome, Outcome::Refused(_)), "{outcome:?}");
 }
 
@@ -225,10 +208,7 @@ fn a_file_that_is_not_a_photo_is_refused() {
         content_id: "0".repeat(32),
         change: Change::of([Field::Rating(Some(1))]),
     };
-    let outcome = setup
-        .engine
-        .write_one(&mut setup.journal, &mut setup.cache, "Edit", &target)
-        .unwrap();
+    let outcome = setup.engine.write_one(&mut setup.cache, &target).unwrap();
     match &outcome {
         Outcome::Refused(why) => assert!(why.contains("JPEG"), "{why}"),
         other => panic!("{other:?}"),
@@ -277,10 +257,7 @@ fn a_photo_outside_the_library_is_refused() {
         path: file.clone(),
         change: Change::of([Field::Rating(Some(1))]),
     };
-    let outcome = setup
-        .engine
-        .write_one(&mut setup.journal, &mut setup.cache, "Edit", &target)
-        .unwrap();
+    let outcome = setup.engine.write_one(&mut setup.cache, &target).unwrap();
 
     match &outcome {
         Outcome::Refused(why) => assert!(why.contains("outside the library"), "{why}"),
@@ -298,304 +275,14 @@ fn a_photo_whose_image_data_moved_under_us_is_refused() {
         content_id: "0".repeat(32),
         change: Change::of([Field::Rating(Some(1))]),
     };
-    let outcome = setup
-        .engine
-        .write_one(&mut setup.journal, &mut setup.cache, "Edit", &target)
-        .unwrap();
+    let outcome = setup.engine.write_one(&mut setup.cache, &target).unwrap();
     match &outcome {
         Outcome::Refused(why) => assert!(why.contains("built against"), "{why}"),
         other => panic!("{other:?}"),
     }
 }
 
-// Phase 2 - written down before it happens
-
-#[test]
-fn a_write_leaves_one_entry_with_both_sides_of_every_field() {
-    let mut setup = Setup::new("journal-entry");
-    let was = setup.field(RATED, "XMP-dc:Subject");
-    assert_eq!(
-        setup.write(RATED, Change::of([Field::Tags(vec!["mixed/food".to_string()])])),
-        Outcome::Written
-    );
-
-    let batch = setup.journal.passes(1).unwrap().remove(0);
-    let entries = setup.journal.entries(batch.id).unwrap();
-    assert_eq!(entries.len(), 1);
-    let entry = &entries[0];
-    assert_eq!(entry.rel_path, RATED);
-    assert_eq!(entry.outcome.as_deref(), Some(journal::WRITTEN));
-    assert!(entry.image_hash.is_some());
-    assert!(
-        entry.before.contains("XMP-digiKam:TagsList"),
-        "the whole metadata is kept"
-    );
-    assert_eq!(entry.swaps.len(), 5, "one per tag field");
-
-    let subject = entry.swaps.iter().find(|swap| swap.tag == "XMP-dc:Subject").unwrap();
-    assert_eq!(subject.old, was.map(|value| value.to_string()));
-    assert_eq!(subject.new.as_deref(), Some(r#"["food","mixed"]"#));
-}
-
-#[test]
-fn nothing_is_written_when_the_journal_cannot_be() {
-    let mut setup = Setup::new("no-journal");
-    let file = setup.path(BARE);
-    let before = std::fs::read(&file).unwrap();
-    let id = content_id(&before).unwrap();
-
-    // A batch that does not exist: the entry cannot be recorded, so the photo is not touched.
-    let error = setup
-        .engine
-        .one(
-            &mut setup.journal,
-            &mut setup.cache,
-            404,
-            &file,
-            &id,
-            Wish::New(&Change::of([Field::Rating(Some(3))])),
-        )
-        .unwrap_err();
-    assert!(matches!(error, Error::Journal(_)), "{error}");
-    assert_eq!(std::fs::read(&file).unwrap(), before);
-    assert!(setup.leftovers().is_empty());
-}
-
-#[test]
-fn the_journal_survives_a_cache_rebuild() {
-    let mut setup = Setup::new("survives-rebuild");
-    setup.write(BARE, Change::of([Field::Rating(Some(3))]));
-    let before = setup.journal.passes(10).unwrap().len();
-
-    setup.cache = setup.cache.rebuild().unwrap();
-
-    let journal = Journal::open(setup.journal.file()).unwrap();
-    assert_eq!(journal.passes(10).unwrap().len(), before);
-    assert_eq!(journal.passes(1).unwrap()[0].written, 1);
-}
-
-#[test]
-fn a_pass_from_before_the_migration_can_still_be_taken_back() {
-    let mut setup = Setup::new("pre-migration");
-    let target = setup.target(BARE, Change::of([Field::Rating(Some(4))]));
-    let written = setup
-        .engine
-        .write(
-            &mut setup.journal,
-            &mut setup.cache,
-            "Pass",
-            None,
-            &[target],
-            &quiet(),
-            &AtomicBool::new(false),
-        )
-        .unwrap();
-
-    // Back to how version 1 kept it: no names on the batches.
-    let file = setup.journal.file().to_path_buf();
-    setup.journal = Journal::open(&file.with_file_name("other.db")).unwrap();
-    let connection = rusqlite::Connection::open(&file).unwrap();
-    connection
-        .execute_batch(
-            "ALTER TABLE batch DROP COLUMN title; ALTER TABLE batch DROP COLUMN tool;
-             DROP TABLE relocated; DROP TABLE relocation; PRAGMA user_version = 1;",
-        )
-        .unwrap();
-    drop(connection);
-
-    setup.journal = Journal::open(&file).unwrap();
-    assert!(file.with_file_name("app.db.v1").exists());
-    assert_eq!(setup.journal.pass(written.batch).unwrap().title(), journal::EARLIER);
-    let undone = setup
-        .engine
-        .undo(
-            &mut setup.journal,
-            &mut setup.cache,
-            written.batch,
-            &quiet(),
-            &AtomicBool::new(false),
-        )
-        .unwrap();
-    assert_eq!(undone.written, 1);
-    assert_eq!(setup.field(BARE, "XMP-xmp:Rating"), None);
-    assert_eq!(
-        setup.journal.pass(undone.batch).unwrap().title(),
-        "Take back: Earlier change"
-    );
-}
-
-// Phase 3 - taking it back
-
-#[test]
-fn an_undo_puts_back_exactly_what_was_there() {
-    let mut setup = Setup::new("undo");
-    let before = setup.look(TAGGED);
-    let image = setup.image_data();
-
-    let change = Change::of([
-        Field::Tags(vec!["places/inChina/Shanghai".to_string()]),
-        Field::Rating(Some(5)),
-        Field::Gps(Some(Gps {
-            lat: 31.2304,
-            lon: 121.4737,
-            altitude: None,
-            derived: None,
-        })),
-    ]);
-    let target = setup.target(TAGGED, change);
-    let written = setup
-        .engine
-        .write(
-            &mut setup.journal,
-            &mut setup.cache,
-            "Pass",
-            None,
-            &[target],
-            &quiet(),
-            &AtomicBool::new(false),
-        )
-        .unwrap();
-    assert_eq!(written.written, 1, "{written:?}");
-    assert_eq!(setup.field(TAGGED, "GPS:GPSLatitude"), Some(Value::from(31.2304)));
-
-    let undone = setup
-        .engine
-        .undo(
-            &mut setup.journal,
-            &mut setup.cache,
-            written.batch,
-            &quiet(),
-            &AtomicBool::new(false),
-        )
-        .unwrap();
-    assert_eq!(undone.written, 1, "{undone:?}");
-
-    let after = setup.look(TAGGED);
-    for key in [
-        "XMP-digiKam:TagsList",
-        "XMP-lr:HierarchicalSubject",
-        "XMP-microsoft:LastKeywordXMP",
-        "XMP-dc:Subject",
-        "IPTC:Keywords",
-        "XMP-xmp:Rating",
-        "GPS:GPSLatitude",
-        "GPS:GPSLongitude",
-        "GPS:GPSMapDatum",
-    ] {
-        assert_eq!(after.get(key), before.get(key), "{key} did not come back");
-    }
-    assert_eq!(setup.image_data(), image, "the image data moved");
-}
-
-#[test]
-fn an_undo_is_itself_in_the_journal() {
-    let mut setup = Setup::new("undo-journaled");
-    let target = setup.target(BARE, Change::of([Field::Rating(Some(4))]));
-    let written = setup
-        .engine
-        .write(
-            &mut setup.journal,
-            &mut setup.cache,
-            "Pass",
-            None,
-            &[target],
-            &quiet(),
-            &AtomicBool::new(false),
-        )
-        .unwrap();
-    let undone = setup
-        .engine
-        .undo(
-            &mut setup.journal,
-            &mut setup.cache,
-            written.batch,
-            &quiet(),
-            &AtomicBool::new(false),
-        )
-        .unwrap();
-
-    let pass = setup.journal.pass(undone.batch).unwrap();
-    assert_eq!(pass.kind, "undo");
-    assert_eq!(pass.undoes, Some(written.batch));
-    assert_eq!(pass.written, 1);
-    assert!(pass.finished_at.is_some());
-    assert!(setup.journal.unfinished().unwrap().is_empty());
-}
-
-#[test]
-fn undoing_the_same_batch_twice_refuses() {
-    let mut setup = Setup::new("undo-twice");
-    let target = setup.target(BARE, Change::of([Field::Rating(Some(4))]));
-    let written = setup
-        .engine
-        .write(
-            &mut setup.journal,
-            &mut setup.cache,
-            "Pass",
-            None,
-            &[target],
-            &quiet(),
-            &AtomicBool::new(false),
-        )
-        .unwrap();
-    let undo = |setup: &mut Setup| {
-        setup.engine.undo(
-            &mut setup.journal,
-            &mut setup.cache,
-            written.batch,
-            &quiet(),
-            &AtomicBool::new(false),
-        )
-    };
-    undo(&mut setup).unwrap();
-    let error = undo(&mut setup).unwrap_err();
-    assert!(matches!(error, Error::Refusing(_)), "{error}");
-}
-
-#[test]
-fn a_photo_changed_by_something_else_is_not_undone() {
-    let mut setup = Setup::new("undo-drifted");
-    let target = setup.target(BARE, Change::of([Field::Rating(Some(4))]));
-    let written = setup
-        .engine
-        .write(
-            &mut setup.journal,
-            &mut setup.cache,
-            "Pass",
-            None,
-            &[target],
-            &quiet(),
-            &AtomicBool::new(false),
-        )
-        .unwrap();
-
-    let meddled = std::process::Command::new("exiftool")
-        .args(["-overwrite_original", "-q", "-XMP-xmp:Rating=1"])
-        .arg(setup.path(BARE))
-        .status()
-        .unwrap();
-    assert!(meddled.success());
-
-    let undone = setup
-        .engine
-        .undo(
-            &mut setup.journal,
-            &mut setup.cache,
-            written.batch,
-            &quiet(),
-            &AtomicBool::new(false),
-        )
-        .unwrap();
-    assert_eq!(undone.refused, 1, "{undone:?}");
-    assert_eq!(undone.written, 0);
-    assert_eq!(
-        setup.field(BARE, "XMP-xmp:Rating"),
-        Some(Value::from(1)),
-        "it was left as it was found"
-    );
-}
-
-// Phase 4 - the canonical field set
+// The canonical field set
 
 #[test]
 fn one_tag_lands_in_all_five_fields_with_every_ancestor() {
@@ -639,9 +326,6 @@ fn the_same_change_twice_touches_the_file_once() {
 
     assert_eq!(setup.write(BARE, change()), Outcome::Skipped);
     assert_eq!(std::fs::read(setup.path(BARE)).unwrap(), after, "it was written again");
-
-    let passes = setup.journal.passes(10).unwrap();
-    assert_eq!(passes[0].written, 0, "the second pass wrote nothing down either");
 }
 
 #[test]
@@ -735,9 +419,8 @@ fn a_position_a_date_and_a_region_each_round_trip() {
 }
 
 #[test]
-fn a_derived_position_is_written_proved_and_taken_back_whole() {
+fn a_derived_position_is_written_and_proved() {
     let mut setup = Setup::new("derived");
-    let before = setup.look(TAGGED);
     let image = setup.image_data();
     let hash = setup.exiftool_image_hash(TAGGED);
 
@@ -753,15 +436,7 @@ fn a_derived_position_is_written_proved_and_taken_back_whole() {
     let target = setup.target(TAGGED, derived);
     let written = setup
         .engine
-        .write(
-            &mut setup.journal,
-            &mut setup.cache,
-            "Derive",
-            None,
-            &[target],
-            &quiet(),
-            &AtomicBool::new(false),
-        )
+        .write(&mut setup.cache, "Derive", &[target], &quiet(), &AtomicBool::new(false))
         .unwrap();
     assert_eq!(written.written, 1, "{written:?}");
 
@@ -773,27 +448,6 @@ fn a_derived_position_is_written_proved_and_taken_back_whole() {
     );
     assert_eq!(fields.get("GPS:GPSHPositioningError"), Some(&Value::from(5000)));
     assert_eq!(setup.exiftool_image_hash(TAGGED), hash);
-
-    setup
-        .engine
-        .undo(
-            &mut setup.journal,
-            &mut setup.cache,
-            written.batch,
-            &quiet(),
-            &AtomicBool::new(false),
-        )
-        .unwrap();
-    let after = setup.look(TAGGED);
-    for key in [
-        "GPS:GPSLatitude",
-        "GPS:GPSLongitude",
-        "GPS:GPSMapDatum",
-        "GPS:GPSProcessingMethod",
-        "GPS:GPSHPositioningError",
-    ] {
-        assert_eq!(after.get(key), before.get(key), "{key} did not go");
-    }
     assert_eq!(setup.image_data(), image, "the image data moved");
 }
 
@@ -883,7 +537,7 @@ fn a_label_that_was_a_keyword_is_taken_away() {
     );
 }
 
-// Phase 5 - many photos
+// Many photos
 
 #[test]
 fn a_batch_writes_every_photo_and_changes_nothing_else() {
@@ -896,15 +550,7 @@ fn a_batch_writes_every_photo_and_changes_nothing_else() {
 
     let summary = setup
         .engine
-        .write(
-            &mut setup.journal,
-            &mut setup.cache,
-            "Pass",
-            None,
-            &targets,
-            &quiet(),
-            &AtomicBool::new(false),
-        )
+        .write(&mut setup.cache, "Pass", &targets, &quiet(), &AtomicBool::new(false))
         .unwrap();
 
     assert_eq!(summary.written, crate::fixtures::photo_count(), "{summary:?}");
@@ -921,10 +567,6 @@ fn a_batch_writes_every_photo_and_changes_nothing_else() {
             "{rel_path}"
         );
     }
-    assert_eq!(
-        setup.journal.pass(summary.batch).unwrap().written as usize,
-        targets.len()
-    );
 }
 
 #[test]
@@ -946,15 +588,7 @@ fn one_broken_photo_does_not_stop_the_others() {
 
     let summary = setup
         .engine
-        .write(
-            &mut setup.journal,
-            &mut setup.cache,
-            "Pass",
-            None,
-            &targets,
-            &quiet(),
-            &AtomicBool::new(false),
-        )
+        .write(&mut setup.cache, "Pass", &targets, &quiet(), &AtomicBool::new(false))
         .unwrap();
 
     assert_eq!(summary.refused, 1, "{summary:?}");
@@ -982,29 +616,13 @@ fn a_cancelled_batch_stops_between_photos() {
     };
     let summary = setup
         .engine
-        .write(
-            &mut setup.journal,
-            &mut setup.cache,
-            "Pass",
-            None,
-            &targets,
-            &stop,
-            &cancel,
-        )
+        .write(&mut setup.cache, "Pass", &targets, &stop, &cancel)
         .unwrap();
 
     assert!(summary.cancelled, "{summary:?}");
     assert_eq!(summary.written, 2);
     assert_eq!(summary.photos(), 2, "it stopped between photos");
     assert!(setup.leftovers().is_empty());
-
-    let pass = setup.journal.pass(summary.batch).unwrap();
-    assert_eq!(pass.written, 2);
-    assert!(pass.finished_at.is_some(), "the batch was closed off");
-    assert!(
-        setup.journal.unfinished().unwrap().is_empty(),
-        "every entry got an outcome"
-    );
     assert_eq!(setup.field(paths[3], "XMP-xmp:Rating"), None, "it never got there");
 }
 
@@ -1017,15 +635,7 @@ fn a_batch_of_one_process_does_not_start_one_per_photo() {
         .collect();
     setup
         .engine
-        .write(
-            &mut setup.journal,
-            &mut setup.cache,
-            "Pass",
-            None,
-            &targets,
-            &quiet(),
-            &AtomicBool::new(false),
-        )
+        .write(&mut setup.cache, "Pass", &targets, &quiet(), &AtomicBool::new(false))
         .unwrap();
     assert!(
         setup.engine.tool.commands() >= 6,
@@ -1074,23 +684,9 @@ impl Setup {
     fn relocate(&mut self, moves: &[Move]) -> Summary {
         self.engine
             .relocate(
-                &mut self.journal,
                 &mut self.cache,
                 "Folder Migration",
-                Some("folder-migration"),
                 moves,
-                &quiet(),
-                &AtomicBool::new(false),
-            )
-            .unwrap()
-    }
-
-    fn undo_batch(&mut self, batch: i64) -> Summary {
-        self.engine
-            .undo(
-                &mut self.journal,
-                &mut self.cache,
-                batch,
                 &quiet(),
                 &AtomicBool::new(false),
             )
@@ -1120,13 +716,19 @@ fn under(
 ) -> BTreeMap<String, (String, std::time::SystemTime)> {
     files
         .iter()
-        .map(|(path, file)| (relocate::rebased(path, from, to), file.clone()))
+        .map(|(path, file)| {
+            let moved = match path.strip_prefix(from) {
+                Some(rest) if rest.starts_with('/') => format!("{to}{rest}"),
+                _ => path.clone(),
+            };
+            (moved, file.clone())
+        })
         .collect()
 }
 
 #[test]
-fn an_event_moves_into_its_city_and_back_with_every_photo_as_it_was() {
-    let mut setup = Setup::new("move-and-back");
+fn an_event_moves_into_its_city_with_every_photo_as_it_was() {
+    let mut setup = Setup::new("move");
     setup.scan();
     let before = setup.files();
 
@@ -1146,30 +748,6 @@ fn an_event_moves_into_its_city_and_back_with_every_photo_as_it_was() {
         setup.cache.event_dirs(std::slice::from_ref(&sub)).unwrap()[&sub],
         BEN_IN_CITY
     );
-    let pass = setup.journal.pass(moved.batch).unwrap();
-    assert_eq!(pass.written, 2, "two photos moved");
-    assert_eq!(pass.tool.as_deref(), Some("folder-migration"));
-    let told: Vec<String> = crate::history::photos(&setup.journal, moved.batch)
-        .unwrap()
-        .iter()
-        .map(crate::history::told)
-        .collect();
-    assert_eq!(told, [format!("place of 2 photos: {BEN} -> {BEN_IN_CITY}")]);
-
-    let undone = setup.undo_batch(moved.batch);
-    assert_eq!(undone.written, 1, "{undone:?}");
-    assert_eq!(undone.outcomes, [(BEN.to_string(), Outcome::Written)]);
-    assert_eq!(setup.files(), before, "back where it was, byte for byte");
-    assert!(
-        !setup.path("China/Beijing").exists(),
-        "the city folder it left empty is gone"
-    );
-    assert!(setup.cache.known(&format!("{BEN}/P1000001.JPG")).unwrap().is_some());
-    assert_eq!(
-        setup.journal.pass(undone.batch).unwrap().title(),
-        "Take back: Folder Migration"
-    );
-    assert!(setup.journal.unfinished().unwrap().is_empty());
 }
 
 #[test]
@@ -1182,10 +760,6 @@ fn a_target_that_is_there_already_refuses() {
     assert_eq!(moved.refused, 1, "{moved:?}");
     assert!(matches!(&moved.outcomes[0].1, Outcome::Refused(why) if why.contains("is there already")));
     assert_eq!(setup.files(), before);
-    assert!(
-        setup.journal.moves(moved.batch).unwrap().is_empty(),
-        "nothing was recorded"
-    );
 }
 
 #[test]
@@ -1244,130 +818,5 @@ fn the_old_parent_goes_when_the_move_left_it_empty() {
     assert!(
         setup.path("Netherlands/2008-10-03 Galway/Kira/IMG_0002.JPG").is_file(),
         "sub-folders go with it"
-    );
-
-    let undone = setup.undo_batch(moved.batch);
-    assert_eq!(undone.written, 1, "{undone:?}");
-    assert!(setup.path("Ireland/2008-10-03 Galway/Kira/IMG_0002.JPG").is_file());
-    assert!(!setup.path("Netherlands").exists());
-}
-
-#[test]
-fn an_interrupted_move_is_settled_by_where_the_folder_is() {
-    let mut setup = Setup::new("move-interrupted");
-    setup.scan();
-    let one = setup.moving(BEN, BEN_IN_CITY);
-    let relocation = journal::Relocation {
-        from: one.from.clone(),
-        to: one.to.clone(),
-        photos: one.photos.clone(),
-    };
-
-    let before_rename = setup
-        .journal
-        .start(journal::Kind::Write, None, "Folder Migration", None)
-        .unwrap();
-    setup.journal.record_move(before_rename, &relocation).unwrap();
-    std::fs::create_dir_all(setup.path("China/Beijing")).unwrap();
-    assert_eq!(setup.journal.unfinished().unwrap(), [before_rename]);
-    assert_eq!(setup.engine.resolve(&mut setup.journal, &mut setup.cache).unwrap(), 1);
-    let settled = &setup.journal.moves(before_rename).unwrap()[0];
-    assert_eq!(settled.outcome.as_deref(), Some(journal::REFUSED));
-    assert!(setup.path(BEN).exists());
-    assert!(!setup.path("China/Beijing").exists(), "the folder made for it is gone");
-    assert!(setup.journal.unfinished().unwrap().is_empty());
-
-    let after_rename = setup
-        .journal
-        .start(journal::Kind::Write, None, "Folder Migration", None)
-        .unwrap();
-    setup.journal.record_move(after_rename, &relocation).unwrap();
-    std::fs::create_dir_all(setup.path("China/Beijing")).unwrap();
-    std::fs::rename(setup.path(BEN), setup.path(BEN_IN_CITY)).unwrap();
-    assert_eq!(setup.engine.resolve(&mut setup.journal, &mut setup.cache).unwrap(), 1);
-    let settled = &setup.journal.moves(after_rename).unwrap()[0];
-    assert_eq!(settled.outcome.as_deref(), Some(journal::WRITTEN));
-    assert!(
-        setup
-            .cache
-            .known(&format!("{BEN_IN_CITY}/P1000001.JPG"))
-            .unwrap()
-            .is_some()
-    );
-
-    let undone = setup.undo_batch(after_rename);
-    assert_eq!(
-        undone.written, 1,
-        "a settled move is taken back like any other: {undone:?}"
-    );
-    assert!(setup.path(BEN).exists());
-}
-
-#[test]
-fn an_undo_refuses_a_folder_that_changed_since_the_move() {
-    let mut setup = Setup::new("move-undo-drifted");
-    let moved = setup.relocate(&[setup.moving(BEN, BEN_IN_CITY)]);
-    std::fs::copy(
-        setup.path(&format!("{BEN_IN_CITY}/P1000001.JPG")),
-        setup.path(&format!("{BEN_IN_CITY}/P1000001 copy.JPG")),
-    )
-    .unwrap();
-    let undone = setup.undo_batch(moved.batch);
-    assert_eq!(undone.refused, 1, "{undone:?}");
-    assert!(setup.path(BEN_IN_CITY).exists(), "it stays where it is");
-
-    std::fs::remove_file(setup.path(&format!("{BEN_IN_CITY}/P1000001 copy.JPG"))).unwrap();
-    std::fs::create_dir_all(setup.path(BEN)).unwrap();
-    let refused = setup.engine.undo(
-        &mut setup.journal,
-        &mut setup.cache,
-        moved.batch,
-        &quiet(),
-        &AtomicBool::new(false),
-    );
-    assert!(
-        refused.is_err(),
-        "a pass is taken back once, even when the photos were left alone"
-    );
-}
-
-#[test]
-fn a_date_written_before_a_move_is_taken_back_after_it() {
-    let mut setup = Setup::new("move-then-undo-date");
-    setup.scan();
-    let photo = format!("{BEN}/P1000001.JPG");
-    let target = setup.target(
-        &photo,
-        Change::of([Field::Taken(Some(Taken {
-            at: "2006-08-22 09:30:00".to_string(),
-            offset: Some("+08:00".to_string()),
-        }))]),
-    );
-    let dated = setup
-        .engine
-        .write(
-            &mut setup.journal,
-            &mut setup.cache,
-            "Dates",
-            None,
-            &[target],
-            &quiet(),
-            &AtomicBool::new(false),
-        )
-        .unwrap();
-    assert_eq!(dated.written, 1, "{dated:?}");
-    setup.scan();
-
-    let moved = setup.relocate(&[setup.moving(BEN, BEN_IN_CITY)]);
-    assert_eq!(moved.written, 1, "{moved:?}");
-
-    let there = format!("{BEN_IN_CITY}/P1000001.JPG");
-    let undone = setup.undo_batch(dated.batch);
-    assert_eq!(undone.written, 1, "{undone:?}");
-    let entry = &setup.journal.entries(undone.batch).unwrap()[0];
-    assert_eq!(entry.rel_path, there, "found by its image data");
-    assert_eq!(
-        setup.field(&there, "ExifIFD:DateTimeOriginal"),
-        Some(Value::from("2006:08:21 09:30:00"))
     );
 }

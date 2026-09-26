@@ -1,5 +1,5 @@
 //! What the date tools' tests share: the place data imported once, and a copy of the stand-in
-//! library that can be written, read back with ExifTool and taken back. Never a real photo.
+//! library that can be written and read back with ExifTool. Never a real photo.
 
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
@@ -9,7 +9,6 @@ use std::sync::atomic::AtomicBool;
 use crate::cache::Cache;
 use crate::changeset::{self, ChangeSet};
 use crate::geo::Geo;
-use crate::journal::Journal;
 use crate::metadata::Exiv2;
 use crate::scan::{self, Mode};
 use crate::scope::Scope;
@@ -34,7 +33,6 @@ pub struct Library {
     base: PathBuf,
     pub root: PathBuf,
     pub cache: Cache,
-    pub journal: Journal,
 }
 
 impl Library {
@@ -45,7 +43,6 @@ impl Library {
         crate::fixtures::build(&root).expect("build the stand-in library");
         let mut library = Library {
             cache: Cache::open(&base.join("cache/cache.db")).unwrap(),
-            journal: Journal::open(&base.join("data/app.db")).unwrap(),
             base,
             root,
         };
@@ -69,27 +66,8 @@ impl Library {
 
     pub fn apply(&mut self, set: &ChangeSet) -> Summary {
         let mut engine = Engine::new(&self.root).unwrap();
-        changeset::apply(
-            set,
-            &mut engine,
-            &mut self.journal,
-            &mut self.cache,
-            &|_, _| {},
-            &AtomicBool::new(false),
-        )
-        .expect("apply the change set")
-    }
-
-    pub fn undo(&mut self) -> Summary {
-        let mut engine = Engine::new(&self.root).unwrap();
-        changeset::undo_last(
-            &mut engine,
-            &mut self.journal,
-            &mut self.cache,
-            &|_, _| {},
-            &AtomicBool::new(false),
-        )
-        .expect("take the pass back")
+        changeset::apply(set, &mut engine, &mut self.cache, &|_, _| {}, &AtomicBool::new(false))
+            .expect("apply the change set")
     }
 
     /// Every date a photo holds, as ExifTool reads it back, by group and name.

@@ -86,7 +86,6 @@ fn state(window: &Window, paths: &Paths, library: Option<&Library>) -> String {
     });
     let applied = preview.applied().map(|summary| {
         serde_json::json!({
-            "batch": summary.batch,
             "written": summary.written,
             "skipped": summary.skipped,
             "refused": summary.refused,
@@ -161,7 +160,6 @@ fn state(window: &Window, paths: &Paths, library: Option<&Library>) -> String {
             }),
             "review": page.review_lines(),
             "applied": page.applied().map(|summary| serde_json::json!({
-                    "batch": summary.batch,
                 "written": summary.written,
             })),
             "details": page.details().map(|details| serde_json::json!({
@@ -198,7 +196,6 @@ fn state(window: &Window, paths: &Paths, library: Option<&Library>) -> String {
         })).collect::<Vec<_>>(),
         "applied": listed.applied().map(|passes| passes.iter().map(|pass| serde_json::json!({
             "finder": pass.finder,
-            "batch": pass.summary.batch,
             "written": pass.summary.written,
             "refused": pass.summary.refused,
         })).collect::<Vec<_>>()),

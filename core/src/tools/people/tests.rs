@@ -213,7 +213,6 @@ fn the_sure_persons_are_the_exact_ones_until_their_photos_say_them() {
 fn a_photo_gets_its_regions_persons_and_tags_and_a_second_run_nothing() {
     let (mut library, immich) = fetched("people-write");
     let settings = every_answer();
-    let before = read_back(&library, fake::TURNED);
 
     let set = tool().built(&library.cache, None, &whole(), Some(&settings)).unwrap();
     assert_eq!(
@@ -313,12 +312,4 @@ fn a_photo_gets_its_regions_persons_and_tags_and_a_second_run_nothing() {
         .map(|row| row.rel_path.as_str())
         .collect();
     assert_eq!(changed, [fake::LENA], "one more face is one photo");
-
-    let undone = library.undo();
-    assert_eq!(undone.written, 6, "{undone:?}");
-    assert_eq!(
-        read_back(&library, fake::TURNED),
-        before,
-        "every field exactly as it was"
-    );
 }
