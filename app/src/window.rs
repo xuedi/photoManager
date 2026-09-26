@@ -311,28 +311,6 @@ impl Window {
         let cancel_fixes = gtk::gio::ActionEntry::builder("cancel-fixes")
             .activate(|window: &Window, _, _| window.imp().suggestions.cancel())
             .build();
-        let show_history = gtk::gio::ActionEntry::builder("show-history")
-            .activate(|window: &Window, _, _| {
-                window.show_view("tools");
-                window.imp().tools.show_history();
-            })
-            .build();
-        let history_details = gtk::gio::ActionEntry::builder("history-details")
-            .parameter_type(Some(glib::VariantTy::INT64))
-            .activate(|window: &Window, _, parameter| {
-                if let Some(batch) = parameter.and_then(|value| value.get::<i64>()) {
-                    window.imp().tools.show_pass(batch);
-                }
-            })
-            .build();
-        let undo_pass = gtk::gio::ActionEntry::builder("undo-pass")
-            .parameter_type(Some(glib::VariantTy::INT64))
-            .activate(|window: &Window, _, parameter| {
-                if let Some(batch) = parameter.and_then(|value| value.get::<i64>()) {
-                    window.imp().tools.take_back(batch);
-                }
-            })
-            .build();
         let scan = gtk::gio::ActionEntry::builder("scan")
             .activate(|window: &Window, _, _| window.imp().dashboard.scan(Mode::Reconcile))
             .build();
@@ -368,15 +346,6 @@ impl Window {
             .build();
         let stop = gtk::gio::ActionEntry::builder("cancel-apply")
             .activate(|window: &Window, _, _| window.preview().cancel())
-            .build();
-        let undo = gtk::gio::ActionEntry::builder("undo-last")
-            .activate(|window: &Window, _, _| {
-                let gallery = &window.imp().gallery;
-                match window.visible_view() == "gallery" && gallery.photo_open() {
-                    true => gallery.photo().undo(),
-                    false => window.preview().undo(),
-                }
-            })
             .build();
         let show_photo = gtk::gio::ActionEntry::builder("show-photo")
             .parameter_type(Some(glib::VariantTy::STRING))
@@ -430,9 +399,6 @@ impl Window {
             select_fixes("fixes-select-none", false),
             apply_fixes,
             cancel_fixes,
-            show_history,
-            history_details,
-            undo_pass,
             scan,
             fill,
             places,
@@ -443,7 +409,6 @@ impl Window {
             details,
             apply,
             stop,
-            undo,
             show_photo,
             photo("photo-next", |page| page.step(1)),
             photo("photo-previous", |page| page.step(-1)),

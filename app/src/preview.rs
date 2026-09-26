@@ -16,7 +16,6 @@ use gtk::glib::subclass::InitializingObject;
 use gtk::{gio, glib, pango};
 
 use photomanager_core::changeset::{ChangeSet, Counts};
-use photomanager_core::journal::Kind;
 use photomanager_core::write::{Assignment, Engine, Summary};
 
 use crate::library::{Event, Library};
@@ -139,7 +138,7 @@ mod imp {
         pub binding: Cell<bool>,
         pub summary_rows: RefCell<Vec<adw::ActionRow>>,
         pub detail_rows: RefCell<Vec<adw::ActionRow>>,
-        pub applied: RefCell<Option<(Kind, Summary)>>,
+        pub applied: RefCell<Option<Summary>>,
         pub toast: RefCell<String>,
     }
 
@@ -224,7 +223,7 @@ impl Preview {
         self.imp().asked.get()
     }
 
-    pub fn applied(&self) -> Option<(Kind, Summary)> {
+    pub fn applied(&self) -> Option<Summary> {
         self.imp().applied.borrow().clone()
     }
 
@@ -339,35 +338,6 @@ impl Preview {
         }
     }
 
-    /// Takes the last applied change set back, after its own confirmation.
-    pub fn undo(&self) {
-        let Some(library) = self.imp().library.borrow().clone() else {
-            return;
-        };
-        if library.is_busy() || self.is_busy() {
-            return;
-        }
-        let Some(pass) = library.undoable() else {
-            self.say("There is nothing to take back.", false);
-            return;
-        };
-        let preview = self.downgrade();
-        crate::confirm::before_undo(self, &pass, move || {
-            let Some(preview) = preview.upgrade() else {
-                return;
-            };
-            let Some(library) = preview.imp().library.borrow().clone() else {
-                return;
-            };
-            if library.is_busy() {
-                preview.say("Something else is running, so nothing was taken back.", false);
-                return;
-            }
-            preview.running(true, "Putting it back");
-            library.undo_last(move |event| preview.report(event));
-        });
-    }
-
     fn write(&self) {
         let Some(library) = self.imp().library.borrow().clone() else {
             return;
@@ -376,7 +346,7 @@ impl Preview {
             return;
         };
         if library.is_busy() {
-            self.say("Something else is running, so nothing was written.", false);
+            self.say("Something else is running, so nothing was written.");
             return;
         }
         self.running(true, "Writing");
@@ -391,24 +361,21 @@ impl Preview {
                 progress.set_fraction(done as f64 / total.max(1) as f64);
                 progress.set_text(Some(&format!("{done} of {total}")));
             }
-            Event::Applied(kind, summary) => {
+            Event::Applied(summary) => {
                 self.running(false, "");
                 if let Some(set) = self.imp().set.borrow_mut().as_mut() {
-                    match kind {
-                        Kind::Write => set.settle(&summary),
-                        Kind::Undo => set.unsettle(&summary),
-                    }
+                    set.settle(&summary);
                 }
                 self.refill();
-                let told = told(kind, &summary, self.moves());
-                *self.imp().applied.borrow_mut() = Some((kind, summary));
-                self.say(&told, kind == Kind::Write);
+                let told = told(&summary, self.moves());
+                *self.imp().applied.borrow_mut() = Some(summary);
+                self.say(&told);
                 self.show_summary();
                 self.read_the_photos_back();
             }
             Event::Failed(why) => {
                 self.running(false, "");
-                self.say(&format!("Did not work: {why}"), false);
+                self.say(&format!("Did not work: {why}"));
                 tracing::error!(why, "the change set was not applied");
             }
             _ => {}
@@ -439,14 +406,9 @@ impl Preview {
         }
     }
 
-    fn say(&self, text: &str, undoable: bool) {
+    fn say(&self, text: &str) {
         *self.imp().toast.borrow_mut() = text.to_string();
-        let toast = adw::Toast::new(text);
-        if undoable {
-            toast.set_button_label(Some("Undo"));
-            toast.set_action_name(Some("win.undo-last"));
-        }
-        self.imp().toasts.add_toast(toast);
+        self.imp().toasts.add_toast(adw::Toast::new(text));
     }
 
     fn running(&self, busy: bool, note: &str) {
@@ -688,12 +650,10 @@ fn listed(item: &glib::Object) -> gtk::ListItem {
 }
 
 /// What a finished pass says in a toast.
-fn told(kind: Kind, summary: &Summary, moves: bool) -> String {
-    let what = match (kind, moves) {
-        (Kind::Write, false) => "photos changed",
-        (Kind::Write, true) => "moved",
-        (Kind::Undo, false) => "photos put back",
-        (Kind::Undo, true) => "moved back",
+fn told(summary: &Summary, moves: bool) -> String {
+    let what = match moves {
+        false => "photos changed",
+        true => "moved",
     };
     let mut parts = vec![format!("{} {what}", summary.written)];
     for (count, name) in [

@@ -294,7 +294,7 @@ impl Dashboard {
                 );
             }
             Event::Note(line) => progress.set_text(Some(&line)),
-            Event::Previewed(_) | Event::Applied(_, _) | Event::Fixed(_) => {}
+            Event::Previewed(_) | Event::Applied(_) | Event::Fixed(_) => {}
             Event::Places(imported) => {
                 self.running(false);
                 self.show_data();

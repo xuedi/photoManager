@@ -17,9 +17,8 @@ use photomanager_core::geo::Geo;
 use photomanager_core::geo::import::Imported;
 use photomanager_core::geo::lookup::Candidate;
 use photomanager_core::geo::reverse::At;
-use photomanager_core::history;
 use photomanager_core::immich::{self, Fetched, Snapshot};
-use photomanager_core::journal::{Journal, Kind, Pass, Recorded};
+use photomanager_core::journal::Journal;
 use photomanager_core::layout::{Layout, Placement};
 use photomanager_core::metadata::Exiv2;
 use photomanager_core::paths::Paths;
@@ -45,8 +44,8 @@ pub enum Event {
     Note(String),
     /// A change set is ready to be looked at. Nothing has been written.
     Previewed(ChangeSet),
-    /// A change set was applied, or the last one was taken back.
-    Applied(Kind, Applied),
+    /// A change set was applied.
+    Applied(Applied),
     /// The ticked fixes were applied, a pass for each finder that had any.
     Fixed(Vec<FixPass>),
     Failed(String),
@@ -661,33 +660,6 @@ impl Library {
         }
     }
 
-    /// The pass the last applied change set left, if it can still be taken back.
-    pub fn undoable(&self) -> Option<Pass> {
-        self.journal
-            .borrow()
-            .as_ref()
-            .and_then(|journal| changeset::undoable(journal).ok())
-            .flatten()
-    }
-
-    /// Passes from the journal, newest first. `None` while a pass is being written, which has the
-    /// journal out.
-    pub fn history(&self, skip: i64, limit: i64) -> Option<Vec<history::Pass>> {
-        let journal = self.journal.borrow();
-        history::passes(journal.as_ref()?, skip, limit)
-            .map_err(|error| tracing::error!(%error, "the history could not be read"))
-            .ok()
-    }
-
-    pub fn pass(&self, batch: i64) -> Option<(history::Pass, Vec<Recorded>)> {
-        let journal = self.journal.borrow();
-        let journal = journal.as_ref()?;
-        history::pass(journal, batch)
-            .and_then(|pass| Ok((pass, history::photos(journal, batch)?)))
-            .map_err(|error| tracing::error!(%error, batch, "the pass could not be read"))
-            .ok()
-    }
-
     /// An engine of its own, for the one photo a preview row is asked about.
     pub fn engine(&self) -> Result<Engine, String> {
         Engine::new(self.paths.library()).map_err(|error| error.to_string())
@@ -766,16 +738,6 @@ impl Library {
         self.write(Job::Fixes(ticked), report);
     }
 
-    /// Puts the last applied change set back.
-    pub fn undo_last<F: Fn(Event) + 'static>(self: &Rc<Self>, report: F) {
-        self.write(Job::UndoLast, report);
-    }
-
-    /// Puts any pass back that can still be taken back.
-    pub fn take_back<F: Fn(Event) + 'static>(self: &Rc<Self>, batch: i64, report: F) {
-        self.write(Job::TakeBack(batch), report);
-    }
-
     fn write<F: Fn(Event) + 'static>(self: &Rc<Self>, job: Job, report: F) {
         if self.is_busy() {
             return;
@@ -834,19 +796,10 @@ impl Library {
                 Ok(mut engine) => match &job {
                     Job::Fixes(_) => unreachable!("the fixes are applied above"),
                     Job::Apply(set) => changeset::apply(set, &mut engine, &mut journal, &mut cache, &told, &cancel),
-                    Job::UndoLast => changeset::undo_last(&mut engine, &mut journal, &mut cache, &told, &cancel),
-                    Job::TakeBack(batch) => {
-                        changeset::take_back(&mut engine, &mut journal, &mut cache, *batch, &told, &cancel)
-                    }
                 },
                 Err(error) => Err(error),
             };
-            let kind = match job {
-                Job::Apply(_) | Job::Fixes(_) => Kind::Write,
-                Job::UndoLast | Job::TakeBack(_) => Kind::Undo,
-            };
             let _ = sender.send_blocking(Message::Applied(
-                kind,
                 outcome.map_err(|error| error.to_string()),
                 cache,
                 journal,
@@ -868,12 +821,12 @@ impl Library {
                             Err(why) => Event::Failed(why),
                         }
                     }
-                    Message::Applied(kind, outcome, cache, journal) => {
+                    Message::Applied(outcome, cache, journal) => {
                         *this.cache.borrow_mut() = Some(cache);
                         *this.journal.borrow_mut() = Some(journal);
                         this.working.set(false);
                         match outcome {
-                            Ok(summary) => Event::Applied(kind, summary),
+                            Ok(summary) => Event::Applied(summary),
                             Err(why) => Event::Failed(why),
                         }
                     }
@@ -1038,8 +991,6 @@ impl Library {
 enum Job {
     Apply(ChangeSet),
     Fixes(Vec<Fix>),
-    UndoLast,
-    TakeBack(i64),
 }
 
 /// What the scanning thread sends back; the cache travels with the last message.
@@ -1053,7 +1004,7 @@ enum Message {
     People(std::result::Result<Fetched, String>),
     Note(String),
     Previewed(std::result::Result<ChangeSet, String>, Cache),
-    Applied(Kind, std::result::Result<Applied, String>, Cache, Journal),
+    Applied(std::result::Result<Applied, String>, Cache, Journal),
     Fixed(std::result::Result<Vec<FixPass>, String>, Cache, Journal),
     Failed(String, Cache),
 }

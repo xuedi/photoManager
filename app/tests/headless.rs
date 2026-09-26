@@ -147,16 +147,15 @@ fn the_app_can_be_clicked_through_headless() {
     let places = settled(&ui, lib, "places");
     assert_eq!(places["places"].as_u64(), Some(151), "the excerpt was imported");
 
-    previews_applies_and_takes_it_back(&ui, lib);
-    edits_one_photo_and_takes_it_back(&ui, lib);
+    previews_and_applies(&ui, lib);
+    edits_one_photo(&ui, lib);
     a_scope_is_what_the_demo_works_on(&ui, lib);
-    takes_back_an_older_pass(&ui, lib);
-    applies_suggestions_and_takes_them_back(&ui, lib);
-    sets_a_place_and_takes_it_back(&ui, lib);
-    writes_time_zones_and_takes_them_back(&ui, lib);
-    merges_a_tag_and_takes_it_back(&ui, lib);
-    gives_people_from_immich_and_takes_them_back(&ui, lib);
-    moves_an_event_into_its_city_and_takes_it_back(&ui, lib);
+    applies_suggestions(&ui, lib);
+    sets_a_place(&ui, lib);
+    writes_time_zones(&ui, lib);
+    merges_a_tag(&ui, lib);
+    gives_people_from_immich(&ui, lib);
+    moves_an_event_into_its_city(&ui, lib);
 
     ui.run(&["act", "win.show-view", "'suggestions'"], lib);
     let state = state(&ui, lib);
@@ -177,9 +176,8 @@ fn the_app_can_be_clicked_through_headless() {
 }
 
 /// The whole point of 1.6, clicked through: a scope is chosen, a tool is opened from the list,
-/// the change set is previewed, what it promised is what is written, and the last one can be
-/// taken back.
-fn previews_applies_and_takes_it_back(ui: &Ui, library: &Path) {
+/// the change set is previewed, and what it promised is what is written.
+fn previews_and_applies(ui: &Ui, library: &Path) {
     const EVENT: &str = "Ireland/2008-10-03 Galway";
     let first = library.join(EVENT).join("IMG_0003.JPG");
 
@@ -204,7 +202,7 @@ fn previews_applies_and_takes_it_back(ui: &Ui, library: &Path) {
 
     ui.run(&["click", "Apply", "--role", "button"], library);
     ui.run(&["click", "My Photos Are Backed Up", "--role", "button"], library);
-    let applied = written(ui, library, "write", 0);
+    let applied = written(ui, library);
     assert_eq!(applied["written"].as_u64(), Some(2));
     assert_eq!(applied["failed"].as_u64(), Some(0));
     assert_eq!(applied["cancelled"], false);
@@ -217,23 +215,19 @@ fn previews_applies_and_takes_it_back(ui: &Ui, library: &Path) {
     );
     assert_eq!(rating_of(&first), Some(3), "the photo says what the preview promised");
 
-    ui.run(&["act", "win.undo-last"], library);
-    ui.run(&["click", "Take It Back", "--role", "button"], library);
-    let undone = written(ui, library, "undo", 0);
-    assert_eq!(undone["written"].as_u64(), Some(2));
-    assert_eq!(rating_of(&first), None, "the photos say again what they said before");
-
     // Asked once and never again: this time the apply goes straight through.
-    ui.run(&["click", "Select All", "--role", "button"], library);
+    let previewed = previewed_edit(ui, library, "demo-rating:4", "Set a rating of 4");
+    assert_eq!(previewed["change"].as_u64(), Some(2));
     ui.run(&["click", "Apply", "--role", "button"], library);
-    let again = written(ui, library, "write", applied["batch"].as_i64().unwrap());
+    let again = written(ui, library);
     assert_eq!(again["written"].as_u64(), Some(2));
-    assert_eq!(rating_of(&first), Some(3));
+    assert_eq!(rating_of(&first), Some(4));
+    start_over(ui, library);
 }
 
-/// One photo edited by hand goes the same way as a change set: reviewed, written, read back,
-/// taken back, and its image data is the same throughout.
-fn edits_one_photo_and_takes_it_back(ui: &Ui, library: &Path) {
+/// One photo edited by hand goes the same way as a change set: reviewed, written, read back, and
+/// its image data is the same throughout.
+fn edits_one_photo(ui: &Ui, library: &Path) {
     const PHOTO: &str = "Denmark/2018-10-00 Wedding Trip to Copenhagen/DSCF0002.JPG";
     let file = library.join(PHOTO);
     ui.run(&["act", "win.show-photos", "'all'"], library);
@@ -269,7 +263,7 @@ fn edits_one_photo_and_takes_it_back(ui: &Ui, library: &Path) {
     }
     assert_eq!(read_back(&file).0, "2018:10:06 14:03:40", "the review wrote nothing");
     ui.run(&["click", "Apply", "--role", "button"], library);
-    let applied = photo_applied(ui, library, "write");
+    let applied = photo_applied(ui, library);
     assert_eq!(applied["written"].as_u64(), Some(1));
 
     let (date, gps, tags) = read_back(&file);
@@ -283,18 +277,8 @@ fn edits_one_photo_and_takes_it_back(ui: &Ui, library: &Path) {
         "the panel shows what the file says"
     );
     assert_eq!(after["content_id"], content, "the picture itself is untouched");
-
-    ui.run(&["act", "win.undo-last"], library);
-    ui.run(&["click", "Take It Back", "--role", "button"], library);
-    photo_applied(ui, library, "undo");
-    assert_eq!(
-        read_back(&file),
-        ("2018:10:06 14:03:40".to_string(), String::new(), String::new())
-    );
-    let undone = photo_details(ui, library, |details| details["taken_at"] == "2018-10-06 14:03:40");
-    assert_eq!(undone["tags"], serde_json::json!([]));
-    assert_eq!(undone["content_id"], content);
     ui.run(&["act", "win.photo-close"], library);
+    start_over(ui, library);
 }
 
 /// The open photo's details, once they satisfy `ready`.
@@ -309,17 +293,17 @@ fn photo_details(ui: &Ui, library: &Path, ready: impl Fn(&Value) -> bool) -> Val
     panic!("the details never came to say that");
 }
 
-/// Waits for the photo page's pass of this kind, and for the read-back after it.
-fn photo_applied(ui: &Ui, library: &Path, kind: &str) -> Value {
+/// Waits for the photo page's write, and for the read-back after it.
+fn photo_applied(ui: &Ui, library: &Path) -> Value {
     for _ in 0..120 {
         let state = state(ui, library);
         let applied = &state["photo"]["applied"];
-        if applied["kind"] == kind && state["writing"] == false && state["scanning"] == false {
+        if applied.is_object() && state["writing"] == false && state["scanning"] == false {
             return applied.clone();
         }
         std::thread::sleep(std::time::Duration::from_millis(500));
     }
-    panic!("the {kind} of one photo never finished");
+    panic!("the write of one photo never finished");
 }
 
 /// The date, the position and the tags, as ExifTool reads them.
@@ -380,86 +364,10 @@ fn a_scope_is_what_the_demo_works_on(ui: &Ui, library: &Path) {
     panic!("the demo never previewed the scope");
 }
 
-/// Two passes that overlap, and the older one taken back from the history: the photos only it
-/// touched get back what they said, the ones the newer pass changed again keep the newer value,
-/// and the history says so.
-fn takes_back_an_older_pass(ui: &Ui, library: &Path) {
-    const COUNTRY: &str = "China";
-    const EVENT: &str = "China/2006-09-00 Besuch Ben";
-    let apply = |scope: &str, photos: u64, tool: &str, title: &str| {
-        let before = state(ui, library)["applied"]["batch"].as_i64().unwrap_or(0);
-        ui.run(&["act", "win.tools-scope", &format!("'{scope}'")], library);
-        counted(ui, library, photos);
-        ui.run(&["act", "win.run-edit", &format!("'{tool}'")], library);
-        let mut previewed = Value::Null;
-        for _ in 0..60 {
-            previewed = state(ui, library)["preview"].clone();
-            if previewed["title"] == title {
-                break;
-            }
-            std::thread::sleep(std::time::Duration::from_millis(500));
-        }
-        assert_eq!(previewed["change"].as_u64(), Some(photos), "{previewed}");
-        ui.run(&["click", "Apply", "--role", "button"], library);
-        written(ui, library, "write", before)["batch"].as_i64().unwrap()
-    };
-    ui.run(&["act", "win.show-view", "'tools'"], library);
-    let first = apply(COUNTRY, 7, "demo-rating:3", "Set a rating of 3");
-    let second = apply(EVENT, 2, "demo-rating:4", "Set a rating of 4");
-
-    ui.run(&["act", "win.show-history"], library);
-    let history = state(ui, library)["history"].clone();
-    assert_eq!(history["passes"][0]["batch"].as_i64(), Some(second), "newest first");
-    assert_eq!(history["passes"][1]["batch"].as_i64(), Some(first));
-    assert_eq!(history["passes"][1]["title"], "Set a rating of 3");
-    assert_eq!(history["passes"][1]["changed_since"].as_u64(), Some(2));
-
-    ui.run(&["act", "win.undo-pass", &format!("int64 {first}")], library);
-    ui.run(&["click", "Take It Back", "--role", "button"], library);
-    let mut taken = Value::Null;
-    for _ in 0..120 {
-        let now = state(ui, library);
-        if now["history"]["taken"].is_object() && now["writing"] == false && now["scanning"] == false {
-            taken = now["history"].clone();
-            break;
-        }
-        std::thread::sleep(std::time::Duration::from_millis(500));
-    }
-    assert_eq!(taken["taken"]["written"].as_u64(), Some(5), "{taken}");
-    assert_eq!(
-        taken["taken"]["refused"].as_u64(),
-        Some(2),
-        "the newer ones were left alone"
-    );
-    assert!(
-        taken["toast"].as_str().unwrap().contains("2 left as they are"),
-        "{taken}"
-    );
-
-    for (photo, rating) in [
-        ("China/2008-01-00 Holiday SOUTHTOUR/IMG_0001.JPG", None),
-        ("China/IMG_3140.JPG", None),
-        ("China/2012-04-00 Rail Trip/IMG_5003.JPG", None),
-        ("China/2006-09-00 Besuch Ben/P1000001.JPG", Some(4)),
-        ("China/2006-09-00 Besuch Ben/2006-08-21/P1000002.JPG", Some(4)),
-    ] {
-        assert_eq!(rating_of(&library.join(photo)), rating, "{photo}");
-    }
-
-    let passes = state(ui, library)["history"]["passes"].clone();
-    assert_eq!(passes[0]["kind"], "undo");
-    assert_eq!(passes[0]["title"], "Take back: Set a rating of 3");
-    assert_eq!(passes[2]["batch"].as_i64(), Some(first));
-    assert!(passes[2]["undone_by"].is_i64(), "the first pass shows as taken back");
-    assert_eq!(passes[2]["can_take_back"], false, "and offers nothing more");
-    assert_eq!(passes[1]["can_take_back"], true);
-}
-
 /// The Suggestions tab, clicked through: two finders' fixes ticked, Apply Selected writes them as
 /// two passes in their order - the tags before the places - the photos say what the fixes said,
-/// the applied fixes are gone from the list and the rest stays, and each pass is taken back from
-/// the history.
-fn applies_suggestions_and_takes_them_back(ui: &Ui, library: &Path) {
+/// and the applied fixes are gone from the list and the rest stays.
+fn applies_suggestions(ui: &Ui, library: &Path) {
     const MERGE: &str = "tags:rename People -> people";
     const BEIJING: &str = "China/2006-09-00 Besuch Ben/P1000001.JPG";
     const WITH_WORDS: &str = "Ireland/2008-10-03 Galway/IMG_0003.JPG";
@@ -533,39 +441,7 @@ fn applies_suggestions_and_takes_them_back(ui: &Ui, library: &Path) {
     let (_, _, _, kept) = read_place(&with_words).expect("a position");
     assert_eq!(kept.as_deref(), Some("Galway"), "its own words were kept");
     assert!(tags_of(&kira).contains(&"people/Kira".to_string()));
-
-    for pass in passes.iter().rev() {
-        take_back(ui, library, pass["batch"].as_i64().unwrap());
-    }
-    assert_eq!(
-        read_place(&beijing),
-        None,
-        "the position, the mark and the words are gone"
-    );
-    assert_eq!(city_of(&beijing), None);
-    assert_eq!(city_of(&with_words).as_deref(), Some("Galway"));
-    assert!(
-        tags_of(&kira).contains(&"People/Kira".to_string()),
-        "the old spelling is back"
-    );
-}
-
-/// Takes one pass back from the history and waits until the library is read again.
-fn take_back(ui: &Ui, library: &Path, batch: i64) -> Value {
-    let taken_before = state(ui, library)["history"]["taken"]["batch"].as_i64().unwrap_or(0);
-    ui.run(&["act", "win.undo-pass", &format!("int64 {batch}")], library);
-    ui.run(&["click", "Take It Back", "--role", "button"], library);
-    for _ in 0..120 {
-        let now = state(ui, library);
-        if now["history"]["taken"]["batch"].as_i64().unwrap_or(0) > taken_before
-            && now["writing"] == false
-            && now["scanning"] == false
-        {
-            return now["history"]["taken"].clone();
-        }
-        std::thread::sleep(std::time::Duration::from_millis(500));
-    }
-    panic!("pass {batch} was never taken back");
+    start_over(ui, library);
 }
 
 /// The suggestions once found and matching what is waited for.
@@ -598,8 +474,8 @@ fn previewed_edit(ui: &Ui, library: &Path, asked: &str, title: &str) -> Value {
 
 /// Set Place, clicked through: one event given a pin as the map gives it, the preview holds its
 /// photos without a position of their own, the write puts position, mark, error and words into
-/// the files, and taking the pass back takes them away.
-fn sets_a_place_and_takes_it_back(ui: &Ui, library: &Path) {
+/// the files.
+fn sets_a_place(ui: &Ui, library: &Path) {
     const COPENHAGEN: &str = "Denmark/2018-10-00 Wedding Trip to Copenhagen";
     const PIN: &str = r#"{"pin":[55.68,12.59],"near":{"id":2618425,"name":"Copenhagen","region":"Capital Region","country":"Denmark","code":"DK","lat":55.67594,"lon":12.56553}}"#;
     let pinned = library.join(COPENHAGEN).join("DSCF0002.JPG");
@@ -607,7 +483,6 @@ fn sets_a_place_and_takes_it_back(ui: &Ui, library: &Path) {
     ui.run(&["act", "win.show-view", "'tools'"], library);
     ui.run(&["act", "win.tools-scope", &format!("'{COPENHAGEN}'")], library);
     counted(ui, library, 2);
-    let before = state(ui, library)["applied"]["batch"].as_i64().unwrap_or(0);
     let previewed = previewed_edit(
         ui,
         library,
@@ -617,29 +492,25 @@ fn sets_a_place_and_takes_it_back(ui: &Ui, library: &Path) {
     assert_eq!(previewed["change"].as_u64(), Some(2), "{previewed}");
 
     ui.run(&["click", "Apply", "--role", "button"], library);
-    let written = written(ui, library, "write", before);
+    let written = written(ui, library);
     assert_eq!(written["written"].as_u64(), Some(2), "{written}");
     let (lat, method, error, city) = read_place(&pinned).expect("a position");
     assert!((lat - 55.68).abs() < 0.0001, "the pin is written at its point: {lat}");
     assert_eq!(method, "photoManager: set by hand");
     assert_eq!(error, 1000.0);
     assert_eq!(city.as_deref(), Some("Copenhagen"));
-
-    let taken = take_back(ui, library, written["batch"].as_i64().unwrap());
-    assert_eq!(taken["written"].as_u64(), Some(2), "{taken}");
-    assert_eq!(read_place(&pinned), None);
+    start_over(ui, library);
 }
 
 /// Set Time Zone where each photo was taken: the offset of where each photo was is written, a
-/// photo that states its own keeps it, and taking the pass back takes it away.
-fn writes_time_zones_and_takes_them_back(ui: &Ui, library: &Path) {
+/// photo that states its own keeps it.
+fn writes_time_zones(ui: &Ui, library: &Path) {
     const SEASONS: &str = "Germany/2015-00-00 Seasons";
     let summer = library.join(SEASONS).join("IMG_8002.JPG");
 
     ui.run(&["act", "win.show-view", "'tools'"], library);
     ui.run(&["act", "win.tools-scope", &format!("'{SEASONS}'")], library);
     counted(ui, library, 3);
-    let before = state(ui, library)["applied"]["batch"].as_i64().unwrap_or(0);
     let previewed = previewed_edit(
         ui,
         library,
@@ -648,18 +519,15 @@ fn writes_time_zones_and_takes_them_back(ui: &Ui, library: &Path) {
     );
     assert_eq!(previewed["change"].as_u64(), Some(2), "{previewed}");
     ui.run(&["click", "Apply", "--role", "button"], library);
-    let written = written(ui, library, "write", before);
+    let written = written(ui, library);
     assert_eq!(written["written"].as_u64(), Some(2), "{written}");
     assert_eq!(offset_of(&summer).as_deref(), Some("+02:00"));
-
-    take_back(ui, library, written["batch"].as_i64().unwrap());
-    assert_eq!(offset_of(&summer), None, "the offset is gone again");
+    start_over(ui, library);
 }
 
 /// Rename Tag, clicked through: the preview holds the event's photo that carries the tag, the
-/// write puts the merged tag into every field, and taking the pass back puts the old spelling
-/// back.
-fn merges_a_tag_and_takes_it_back(ui: &Ui, library: &Path) {
+/// write puts the merged tag into every field.
+fn merges_a_tag(ui: &Ui, library: &Path) {
     const GALWAY: &str = "Ireland/2008-10-03 Galway";
     let kira = library.join(GALWAY).join("Kira/IMG_0002.JPG");
     assert!(tags_of(&kira).contains(&"People/Kira".to_string()));
@@ -667,7 +535,6 @@ fn merges_a_tag_and_takes_it_back(ui: &Ui, library: &Path) {
     ui.run(&["act", "win.show-view", "'tools'"], library);
     ui.run(&["act", "win.tools-scope", &format!("'{GALWAY}'")], library);
     counted(ui, library, 2);
-    let before = state(ui, library)["applied"]["batch"].as_i64().unwrap_or(0);
     let previewed = previewed_edit(ui, library, "rename-tag:People -> people", "Rename People to people");
     assert_eq!(
         previewed["change"].as_u64(),
@@ -675,24 +542,18 @@ fn merges_a_tag_and_takes_it_back(ui: &Ui, library: &Path) {
         "only the photo that carries it: {previewed}"
     );
     ui.run(&["click", "Apply", "--role", "button"], library);
-    let written = written(ui, library, "write", before);
+    let written = written(ui, library);
     assert_eq!(written["written"].as_u64(), Some(1), "{written}");
     let tags = tags_of(&kira);
     assert!(tags.contains(&"people/Kira".to_string()), "{tags:?}");
     assert!(tags.contains(&"people".to_string()), "every level is written: {tags:?}");
     assert!(!tags.contains(&"People/Kira".to_string()), "{tags:?}");
-
-    take_back(ui, library, written["batch"].as_i64().unwrap());
-    assert_eq!(
-        tags_of(&kira),
-        ["People/Kira", "mixed/disgusting", "places/inIreland/Galway"]
-    );
+    start_over(ui, library);
 }
 
 /// People from Immich against a fake Immich served from this test: the address set in the
-/// preferences, the people fetched on the dashboard, a person answered, the preview applied, and
-/// taken back.
-fn gives_people_from_immich_and_takes_them_back(ui: &Ui, library: &Path) {
+/// preferences, the people fetched on the dashboard, a person answered, and the preview applied.
+fn gives_people_from_immich(ui: &Ui, library: &Path) {
     use photomanager_core::immich::fake::{self, Data, FakeImmich};
     let immich = FakeImmich::serve(Data::over(library));
     let turned = library.join(fake::TURNED);
@@ -764,7 +625,6 @@ fn gives_people_from_immich_and_takes_them_back(ui: &Ui, library: &Path) {
     );
     let untagged = library.join(fake::BEN_UNTAGGED);
     assert!(tags_of(&untagged).contains(&"people/groupChina/Ben".to_string()));
-    let batch = pass["batch"].as_i64().unwrap();
     let regions = |photo: &Path| {
         let out = Command::new("exiftool")
             .args(["-j", "-struct", "-XMP-mwg-rs:RegionInfo"])
@@ -779,20 +639,13 @@ fn gives_people_from_immich_and_takes_them_back(ui: &Ui, library: &Path) {
         regions(&turned).is_null(),
         "Anna is no exact name, so her photo is not written"
     );
-
-    take_back(ui, library, batch);
-    assert!(
-        !tags_of(&untagged).contains(&"people/groupChina/Ben".to_string()),
-        "the tag is gone again"
-    );
-    assert!(regions(&untagged).is_null(), "and the region");
+    start_over(ui, library);
 }
 
-/// The TagsList of a photo, as ExifTool reads it.
 /// Folder Migration, clicked through: one event is asked about, answered with where its photos
-/// are, previewed as one folder that costs no traffic, moved by the apply with every photo as it
-/// was, and moved back by taking the pass back.
-fn moves_an_event_into_its_city_and_takes_it_back(ui: &Ui, library: &Path) {
+/// are, previewed as one folder that costs no traffic, and moved by the apply with every photo as
+/// it was.
+fn moves_an_event_into_its_city(ui: &Ui, library: &Path) {
     const GARDEN: &str = "Germany/2013-05-18 Garden Party";
     const MOVED: &str = "Germany/Hamburg/2013-05-18 Garden Party";
     let photo = |dir: &str| library.join(dir).join("IMG_6001.JPG");
@@ -802,7 +655,6 @@ fn moves_an_event_into_its_city_and_takes_it_back(ui: &Ui, library: &Path) {
     ui.run(&["act", "win.show-view", "'tools'"], library);
     ui.run(&["act", "win.tools-scope", &format!("'{GARDEN}'")], library);
     counted(ui, library, 5);
-    let before = state(ui, library)["applied"]["batch"].as_i64().unwrap_or(0);
     let previewed = previewed_edit(
         ui,
         library,
@@ -812,9 +664,8 @@ fn moves_an_event_into_its_city_and_takes_it_back(ui: &Ui, library: &Path) {
     assert_eq!(previewed["change"].as_u64(), Some(1), "{previewed}");
     assert_eq!(previewed["traffic"].as_u64(), Some(0), "a move sends nothing up again");
     ui.run(&["click", "Apply", "--role", "button"], library);
-    let written = written(ui, library, "write", before);
+    let written = written(ui, library);
     assert_eq!(written["written"].as_u64(), Some(1), "{written}");
-    let batch = written["batch"].as_i64().unwrap();
     assert!(!library.join(GARDEN).exists(), "the event left its old folder");
     let moved = photo(MOVED);
     assert_eq!(
@@ -826,16 +677,14 @@ fn moves_an_event_into_its_city_and_takes_it_back(ui: &Ui, library: &Path) {
         mtime,
         "a move keeps the mtime"
     );
-
-    take_back(ui, library, batch);
-    assert!(photo(GARDEN).is_file(), "back in its old folder");
-    assert!(!library.join(MOVED).exists());
     assert!(
         library.join("Germany/Hamburg").is_dir(),
         "the city folder holds another event and stays"
     );
+    start_over(ui, library);
 }
 
+/// The TagsList of a photo, as ExifTool reads it.
 fn tags_of(photo: &Path) -> Vec<String> {
     let out = Command::new("exiftool")
         .args(["-j", "-XMP-digiKam:TagsList"])
@@ -889,16 +738,6 @@ fn read_place(photo: &Path) -> Option<(f64, String, f64, Option<String>)> {
         fields["GPSHPositioningError"].as_f64().unwrap_or_default(),
         fields["City"].as_str().map(String::from),
     ))
-}
-
-fn city_of(photo: &Path) -> Option<String> {
-    let out = Command::new("exiftool")
-        .args(["-s3", "-XMP-photoshop:City"])
-        .arg(photo)
-        .output()
-        .expect("run exiftool");
-    let city = String::from_utf8_lossy(&out.stdout).trim().to_string();
-    (!city.is_empty()).then_some(city)
 }
 
 /// A photo opens from the gallery and the arrow keys walk the grid's list, in its order.
@@ -1006,21 +845,26 @@ fn counted(ui: &Ui, library: &Path, photos: u64) -> Value {
     panic!("the tools were never counted for {photos} photos: {tools}");
 }
 
-/// Waits for a pass of the given kind, newer than `after`, to be over and read back afterwards.
-fn written(ui: &Ui, library: &Path, kind: &str, after: i64) -> Value {
+/// Waits for the preview's change set to be written and read back afterwards. A new preview
+/// forgets what the last one came to, so this is always the newest.
+fn written(ui: &Ui, library: &Path) -> Value {
     for _ in 0..120 {
         let state = state(ui, library);
         let applied = &state["applied"];
-        if applied["kind"] == kind
-            && applied["batch"].as_i64().unwrap_or(0) > after
-            && state["writing"] == false
-            && state["scanning"] == false
-        {
+        if applied.is_object() && state["writing"] == false && state["scanning"] == false {
             return applied.clone();
         }
         std::thread::sleep(std::time::Duration::from_millis(500));
     }
-    panic!("the {kind} pass never finished");
+    panic!("the change set was never written");
+}
+
+/// The way back is a backup, so the next step starts from the stand-in library as it was built,
+/// read again.
+fn start_over(ui: &Ui, library: &Path) {
+    photomanager_core::fixtures::build(library).expect("build the stand-in library again");
+    ui.run(&["act", "win.scan"], library);
+    scanned(ui, library);
 }
 
 /// The scan runs off the main thread, so the counts appear a moment after the click.

@@ -7,8 +7,8 @@
 //! further away is dropped: a full-size texture is large.
 //!
 //! Editing is a change set of one photo: the form's change, the engine's exact diff in a dialog,
-//! the backup question before the first write of all, the write, the journal and the undo, the
-//! same way as for ten thousand photos. An unfinished edit is never dropped without asking.
+//! the backup question before the first write of all, and the write,
+//! the same way as for ten thousand photos. An unfinished edit is never dropped without asking.
 
 use std::cell::{Cell, RefCell};
 use std::collections::HashMap;
@@ -22,7 +22,6 @@ use gtk::{gdk, gio, glib};
 use photomanager_core::changeset::{ChangeSet, Verdict, Wanted};
 use photomanager_core::details::Details;
 use photomanager_core::filter::Listed;
-use photomanager_core::journal::Kind;
 use photomanager_core::write::{Change, Engine, Field, Outcome, Summary};
 
 use crate::edit::Form;
@@ -93,7 +92,7 @@ mod imp {
         pub pending: RefCell<Option<Result<Change, String>>>,
         pub review: RefCell<Option<Review>>,
         pub engine: RefCell<Option<Engine>>,
-        pub applied: RefCell<Option<(Kind, Summary)>>,
+        pub applied: RefCell<Option<Summary>>,
         /// When the photo on screen was asked for, and how long its two pictures took.
         pub asked_at: Cell<Option<std::time::Instant>>,
         pub thumb_took: Cell<Option<std::time::Duration>>,
@@ -384,7 +383,7 @@ impl PhotoPage {
         self.imp().review.borrow().as_ref().map(|review| review.lines.clone())
     }
 
-    pub fn applied(&self) -> Option<(Kind, Summary)> {
+    pub fn applied(&self) -> Option<Summary> {
         self.imp().applied.borrow().clone()
     }
 
@@ -401,7 +400,7 @@ impl PhotoPage {
             return;
         }
         if library.is_busy() {
-            self.say("Something else is running. Try again when it is done.", false);
+            self.say("Something else is running. Try again when it is done.");
             return;
         }
         let title = format!("Edit {}", self.title());
@@ -412,7 +411,7 @@ impl PhotoPage {
             };
             match event {
                 Event::Previewed(set) => page.reviewed(set),
-                Event::Failed(why) => page.say(&format!("Did not work: {why}"), false),
+                Event::Failed(why) => page.say(&format!("Did not work: {why}")),
                 _ => {}
             }
         });
@@ -424,8 +423,8 @@ impl PhotoPage {
             return;
         };
         match &row.verdict {
-            Verdict::Refused(why) => return self.say(&format!("This photo cannot be changed: {why}"), false),
-            Verdict::Nothing => return self.say("The photo already says all of that.", false),
+            Verdict::Refused(why) => return self.say(&format!("This photo cannot be changed: {why}")),
+            Verdict::Nothing => return self.say("The photo already says all of that."),
             _ => {}
         }
         let Some(library) = imp.library.borrow().clone() else {
@@ -434,7 +433,7 @@ impl PhotoPage {
         if imp.engine.borrow().is_none() {
             match library.engine() {
                 Ok(engine) => *imp.engine.borrow_mut() = Some(engine),
-                Err(why) => return self.say(&format!("Did not work: {why}"), false),
+                Err(why) => return self.say(&format!("Did not work: {why}")),
             }
         }
         let exact = {
@@ -443,10 +442,10 @@ impl PhotoPage {
         };
         let assignments = match exact {
             Ok(assignments) => assignments,
-            Err(why) => return self.say(&format!("This photo cannot be changed: {why}"), false),
+            Err(why) => return self.say(&format!("This photo cannot be changed: {why}")),
         };
         if assignments.is_empty() {
-            return self.say("The photo already says all of that.", false);
+            return self.say("The photo already says all of that.");
         }
         let lines: Vec<String> = assignments
             .iter()
@@ -550,7 +549,7 @@ impl PhotoPage {
                 return;
             };
             if written.is_busy() {
-                page.say("Something else is running, so nothing was written.", false);
+                page.say("Something else is running, so nothing was written.");
                 return;
             }
             let reported = page.downgrade();
@@ -562,62 +561,27 @@ impl PhotoPage {
         });
     }
 
-    /// Takes the last applied change back, after asking.
-    pub fn undo(&self) {
-        let Some(library) = self.imp().library.borrow().clone() else {
-            return;
-        };
-        if library.is_busy() {
-            return;
-        }
-        let Some(pass) = library.undoable() else {
-            self.say("There is nothing to take back.", false);
-            return;
-        };
-        let page = self.downgrade();
-        crate::confirm::before_undo(self, &pass, move || {
-            let Some(page) = page.upgrade() else {
-                return;
-            };
-            let Some(library) = page.imp().library.borrow().clone() else {
-                return;
-            };
-            if library.is_busy() {
-                page.say("Something else is running, so nothing was taken back.", false);
-                return;
-            }
-            let reported = page.downgrade();
-            library.undo_last(move |event| {
-                if let Some(page) = reported.upgrade() {
-                    page.report(event);
-                }
-            });
-        });
-    }
-
     fn report(&self, event: Event) {
         match event {
-            Event::Applied(kind, summary) => {
+            Event::Applied(summary) => {
                 let path = self.path().unwrap_or_default();
                 let outcome = summary
                     .outcomes
                     .iter()
                     .find(|(rel_path, _)| *rel_path == path)
                     .map(|(_, outcome)| outcome.clone());
-                let told = match (kind, outcome) {
-                    (Kind::Undo, _) if summary.written == 1 => "1 photo put back".to_string(),
-                    (Kind::Undo, _) => format!("{} photos put back", summary.written),
-                    (Kind::Write, Some(Outcome::Written)) => format!("{} changed", self.title()),
-                    (Kind::Write, Some(Outcome::Skipped)) => "The photo already says all of that.".to_string(),
-                    (Kind::Write, Some(Outcome::Refused(why))) => format!("Not changed: {why}"),
-                    (Kind::Write, Some(Outcome::Failed(why))) => format!("Did not work: {why}"),
-                    (Kind::Write, None) => "Nothing was written.".to_string(),
+                let told = match outcome {
+                    Some(Outcome::Written) => format!("{} changed", self.title()),
+                    Some(Outcome::Skipped) => "The photo already says all of that.".to_string(),
+                    Some(Outcome::Refused(why)) => format!("Not changed: {why}"),
+                    Some(Outcome::Failed(why)) => format!("Did not work: {why}"),
+                    None => "Nothing was written.".to_string(),
                 };
-                let undoable = kind == Kind::Write && summary.written > 0;
-                tracing::info!(kind = kind.as_str(), written = summary.written, "one photo applied");
-                *self.imp().applied.borrow_mut() = Some((kind, summary));
-                self.say(&told, undoable);
-                if undoable {
+                let written = summary.written > 0;
+                tracing::info!(written = summary.written, "one photo applied");
+                *self.imp().applied.borrow_mut() = Some(summary);
+                self.say(&told);
+                if written {
                     self.stop_editing();
                 }
                 if let Some(window) = self.root().and_downcast::<crate::window::Window>() {
@@ -625,7 +589,7 @@ impl PhotoPage {
                 }
             }
             Event::Failed(why) => {
-                self.say(&format!("Did not work: {why}"), false);
+                self.say(&format!("Did not work: {why}"));
                 tracing::error!(why, "the edit was not applied");
             }
             _ => {}
@@ -764,14 +728,9 @@ impl PhotoPage {
         self.imp().toast.borrow().clone()
     }
 
-    pub fn say(&self, text: &str, undoable: bool) {
+    pub fn say(&self, text: &str) {
         *self.imp().toast.borrow_mut() = text.to_string();
-        let toast = adw::Toast::new(text);
-        if undoable {
-            toast.set_button_label(Some("Undo"));
-            toast.set_action_name(Some("win.undo-last"));
-        }
-        self.imp().toasts.add_toast(toast);
+        self.imp().toasts.add_toast(adw::Toast::new(text));
     }
 
     fn file(&self) -> Option<std::path::PathBuf> {

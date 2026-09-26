@@ -53,21 +53,6 @@ template $PmTools: Adw.Bin {
                   "compact",
                 ]
               }
-
-              Adw.PreferencesGroup {
-                Adw.ActionRow history_row {
-                  title: "History";
-                  subtitle: "Every change written to the photos, and taking one back";
-                  activatable: true;
-                  action-name: "win.show-history";
-
-                  [suffix]
-                  Image {
-                    icon-name: "go-next-symbolic";
-                    accessible-role: presentation;
-                  }
-                }
-              }
             };
           };
         };
@@ -78,13 +63,6 @@ template $PmTools: Adw.Bin {
         tag: "preview";
 
         child: $PmPreview preview {};
-      }
-
-      Adw.NavigationPage {
-        title: "History";
-        tag: "history";
-
-        child: $PmHistory history {};
       }
     };
   };

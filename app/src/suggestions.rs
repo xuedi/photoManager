@@ -262,12 +262,7 @@ impl Suggestions {
 
     fn say(&self, text: &str) {
         *self.imp().toast.borrow_mut() = text.to_string();
-        let toast = adw::Toast::new(text);
-        if text.starts_with("Written") {
-            toast.set_button_label(Some("History"));
-            toast.set_action_name(Some("win.show-history"));
-        }
-        self.imp().toasts.add_toast(toast);
+        self.imp().toasts.add_toast(adw::Toast::new(text));
     }
 
     fn running(&self, busy: bool) {

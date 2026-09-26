@@ -6,7 +6,6 @@ pub mod devtools;
 pub mod edit;
 pub mod forms;
 pub mod gallery;
-pub mod history;
 pub mod layout_editor;
 pub mod library;
 pub mod panel;
