@@ -8,8 +8,8 @@ on the Suggestions tab ([suggestions.md](suggestions.md)); a tool never guesses 
 
 An edit in `core` has a key, a title, one line on what it does, and one question to answer: given
 the cache, the place data, a scope and a value, what should each photo say? The answer is a
-[change set](preview.md), and turning it into rows, counting it, showing it, applying it, writing
-it down and taking it back are shared, so an edit never writes and never draws anything itself.
+[change set](preview.md), and turning it into rows, counting it, showing it and applying it are
+shared, so an edit never writes and never draws anything itself.
 
 | Tool | The value | What a photo gets |
 |------|-----------|-------------------|
@@ -35,10 +35,7 @@ flowchart TD
     geo[(place data, read only)] --> build
     build --> preview[the preview]
     preview -- apply --> engine[write engine]
-    engine --> journal[(journal, titled by the tool)]
     engine --> scan[the library is read again]
-    journal --> history[the history]
-    history -- take back one pass --> engine
 ```
 
 ## The scope
@@ -160,36 +157,4 @@ folder, never a byte of a photo ([writing.md](writing.md#moving-a-folder)).
   in its photos that the files do not say. A move makes Immich forget the photos and learn them
   again, faces included, so the people go into the files first
   ([suggestions.md](suggestions.md#people)).
-- **One pass**: a move is never written together with a change to a photo. Taking it back moves
-  the folder back, and a pass written before a move can still be taken back after it: its photos
-  are found by their image data.
-
-## The history
-
-Every pass is in the [journal](writing.md#the-journal), named by what ran it: the tool's title,
-the suggestion's finder, or the photo that was edited by hand. The history lists them newest first,
-fifty at a time, each with when it ran, how many photos it changed, and whether it was taken back.
-A pass opens to its photos and what each one got, tag by tag, or why it was left alone; a pass
-that moved folders opens to each folder, where it went and how many photos went with it.
-
-## Taking back any pass
-
-Any pass that changed something and was not taken back yet can be taken back - not only the last.
-A pass that took something back cannot itself be taken back; running the tool again is how a
-change is put back on.
-
-Taking back an older pass is the engine's own undo, and the engine refuses any photo that no longer
-says what the pass wrote. A photo is the same photo by its image data, wherever its folder went. So
-if a later pass changed the same photo again, the later change stays and that photo is reported as
-left alone; nothing newer is ever overwritten by something older. The confirmation says this before
-anything runs: how many of the pass's photos a later pass changed again and will therefore be left
-as they are.
-
-| A pass | Can be taken back |
-|--------|-------------------|
-| a write that changed photos, not taken back | yes |
-| a write already taken back | no, once is all |
-| a write that changed nothing | no, there is nothing to put back |
-| a take-back | no, run the tool again instead |
-
-The toast's Undo and the Undo on a photo's own page still mean the last applied change there.
+- **One pass**: a move is never written together with a change to a photo.

@@ -3,7 +3,7 @@
 Nothing is written to a photo that the user has not seen first. A tool works out what it would
 change, hands that over as a **change set**, and the change set is what reaches the screen, what
 the user trims, and what is handed to the [write engine](writing.md) when they press apply. Every
-tool inherits the preview, the traffic estimate, the confirmation and the undo by producing one.
+tool inherits the preview, the traffic estimate and the confirmation by producing one.
 
 The change set is the whole contract between a tool and the writing. No tool talks to the engine.
 
@@ -50,8 +50,6 @@ flowchart TD
     picked --> apply{apply}
     apply --> engine[write engine]
     engine --> photos[(the photos)]
-    engine --> journal[(journal)]
-    journal --> undo[undo the last set,<br/>or any pass from the history]
 ```
 
 The cache does not keep everything a change can set. Where it cannot answer - a place in words or
@@ -65,7 +63,7 @@ A row says the change the way a person thinks about it - `location: none -> 39.9
 because nobody reads ten IPTC and XMP tags per photo across thousands of rows.
 
 Asking about one row runs a **dry run** of that photo: the engine's own code path up to, and not
-including, the journal. It costs one ExifTool read and returns every tag that write would set with
+including, the copy it writes. It costs one ExifTool read and returns every tag that write would set with
 the value the tag has now. It is asked once per row and kept. The human summary is for scanning,
 the exact detail is for checking, and the second is never a guess.
 
@@ -80,10 +78,10 @@ set of moves costs no traffic.
 ## Before the first ever write
 
 We cannot know that a backup exists, so the application asks instead of pretending to check. Before
-anything is written for the first time - nothing acknowledged, nothing ever written according to
-the journal - a dialog says plainly what is about to happen and requires an explicit
-acknowledgement. It is recorded once, next to the journal in `app.db`, so it survives a cache
-rebuild and is never asked again.
+anything is written for the first time a dialog says plainly what is about to happen, that
+photoManager cannot take a change back and the backup is the way back, and requires an explicit
+acknowledgement. It is recorded once in `app.db`, so it survives a cache rebuild and is never asked
+again.
 
 If the user names a backup location it is looked at: is it there, is anything in it, when was it
 last changed. That is help for a person reading the dialog, and it is said in as many words that it
@@ -91,46 +89,31 @@ is not proof that their photos are in it.
 
 ## Applying
 
-The selected rows are written as one journal batch, one photo after another, off the main thread.
-Progress is shown in place, cancel stops between photos and leaves the journal consistent, and a
-toast says what happened. Every row then carries its outcome, so the table shows what became of
+The selected rows are written as one pass, one photo after another, off the main thread. Progress
+is shown in place, cancel stops between photos, and a toast says what happened. Every row then carries its outcome, so the table shows what became of
 each photo instead of what would have.
 
 A written photo is forgotten by the cache - metadata changed, so what was remembered about it is
 stale - and the library is read again afterwards. Reading is all that is: the photos are not
 touched by it.
 
-## Taking it back
-
-The toast carries an undo: the last applied change set, put back through the engine and the
-journal that already do it, with its own confirmation. Once a batch has been undone the rows it
-touched are open to be applied again - deselected, because taking a change back and putting it
-straight back on is never accidental.
-
-Any older pass is taken back from the [history](tools.md#the-history), through the same engine
-undo. A photo a later pass changed again is left as it is, and the confirmation says how many
-there are before anything runs.
-
 ## One photo
 
 A photo edited by hand on its [page](photo.md) is a change set of one row, built the same way from
 the cache. It needs no table, so it is reviewed in a dialog instead: the exact assignments of that
 one photo, from the same dry run a row's detail uses, and the size of the file that goes up again.
-Apply writes it through the same backup question, engine, journal and undo; the two share the
-questions, so a person is asked the same thing in the same words wherever the write comes from.
-While a photo is open, the toast's Undo takes back the last applied change there.
+Apply writes it through the same backup question and engine; the two share the questions, so a
+person is asked the same thing in the same words wherever the write comes from.
 
 ## On screen
 
 The tools view is a navigation stack. Its root is the scope and the list of [tools](tools.md);
 a tool's form, once filled in, builds its change set for the scope and pushes the preview on top
 of it, and the back button returns. A preview only means anything while a tool run is in flight,
-so it is not a view of its own. The change set carries the tool's title and key into the journal,
-which is how the history names the pass.
+so it is not a view of its own.
 
 The [suggestions](suggestions.md) need no table: each fix already says what it changes, and the
-tick is the confirmation. Their passes go through the same backup question, engine, journal and
-take-back.
+tick is the confirmation. Their passes go through the same backup question and engine.
 
 On a narrow window the table keeps columns wide enough to read and scrolls sideways inside
 itself, so the preview never makes the window wider than a phone.

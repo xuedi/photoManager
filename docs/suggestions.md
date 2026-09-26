@@ -31,14 +31,14 @@ ticked is simply there again next time. The tab carries the number of fixes as a
 dashboard has a line with the same number that opens the tab.
 
 **Apply Selected** writes the ticked fixes, finder by finder, in the order of the table above: each
-finder one pass in the journal, named after it, and the library read again before the next one, so
+finder one pass, and the library read again before the next one, so
 each finder works on what the photos say now. The tags come before the people, and the people
 before any folder moves, so an event the people gate held back moves once its people are written
 in the same apply. A fix that an earlier pass already made unnecessary changes nothing and is
 skipped. The first write of all asks first whether the photos are backed up, like any apply
 ([preview.md](preview.md)); after that the ticks are the confirmation. Cancel stops after the pass
 it came in. The toast says how many photos were written in how many passes and how many were
-refused, and History opens the passes, each of which can be taken back.
+refused.
 
 ```mermaid
 flowchart TD
@@ -50,7 +50,6 @@ flowchart TD
     list -- tick, Select All --> ticked[the ticked fixes, in memory]
     ticked -- Apply Selected --> pass[one finder's fixes as one change set]
     pass --> engine[write engine: one pass]
-    engine --> journal[(journal, named by the finder)]
     engine --> again{another finder ticked?}
     again -- yes --> scan[the library read again] --> pass
     again -- no --> read[the library read again] --> trigger

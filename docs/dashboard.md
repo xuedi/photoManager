@@ -7,7 +7,7 @@ the photos it counts.
 ## The survey
 
 The page is filled from one **survey** of the [cache](cache.md), taken after every scan. Applying
-or undoing a change set ends in a scan too, so a tool run shows up here as soon as it is read
+a change set ends in a scan too, so a tool run shows up here as soon as it is read
 back. The survey never opens a photo. It is taken off the main thread through a second, read-only
 connection to the cache, so it can run while the cache itself is busy with something else.
 

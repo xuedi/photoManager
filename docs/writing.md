@@ -2,8 +2,8 @@
 
 The photos are the truth, so this is the only part of photoManager that ever changes one. It takes
 an intent - these tags, this position, this date, this rating, these faces - and turns it into a
-file on disk that carries exactly that and nothing else changed. Every change is written down
-before it happens, proved afterwards, and can be taken back.
+file on disk that carries exactly that and nothing else changed. Every change is proved before it
+replaces the file. There is no undo: the user's own backup is the way back.
 
 Nothing writes on its own. A write happens because someone confirmed a preview: a tool produces a
 change set, the window shows it, and only the rows the user kept are handed to the engine. That is
@@ -24,8 +24,7 @@ flowchart TD
     guards -- yes --> before[read everything the photo says]
     before --> settled{anything left to do?}
     settled -- no --> skipped[skipped, file untouched]
-    settled -- yes --> record[(journal: the whole before,<br/>and both sides of every field)]
-    record --> copy[copy beside the original]
+    settled -- yes --> copy[copy beside the original]
     copy --> write[ExifTool rewrites the copy]
     write --> prove{content id, image hash,<br/>every field reads back?}
     prove -- no --> drop[delete the copy]
@@ -51,7 +50,7 @@ to ignore a minor error - camera MakerNotes whose offsets it doubts - fails with
 never forced.
 
 The same intent can be asked about without doing any of it: a **dry run** goes down this path as
-far as the journal and then stops, and answers with every tag the write would set and the value
+far as the copy and then stops, and answers with every tag the write would set and the value
 that tag has now. It is what the preview shows when one photo is asked about in detail, so the
 exact detail a person checks is never a guess about what the write would do.
 
@@ -81,7 +80,7 @@ ExifTool is written with one name and reads the same value back under another: `
 goes in, `GPS:GPSLatitude` comes out; `EXIF:DateTimeOriginal` comes back as
 `ExifIFD:DateTimeOriginal`. So an intent becomes a flat list of assignments, and each one carries
 both names. Everything downstream works on that one list: the arguments ExifTool gets, the decision
-that there is nothing left to do, the journal entry, and the proof.
+that there is nothing left to do, and the proof.
 
 Latitude and longitude are a size and a hemisphere in the file, never a signed number, so that is
 how they are written and how they are proved.
@@ -156,8 +155,7 @@ flowchart TD
     guards -- no --> refused[refused, with a reason]
     guards -- yes --> prove{every file a photo the move<br/>was built with, same image data?}
     prove -- no --> refused
-    prove -- yes --> record[(journal: the folder before and after,<br/>every photo with its content id)]
-    record --> parents[make the folders it goes into]
+    prove -- yes --> parents[make the folders it goes into]
     parents --> rename[one rename]
     rename --> check{every file arrived,<br/>the same file?}
     check -- no --> back[renamed back: failed]
@@ -176,60 +174,21 @@ flowchart TD
   empty, and its parent after it, but never the library itself and never a folder with anything in
   it. The folders it made for itself go again if the rename fails.
 
-Like a write, a move is written down and committed before it happens. A process stopped between
-the two leaves a move without an outcome, and the next start settles it by looking where the folder
-is: still in the old place is a move that did not happen, in the new place one that did, and
-anything else is reported as failed and left for a person.
+A process stopped in the middle of a move leaves the event in its old folder or in its new one,
+because the move is one rename; the next scan sees which. At most a folder made for it, or one it
+left empty, stays behind.
 
-## The journal
+## No undo
 
-Everything that is about to happen is committed to `$XDG_DATA_HOME/…/app.db` before ExifTool is
-asked to do anything. Nothing is written to a photo that is not already in the journal.
+A change is not taken back by photoManager. An undo cannot be made reliable - a photo written again
+since, a folder moved since, the same image data twice - and it would be one more thing to trust.
+The safety of a write is the proof above and the atomic rename; the way back from a change the
+user regrets is their backup, which is why the very first write asks about one
+([preview.md](preview.md#before-the-first-ever-write)). Nothing about a write is kept in the
+database.
 
-Unlike the cache and the place data this database is **not** disposable, and it is never deleted to
-get past a schema it does not know: the old values it holds are the only copy of what a photo used
-to say, and an undo has to outlive a cache rebuild.
-
-| Table | Holds |
-|-------|-------|
-| `batch` | one pass: what kind, what ran it (a title, and a tool's key when a tool did), when it started and finished, and which batch it undoes |
-| `entry` | one photo in a pass: its path, its content id, everything it said before the write in full, ExifTool's hash of its image data, and what became of it |
-| `swap` | one field of one entry: the tag, the name it reads back under, and its old and new value |
-| `relocation` | one move in a pass: the folder or photo before and after, and what became of it |
-| `relocated` | one photo of a move: where it was before it, and its content id |
-
-An entry without an outcome and a batch without a finish are how an interrupted pass makes itself
-known on the next start.
-
-The journal carries its schema version. One it does not know is refused outright and left as it
-is. One it knows how to bring forward is copied first - the whole database as SQLite sees it, the
-write-ahead log included, to a file beside it named after the old version - and then migrated in
-one transaction that only adds: new columns and tables, nothing rewritten, nothing dropped. The
-first such step gave batches their names; a batch from before it has none and reads as "Earlier
-change". The second added the moves.
-
-## Taking it back
-
-An undo puts values back, not files. Keeping a second copy of every photo is not on, and it is not needed: only
-metadata is ever changed and the image data is proved not to have moved, so restoring the old field
-values restores the photo. Fields that were not there before are removed.
-
-It goes through the same engine, with the same proof, and is journaled itself as a batch that says
-which batch it undoes and is named after it: "Take back: " and its title. Any batch can be undone,
-not only the last - [tools.md](tools.md#taking-back-any-pass). Two things make it refuse: a batch that was already undone, and a photo that
-no longer says what the write left in it - checked field by field against the journal, so an edit
-made by something else in the meantime is never quietly overwritten.
-
-A photo is found where the pass left it. When that path is gone because its folder moved since, it
-is found by its content id, where the cache last saw that image data - so a date written last week
-can be taken back after its event went into its city. If the same image data lies in the library
-more than once, the one with the same file name is taken, and when that does not decide it the
-photo is left alone.
-
-A move is taken back by moving it back, through the same checks the other way round: refused when
-the old place is there again, or when the folder no longer holds exactly the photos it was moved
-with - one added, one gone, one whose image data is another. Its metadata may have been written in
-the meantime; that stays, since only the folder is taken back.
+Older versions kept a journal of every write for an undo. On the first start its tables are
+copied into a file beside `app.db`, named after the journal's version, and dropped.
 
 ## Keeping away from the photos
 

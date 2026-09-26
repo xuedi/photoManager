@@ -17,7 +17,6 @@ flowchart LR
         edits --> scope
         fixes[fixes<br/>what the app is sure of] --> changeset
         fixes --> tools[tools<br/>questions and sure offers]
-        history[history<br/>every pass, named] --> journal
         changeset[change set] --> cache
         details[details<br/>one photo, and an edit of it] --> cache
         survey --> filter --> cache
@@ -33,7 +32,7 @@ flowchart LR
         geo[(places)]
         immich[(immich snapshot)]
         tools --> immich
-        write[write engine] --> journal[(journal)]
+        write[write engine]
         fixtures[fixtures<br/>test data]
     end
     application --> paths
@@ -47,9 +46,8 @@ flowchart LR
     photo --> details
     photo --> changeset
     photo -. read at full size by glycin, sandboxed .-> photos
-    window --> toolsview[tools view<br/>scope, edits, history]
+    window --> toolsview[tools view<br/>scope and edits]
     toolsview --> edits
-    toolsview --> history
     window --> suggestionsview[suggestions view<br/>tick and apply]
     suggestionsview --> fixes
     toolsview --> preview[preview<br/>what a tool would change]
@@ -79,8 +77,8 @@ browses by, and the scope a tool is handed: [gallery.md](gallery.md); everything
 and the form one photo is edited in: [photo.md](photo.md).
 
 The window reaches the write engine through one thing only: a change set, previewed and confirmed
-before anything is written. How that works: [preview.md](preview.md). The tools that produce one,
-the scope they work on and the history of every pass: [tools.md](tools.md). The fixes the app is
+before anything is written. How that works: [preview.md](preview.md). The tools that produce one
+and the scope they work on: [tools.md](tools.md). The fixes the app is
 sure of on its own, ticked and applied: [suggestions.md](suggestions.md).
 
 `app` holds the GTK application: the window, its views, and the actions they expose. Two more
@@ -103,8 +101,7 @@ as a GResource, so the binary carries its own interface.
 | what Immich knows about people | `…/immich.db` in the cache | disposable, fetched again on request |
 | the Immich API key | the GNOME keyring | kept until replaced |
 | place data | `$XDG_DATA_HOME/…/geo.db` | disposable, built from the dumps |
-| journal of every write | `$XDG_DATA_HOME/…/app.db` | kept, never discarded: an undo has to outlive a cache rebuild |
-| settings, the folder layout, the backup acknowledgement, the Immich address | `$XDG_DATA_HOME/…/app.db`, next to the journal | kept, for the same reason |
+| settings, the folder layout, the backup acknowledgement, the Immich address | `$XDG_DATA_HOME/…/app.db` | kept: what the user said once must outlive a cache rebuild |
 
 Every location is resolved in one place, from the environment. Pointing `HOME`, `XDG_*` and
 `PHOTOMANAGER_LIBRARY` somewhere else moves the whole application, which is how tests keep away
@@ -131,9 +128,6 @@ shortcuts and tests all use:
 | `win.fixes-select-all`, `win.fixes-select-none` | tick every suggestion of a finder, or of `all`, or none |
 | `win.apply-fixes` | write the ticked suggestions, finder by finder, after the first-write confirmation |
 | `win.cancel-fixes` | stop applying after the pass that is running |
-| `win.show-history` | the list of every pass |
-| `win.history-details` | one pass and its photos, by batch |
-| `win.undo-pass` | take back one pass by batch, after a confirmation that names the photos changed since |
 | `win.scan` | read what changed in the library into the cache |
 | `win.fill-thumbnails` | make the thumbnails the scan could not make |
 | `win.get-places` | fetch the GeoNames dumps and import them |
@@ -144,7 +138,6 @@ shortcuts and tests all use:
 | `win.preview-details` | the exact tag-level diff of one row |
 | `win.apply-change-set` | write the selected rows, after the first-write confirmation |
 | `win.cancel-apply` | stop a running apply between photos |
-| `win.undo-last` | take the last applied change set back, after confirmation |
 | `win.show-photo` | open one of the gallery's photos on its own page |
 | `win.photo-next`, `win.photo-previous`, `win.photo-first`, `win.photo-last` | step through the gallery's list |
 | `win.photo-close`, `win.photo-panel`, `win.photo-open-with` | back to the grid, the panel, the system's image viewer |

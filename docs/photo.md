@@ -120,8 +120,8 @@ flowchart LR
     dialog -- Apply --> first{first write ever?}
     first -- yes --> backup[the backup question]
     backup --> engine
-    first -- no --> engine[write engine and journal]
-    engine --> toast[a toast with Undo]
+    first -- no --> engine[write engine]
+    engine --> toast[a toast with what happened]
     engine --> scan[the library is read again]
     scan --> panel[the panel shows what the file now says]
 ```
@@ -130,8 +130,8 @@ flowchart LR
 assignments the engine would make, every tag with what it says now and what it would say, and the
 size of the file that goes up to Nextcloud again. Apply goes through the same gate as a whole
 library: the backup question before the first write of all, the [write engine](writing.md) with
-its proof that the image data did not change, the journal, and an undo one click away. The read
-that follows every pass brings the panel up to date with what the file now says.
+its proof that the image data did not change. The read that follows every pass brings the panel
+up to date with what the file now says.
 
 An unfinished edit is never dropped silently. Stepping to another photo, going back to the grid
 or turning editing off with something changed asks first, and while editing the page cannot be

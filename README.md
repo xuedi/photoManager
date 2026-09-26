@@ -42,9 +42,9 @@ changes it only when you say so.
   renamed over it. The image data is proved untouched twice - by a hash of our own and by
   ExifTool's `ImageDataHash` - before the original is replaced. If anything is off, the copy is
   deleted and the library never changed.
-- **Every change can be taken back.** What a photo said before a write is committed to a journal
-  first, so an undo can put it back field by field. The journal outlives a cache rebuild, because
-  those old values are the only copy of what the photo used to say.
+- **Your backup is the way back.** photoManager does not undo: a reliable undo of a write is not
+  possible once other things have touched the photo, and the backup you already keep is. The very
+  first write asks you to confirm one.
 - **A photo is known by its pixels.** The identity is a hash of the image data with the metadata
   segments left out, so it survives a metadata write, a rename and a move. A photo that moved is
   recognised as the same photo, not as one deleted and one added.
@@ -66,7 +66,7 @@ being built one at a time.
 | metadata | two readers that agree: gexiv2 in process, ExifTool as the reference |
 | thumbnails | keyed by the image rather than the path, so a move costs nothing |
 | places | GeoNames names to coordinates and back, without the network |
-| the write engine | one safe write, proved, journaled, undoable - see [docs/writing.md](docs/writing.md) |
+| the write engine | one safe write, proved before it replaces the file - see [docs/writing.md](docs/writing.md) |
 
 Next is the preview and the apply button that put the write engine behind a user interface, and
 then the tools themselves: coordinates from the places tag, dates, tag cleanup, people.
@@ -124,7 +124,7 @@ Architecture notes, one file per subsystem, in [docs/](docs/README.md):
 | [cache.md](docs/cache.md) | what is remembered about the photos, the scan modes, the issue kinds |
 | [thumbnails.md](docs/thumbnails.md) | the small pictures, keyed by the image rather than the path |
 | [places.md](docs/places.md) | names to coordinates and back, from the GeoNames dumps |
-| [writing.md](docs/writing.md) | the only writer: one safe write, what is proved, the journal, the undo |
+| [writing.md](docs/writing.md) | the only writer: one safe write, what is proved, the move of a folder, no undo |
 
 ## Data from others
 
