@@ -40,7 +40,7 @@ It also remembers whether the fields are **tidy**, which is what a tag write lea
 path with all its levels in the three path fields, every level's name in the two flat ones, and
 nothing in the label or the catalog sets, where older writers left keywords. A photo without any
 tag and without those leftovers is tidy. A photo that is not needs a write even when its tags stay
-the same, and the [tag vocabulary](tools.md#tag-vocabulary) is the tool that writes it.
+the same, and [Tidy Tags](tools.md#the-tags) or the [Tag Tree](suggestions.md#tag-tree) suggestion writes it.
 
 A second, read-only connection can look at the cache while the application's own connection is
 busy with a scan or an apply; that is how the dashboard is refreshed off the main thread.
@@ -50,7 +50,7 @@ busy with a scan or an apply; that is how the dashboard is refreshed off the mai
 A photo may say who is in it in two ways: MWG face regions, each a name and a box as a fraction of
 the stored picture with the size it was measured against, and the IPTC persons. The scan keeps both
 as the file lists them, so a change set can tell whether a photo already says what a
-[people](tools.md#people-from-immich) write would, and a second run finds nothing. The preview
+[people](suggestions.md#people) write would, and a second run finds nothing. The preview
 shows the names before and after, and when the names agree but a box, the size or the persons do
 not, it says so after the names.
 
@@ -64,8 +64,9 @@ thrown away and read again at will, and a new one replaces the old only once it 
 that is stopped or fails keeps the one before. It has its own schema version, and one of another
 version is no snapshot at all.
 
-The answers given about it - which tag each person is - are not in it: they are the tool's
-settings, next to the journal, and outlive every new read.
+Which tag a person is, is worked out from it each time the suggestions are found: the one people
+tag with the person's name ([suggestions.md](suggestions.md#people)). Nothing about it is kept
+anywhere else.
 
 ```mermaid
 flowchart LR
@@ -115,7 +116,7 @@ library reads no file at all and takes seconds.
 
 A rename keeps all three, so a file at a new path that matches a row whose path is gone is that
 row, renamed: the row follows it and what its folders say is read again from the new path, without
-reading the file. A folder moved by the [Folder Migration](tools.md#folder-migration) or by hand
+reading the file. A folder moved by [Move Event](tools.md#move-event), the [Folders](suggestions.md#folders) suggestion or by hand
 costs a scan nothing. A photo that was moved some other way - copied and deleted - is read again
 and recognised by its content id.
 
@@ -170,8 +171,8 @@ to an optional city, both plain names - is refused before it is kept.
 
 The layout is a setting, not photo information, so it lives in `app.db`. The cache remembers
 which layout its rows were placed with; when it changes, every row is placed again from its path,
-without reading a file, and the issues follow. Nothing on disk moves - that is
-[Folder Migration](tools.md#folder-migration).
+without reading a file, and the issues follow. Nothing on disk moves - that is the
+[Folders](suggestions.md#folders) suggestion and [Move Event](tools.md#move-event).
 
 ```mermaid
 flowchart LR

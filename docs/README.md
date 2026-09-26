@@ -10,8 +10,8 @@ How the parts of photoManager work. One file per subsystem, added when the subsy
 | [places.md](places.md) | turning place names into coordinates and back, without the network |
 | [writing.md](writing.md) | the only part that changes a photo: how one write works, what is proved, moving a folder, how it is taken back |
 | [preview.md](preview.md) | what a tool would change, on screen: the change set, the estimate, the confirmation, the undo |
-| [tools.md](tools.md) | what a tool is, the scope, what each would change, questions and answers, the pin, suggestions, GPS from the places tag, GPS from the event, the offset of a date, the three date tools, the tag vocabulary, adding a tag, people from Immich, the folder migration, running tools together, the history and taking any pass back |
-| [suggestions.md](suggestions.md) | ready-made fixes the tools find on their own, opened in their tool, and the shape of the tag tree |
+| [tools.md](tools.md) | the edits the person drives: what a tool is, the scope, Set Place, the offset of a date, Shift Dates, Set Date, Set Time Zone, the tags, Move Event, the history and taking any pass back |
+| [suggestions.md](suggestions.md) | the fixes the app is sure of, ticked and applied finder by finder: the tag tree, people from Immich, places from tags and from events, folders |
 | [dashboard.md](dashboard.md) | what the library is missing and where, and the filters that name a set of photos |
 | [gallery.md](gallery.md) | finding photos by place, tag and gap, the grid and its pictures, the scope a tool is handed |
 | [photo.md](photo.md) | one photo: the full size, stepping, the panel, the map, and editing one photo safely |

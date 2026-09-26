@@ -123,10 +123,14 @@ While a photo is open, the toast's Undo takes back the last applied change there
 ## On screen
 
 The tools view is a navigation stack. Its root is the scope and the list of [tools](tools.md);
-opening a tool builds its change set for the scope and pushes the preview on top of it, and the
-back button returns. A preview only means anything while a tool run is in flight, so it is not a
-view of its own. The change set carries the tool's title and key into the journal, which is how
-the history names the pass.
+a tool's form, once filled in, builds its change set for the scope and pushes the preview on top
+of it, and the back button returns. A preview only means anything while a tool run is in flight,
+so it is not a view of its own. The change set carries the tool's title and key into the journal,
+which is how the history names the pass.
+
+The [suggestions](suggestions.md) need no table: each fix already says what it changes, and the
+tick is the confirmation. Their passes go through the same backup question, engine, journal and
+take-back.
 
 On a narrow window the table keeps columns wide enough to read and scrolls sideways inside
 itself, so the preview never makes the window wider than a phone.

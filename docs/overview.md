@@ -13,8 +13,10 @@ flowchart LR
     subgraph core [core]
         paths
         settings[(settings)]
-        tools[tools<br/>what each would change] --> changeset
-        tools --> scope
+        edits[edits<br/>a value over a scope] --> changeset
+        edits --> scope
+        fixes[fixes<br/>what the app is sure of] --> changeset
+        fixes --> tools[tools<br/>questions and sure offers]
         history[history<br/>every pass, named] --> journal
         changeset[change set] --> cache
         details[details<br/>one photo, and an edit of it] --> cache
@@ -45,9 +47,11 @@ flowchart LR
     photo --> details
     photo --> changeset
     photo -. read at full size by glycin, sandboxed .-> photos
-    window --> toolsview[tools view<br/>scope, tools, history]
-    toolsview --> tools
+    window --> toolsview[tools view<br/>scope, edits, history]
+    toolsview --> edits
     toolsview --> history
+    window --> suggestionsview[suggestions view<br/>tick and apply]
+    suggestionsview --> fixes
     toolsview --> preview[preview<br/>what a tool would change]
     window --> library[library<br/>work off the main thread]
     preview --> changeset
@@ -76,7 +80,8 @@ and the form one photo is edited in: [photo.md](photo.md).
 
 The window reaches the write engine through one thing only: a change set, previewed and confirmed
 before anything is written. How that works: [preview.md](preview.md). The tools that produce one,
-the scope they work on and the history of every pass: [tools.md](tools.md).
+the scope they work on and the history of every pass: [tools.md](tools.md). The fixes the app is
+sure of on its own, ticked and applied: [suggestions.md](suggestions.md).
 
 `app` holds the GTK application: the window, its views, and the actions they expose. Two more
 GNOME libraries serve the photo page: glycin decodes a photo at full size in its sandbox, and
@@ -99,7 +104,7 @@ as a GResource, so the binary carries its own interface.
 | the Immich API key | the GNOME keyring | kept until replaced |
 | place data | `$XDG_DATA_HOME/…/geo.db` | disposable, built from the dumps |
 | journal of every write | `$XDG_DATA_HOME/…/app.db` | kept, never discarded: an undo has to outlive a cache rebuild |
-| settings, the folder layout, presets, each tool's last settings and answers | `$XDG_DATA_HOME/…/app.db`, next to the journal | kept, for the same reason |
+| settings, the folder layout, the backup acknowledgement, the Immich address | `$XDG_DATA_HOME/…/app.db`, next to the journal | kept, for the same reason |
 
 Every location is resolved in one place, from the environment. Pointing `HOME`, `XDG_*` and
 `PHOTOMANAGER_LIBRARY` somewhere else moves the whole application, which is how tests keep away
@@ -121,12 +126,11 @@ shortcuts and tests all use:
 | `win.gallery-select-all`, `win.gallery-select-none` | select every photo in the gallery, or none |
 | `win.use-as-scope` | make what the gallery shows or has selected the scope of the tools |
 | `win.tools-scope` | set the scope: `all`, a country or event folder, or `picked` for the gallery's |
-| `win.run-tool` | open a tool by its key, or `key:settings`, for the scope: its questions if it asks, else its change set in the preview; without settings, the ones it was last given |
-| `win.open-suggestion` | open a suggestion by its key in its tool, with its scope and settings |
-| `win.dismiss-suggestion`, `win.restore-suggestion` | dismiss a suggestion by its key, or bring it back |
-| `win.answer` | answer one question: a tool, a question and `best`, `offer:N`, `leave`, `forget`, `choose` for the place search, `map` for the map, `shift`, `date` or `tag` to type one, or any answer as the settings write it |
-| `win.answer-exact` | the tool's bulk button: Confirm Exact Matches, Confirm Where the Rest Is |
-| `win.preview-answers` | the change set of the tool whose questions are shown, with the answers so far |
+| `win.run-edit` | an edit by its key: its form, or with `key:value`, its change set for the scope in the preview straight away |
+| `win.tick-fix` | tick one suggestion by its key, or take the tick away |
+| `win.fixes-select-all`, `win.fixes-select-none` | tick every suggestion of a finder, or of `all`, or none |
+| `win.apply-fixes` | write the ticked suggestions, finder by finder, after the first-write confirmation |
+| `win.cancel-fixes` | stop applying after the pass that is running |
 | `win.show-history` | the list of every pass |
 | `win.history-details` | one pass and its photos, by batch |
 | `win.undo-pass` | take back one pass by batch, after a confirmation that names the photos changed since |

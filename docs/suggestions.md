@@ -1,68 +1,66 @@
 # Suggestions
 
-The dashboard says what is missing; the Suggestions tab is the step after it: ready-made fixes the
-tools found in the library on their own, each one click away from the tool that makes it. The app
-sees what is off and says so, and the person clicks. Nothing is ever written from the tab itself.
+The dashboard says what is missing; the Suggestions tab is what the app is sure it can fix on its
+own. Each fix is small enough to tick or not on its own - one tag rule, one person, one places
+tag, one event - and worked out to the end, so ticking it is the whole decision. **Apply Selected**
+writes the ticked ones. What the app is not sure about is not here: it is done with the
+[tools](tools.md), where the person gives the value.
 
-## What a suggestion is
+## What a fix is
 
-A suggestion belongs to a tool, the way a question does: `core` defines one shape, each tool
-produces its own, and the window draws them without knowing which tool found what. It has
+A fix belongs to a **finder**, and says what it is about, what it does, the photos it changes, and
+where the title does not say it all, a line or two: the folder now and after. Nothing about a fix
+is kept anywhere. The list is found again after every scan - and every write is followed by one -
+and a fix that was applied is gone because the photos now say it. A fix whose photos would all be
+refused for good is no fix and is not listed.
 
-- a **key** that stays the same for as long as the same fix is found,
-- a **title** and a **detail** in the tool's words, and the photos it is about,
-- the **tool**, a **scope** and **settings**: exactly what opening it hands to the Tools page,
-- whether it is **sure** - worked out to the end, so opening it and previewing is the whole fix -
-  or only shows what was found and leaves the decision to the person,
-- what it is made of, a line each: the rules it adds, the questions it would answer, the tags it
-  leaves apart.
-
-A tool without anything to say suggests nothing. A tool that asks suggests, without any code of
-its own, the questions its bulk button would answer over the whole library: "6 tags match a
-place by its exact name", "1 event has one sure folder". Opening it opens the tool's question page
-on the whole library, where the bulk button does the rest. Its photo count is the one the preview
-will show, so a photo two questions are about is counted once. A tool whose bulk button is empty,
-such as the date tools, has no sure answers to suggest.
+| Finder | One fix is | Sure when |
+|--------|------------|-----------|
+| Tag Tree | one rename rule, or the tag fields that disagree | the shape of the tree leaves one place for the tag |
+| People | one person Immich names | exactly one people tag has the person's name |
+| Places from Tags | one places tag of photos without GPS | the place data knows the name exactly |
+| Places from Events | one event with photos without GPS | every located photo of the event stands in one town |
+| Folders | one event off the folder layout | every level of its folder is sure |
 
 ## The tab
 
+The fixes are grouped by finder, in the order they are applied, each group with **Select All**.
+Each fix is a row with a check, its photo count, and its lines below it where it has any. The
+checks live only in the window, in memory: a new list starts with none ticked, and a fix not
+ticked is simply there again next time. The tab carries the number of fixes as a badge, and the
+dashboard has a line with the same number that opens the tab.
+
+**Apply Selected** writes the ticked fixes, finder by finder, in the order of the table above: each
+finder one pass in the journal, named after it, and the library read again before the next one, so
+each finder works on what the photos say now. The tags come before the people, and the people
+before any folder moves, so an event the people gate held back moves once its people are written
+in the same apply. A fix that an earlier pass already made unnecessary changes nothing and is
+skipped. The first write of all asks first whether the photos are backed up, like any apply
+([preview.md](preview.md)); after that the ticks are the confirmation. Cancel stops after the pass
+it came in. The toast says how many photos were written in how many passes and how many were
+refused, and History opens the passes, each of which can be taken back.
+
 ```mermaid
 flowchart TD
-    trigger[a scan is over,<br/>or the tab is shown] --> ask[every tool with the settings it was last given,<br/>off the main thread]
-    cache[(cache, read only)] --> ask
-    geo[(place data, read only)] --> ask
-    ask --> list[grouped by tool, the biggest first]
-    dismissed[(app.db: dismissed keys)] --> list
-    list --> badge[the tab's badge and the dashboard line]
-    list -- Open --> tool[the tool, on the suggestion's scope,<br/>with its settings]
-    tool --> preview[the tool's own page, preview and apply]
-    list -- Dismiss --> dismissed
+    trigger[a scan is over,<br/>or the tab is shown] --> find[every finder, off the main thread]
+    cache[(cache, read only)] --> find
+    geo[(place data, read only)] --> find
+    snap[(Immich snapshot)] --> find
+    find --> list[the fixes, finder by finder]
+    list -- tick, Select All --> ticked[the ticked fixes, in memory]
+    ticked -- Apply Selected --> pass[one finder's fixes as one change set]
+    pass --> engine[write engine: one pass]
+    engine --> journal[(journal, named by the finder)]
+    engine --> again{another finder ticked?}
+    again -- yes --> scan[the library read again] --> pass
+    again -- no --> read[the library read again] --> trigger
 ```
 
-The tools are asked off the main thread through read-only looks at the cache and the place data,
-after every scan - and every write is followed by one - and whenever the tab is shown. A tool that
-cannot say is left out, and the log says why. Only the newest asking is shown.
+## Tag Tree
 
-The list is grouped by tool, the tool with the most photos first, and each tool keeps its own
-order inside its group. A suggestion made of rows opens to show them. The tab carries the number
-of suggestions as a badge, and the dashboard has a line with the same number that opens the tab.
-
-**Open** sets the scope of the Tools page to the suggestion's and opens its tool the way the list
-would: its questions, its own page or its preview. The preview, the confirmation, the apply, the
-journal and the take-back are the tool's, unchanged; a suggestion only saves the person from
-finding the right tool, scope and settings.
-
-**Dismiss** keeps the suggestion's key in `app.db`, next to the journal, so a dismissed suggestion
-stays dismissed after a restart and a cache rebuild; the toast offers Undo. **Show Dismissed**
-lists them again, each with **Restore**. A dismissed suggestion that is fixed disappears like any
-other, and one that comes back with the same key stays dismissed.
-
-## The shape of the tags
-
-The first and biggest kind is the tag tree's. The Tag Vocabulary learns the shape the tags follow
-from the tree itself - never from a list of roots in code, so a library with other roots works too
-- and points at the tags that do not follow it. It looks at the tree after the rules there are, so
-a fix already decided is not suggested again.
+The finder learns the shape the tags follow from the tree itself - never from a list of roots in
+code, so a library with other roots works too - and points at the tags that do not follow it. Each
+becomes one rename, applied in the order found:
 
 - **The branches** are the roots with tags below them, and for each how deep its leaves sit most
   often: `places/inGermany/Hamburg` makes `places` three levels deep, `timeline/2014` makes
@@ -71,45 +69,93 @@ a fix already decided is not suggested again.
   because merging them turns most of the next kind's doubtful cases into sure ones.
 - **Flat keywords into their branch**: older files often carry only the flat keyword fields, which
   gives a tag without a level, `Anna` or `2014`. Where exactly one tag of the tree has its name -
-  compared case-folded, and after the twins merge - it moves there: `Anna` into
-  `people/family/Anna`, `inChina` into `places/inChina`. One suggestion for all of them, the rules
-  listed inside.
+  compared case-folded, and after the twins merge - it moves there.
 - **Leaves at the wrong depth**, a city straight under `places` where the same name sits at the
-  usual depth elsewhere in that branch, move there: `places/Hamburg` into
-  `places/inGermany/Hamburg`.
-- **Flat keywords that fit no one branch** are listed apart and left alone: one two tags have the
-  name of, with both named, and one no tag has.
-- **Roots that stand apart** - spelled in another case than most roots, and carried by far fewer
-  photos than the biggest - are shown, never guessed at: rename or delete them on the Tag
-  Vocabulary page.
+  usual depth elsewhere in that branch, move there.
+- **Tag fields that disagree**: the photos whose five tag fields do not say the same, written the
+  same with the tags they have ([cache.md](cache.md#tag-fields)).
 
-A suggestion that adds rules opens the Tag Vocabulary with them added after the ones there are,
-marked **not kept yet**, and a banner offers **Keep**. Preview keeps them too, and so does any
-change made on the page, since a rule after them may build on them. Leaving the page without
-either drops them. From there it is the vocabulary's own tree, preview, write and take-back
-([tools.md](tools.md#tag-vocabulary)).
+A flat keyword two tags have the name of, one no tag has, and a root that stands apart are not
+sure, and are not found: they are renamed by hand with Rename Tag. Only the photos a rule changes
+are written, with every level in every field; the generated tags are left as they are - Tidy Tags
+is where they are made.
 
-```mermaid
-flowchart TD
-    tree[the tag tree after the rules there are] --> branches[the branches and their usual depth]
-    tree --> twins[roots spelled two ways]
-    tree --> flat[tags without a level]
-    twins --> fold[names compared case-folded,<br/>twins merged]
-    flat --> fold
-    fold -- one tag has the name --> into[rename into it]
-    fold -- two or none --> apart[listed apart, left alone]
-    branches --> depth[a leaf above the usual depth,<br/>its name at the usual depth once]
-    branches --> strays[a root unlike the others, and small]
-    into --> open[the vocabulary, the rules not kept yet]
-    depth --> open
-    twins --> open
-```
+## People
 
-Measured over a copy of a real cache, asking every tool takes a couple of seconds off the main
-thread, most of it the folder tool's questions.
+Immich knows who is in the photos: its face recognition found the faces and a person named them.
+The files know it only where someone tagged a person by hand. This finder writes what Immich knows
+into the files, so a photo moved or renamed later loses nothing that only Immich knew. Immich is
+only read, never written.
+
+- **What it reads.** The snapshot beside the cache, fetched with **Get People from Immich** on the
+  dashboard ([cache.md](cache.md#what-immich-knows)): Immich's address is set in Preferences, its
+  API key is kept in the GNOME keyring. A person without a name, or hidden, is never written.
+- **Sure** is one tag of the people tree with the person's exact name, in either spelling of the
+  root. Two tags of that name, or a name that is only near one, are not sure: rename the tag or
+  the person in Immich until they agree.
+- **What a photo gets.** A face region for the person, named with the last level of the person's
+  tag; the person named in `PersonInImage`; and the tag in all five tag fields with every level.
+  What it carried stays: a tag is only added. The region list is replaced as a whole, so Immich
+  decides the faces.
+- **The boxes.** Immich measures a face on its preview, turned the way the photo is shown. The
+  file wants the box on the stored picture, before any turn, so every box is turned back by the
+  photo's orientation - each of the eight - and clamped to the picture, and the stored size is
+  written with it.
+- **Refused, with why.** A photo Immich has offline; one whose stored size or turn is not what
+  Immich saw, or whose faces were measured on a picture of another shape, because its boxes would
+  land somewhere else. A person whose photos all say it already, or are all refused, is no fix.
+- **Immich afterwards.** A write changes a photo's modification time, so Immich reads it again on
+  its next library scan and matches the faces to the old ones by where they are; a write that
+  changes only metadata keeps every face on the same person. Immich's own face import is to stay
+  off, or every person would be there twice.
+
+## Places from Tags
+
+Photos without a position whose places tag names a town get that town's coordinates: one fix per
+distinct deepest places tag, `places/inChina/Beijing`, not the `places/inChina` beside it.
+
+- **Sure** is an exact name the place data gives 0.9 or more, looked for with the tag's country
+  level as the hint. A typo, a region or a made-up place is not sure: Set Place gives it by hand.
+- **A country alone** (`places/inChina`) is never a fix: a country centre is nowhere anyone took a
+  photo.
+- **What a photo gets.** The town's coordinates, marked in the file as derived from the tag and
+  how far off they may be ([writing.md](writing.md#the-canonical-field-set)), and the town in words -
+  but the words only when the photo has none, because writing a place takes away every part it
+  does not set.
+- **Two tags on one photo** that name two places are refused, with both named. A photo whose other
+  tag is not sure waits, and is not counted in the fix.
+
+## Places from Events
+
+For the photos without a position the places tag cannot place: in an event folder, without a
+places tag that names a town. One fix per event.
+
+- **Where the rest of the event is.** The event's photos with a position each stand in a town,
+  from the place data; a neighbourhood counts as its town. **Sure** is every located photo in the
+  same town, and at least three of them. An event's name is never sure, however exact.
+- **What a photo gets** is what the places tag gives, with this finder's mark in the file.
+
+## Folders
+
+Every event of the library off the [folder layout](cache.md#folder-names) is looked at, level by
+level, from what its photos already say: the country from its folders or places tags, the city
+from the city folder it is in or the places tag of every photo, the region from that city, the
+year and month from the event's date, a tag level from the one tag below its root every photo
+carries. A city is spelled the way the library already spells it, so folders and tags agree.
+
+- **Sure** is a folder whose every level is sure. Several cities, a city on only some photos, an
+  event without a year are not: Move Event moves them by hand.
+- **The people gate.** An event whose photos Immich names people in that the files do not say is
+  held back until they are written ([People](#people)); its fix says it waits, and ticking the
+  people too lets it go in the same apply. A move that is refused for good - its folder is there
+  already, two events would go to one - is no fix.
+- **One pass**: the moves are never written together with a change to a photo, and each moves an
+  event with its sub-folders by one rename ([writing.md](writing.md#moving-a-folder)).
+
+Measured over a copy of a real cache, finding every fix takes a few seconds off the main thread,
+most of it the folders.
 
 ## Not here
 
-Applying anything: a suggestion always ends in its tool's preview. A "fix everything" button would
-write without a preview the person confirmed. Showing a flat keyword in its branch in the gallery
-before it is written would show what the files do not say.
+A choice between offers, a value typed, a pin on a map: that is the person's decision, made with a
+tool. The list offers only what it is sure of, and never remembers a tick.
