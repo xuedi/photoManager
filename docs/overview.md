@@ -122,6 +122,8 @@ shortcuts and tests all use:
 | `win.use-as-scope` | make what the gallery shows or has selected the scope of the tools |
 | `win.tools-scope` | set the scope: `all`, a country or event folder, or `picked` for the gallery's |
 | `win.run-tool` | open a tool by its key, or `key:settings`, for the scope: its questions if it asks, else its change set in the preview; without settings, the ones it was last given |
+| `win.open-suggestion` | open a suggestion by its key in its tool, with its scope and settings |
+| `win.dismiss-suggestion`, `win.restore-suggestion` | dismiss a suggestion by its key, or bring it back |
 | `win.answer` | answer one question: a tool, a question and `best`, `offer:N`, `leave`, `forget`, `choose` for the place search, `map` for the map, `shift`, `date` or `tag` to type one, or any answer as the settings write it |
 | `win.answer-exact` | the tool's bulk button: Confirm Exact Matches, Confirm Where the Rest Is |
 | `win.preview-answers` | the change set of the tool whose questions are shown, with the answers so far |

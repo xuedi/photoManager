@@ -136,6 +136,14 @@ them, and a question answered once is not asked again - not for another scope, n
 import. Taking a pass back leaves the answers as they are; running the tool again puts the change
 back on.
 
+## Suggestions
+
+A tool may also say, unasked, what it would fix in the whole library: a **suggestion**, with a
+title, the photos it is about, and the scope and settings that opening it hands to the tool. A tool
+that asks suggests the questions its bulk button would answer; the tag vocabulary suggests from
+the shape of the tag tree. They are listed on the Suggestions tab, and opening one ends on the
+tool's own page and preview - see [suggestions.md](suggestions.md).
+
 ## GPS from the places tag
 
 The first tool that asks. It gives photos without a position whose places tag names a city the
@@ -308,7 +316,9 @@ the vocabulary is decided once.
   Leave Alone is remembered and not suggested again. The suggestions come from the tree after the
   rules, so a merged pair is gone.
 - **The rules** in order, each with how many photos it changes and a button to take it out. A rule
-  that only made sense after it goes too, and the page says so.
+  that only made sense after it goes too, and the page says so. Rules a suggestion from the
+  Suggestions tab added are marked not kept yet until Keep or Preview
+  ([suggestions.md](suggestions.md#the-shape-of-the-tags)).
 - **Generated Tags**: what becomes of the tags that only say what the data says - see below.
 - **The tree** after the rules, each tag with the photos that carry it or a tag below it, and per
   tag **Rename or Move**, **Merge Into** (a search over the tree) and **Delete**. Deleting a tag

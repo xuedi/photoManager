@@ -43,6 +43,9 @@ the time zone of home, are not wrong.
   has no date, each on its own because each is fixed by a different step of the folder migration,
 - sidecars, files that are not photos, unreadable files and duplicate content, from the issues.
 
+These say what is untidy; how to fix it is the step after, on the Suggestions tab. While it has
+any, a line at the top of the dashboard says how many and opens it ([suggestions.md](suggestions.md)).
+
 ## Filters, and why a number cannot lie
 
 Each number carries a **filter**: a small, closed description of a set of photos, optionally
