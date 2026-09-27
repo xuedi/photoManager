@@ -147,6 +147,15 @@ pub struct Dated {
     pub event_day: Option<i64>,
 }
 
+/// A photo as its file name is worked out from.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct Named {
+    pub rel_path: String,
+    pub content_id: Option<String>,
+    pub taken_at: Option<String>,
+    pub sub_second: Option<String>,
+}
+
 /// A photo as the tag tools need it: its tags, whether its tag fields are tidy, and what its
 /// date, its place words and its folder say, which the generated tags are made from.
 #[derive(Debug, Clone, Default, PartialEq)]
@@ -813,6 +822,34 @@ impl Cache {
             .connection
             .prepare("SELECT rel_path FROM photo WHERE substr(rel_path, 1, length(?1)) = ?1 ORDER BY rel_path")?;
         let rows = statement.query_map(params![format!("{dir}/")], |row| row.get(0))?;
+        rows.collect()
+    }
+
+    /// Every photo, with what its name is worked out from, in path order.
+    pub fn named(&self) -> Result<Vec<Named>> {
+        let mut statement = self.connection.prepare(
+            "SELECT rel_path, content_id, taken_at,
+                coalesce(nullif(trim(json_extract(raw, '$.\"Exif.Photo.SubSecTimeOriginal\"')), ''),
+                    nullif(trim(json_extract(raw, '$.SubSecTimeOriginal')), ''))
+             FROM photo ORDER BY rel_path",
+        )?;
+        let rows = statement.query_map([], |row| {
+            Ok(Named {
+                rel_path: row.get(0)?,
+                content_id: row.get(1)?,
+                taken_at: row.get(2)?,
+                sub_second: row.get(3)?,
+            })
+        })?;
+        rows.collect()
+    }
+
+    /// Every file the scan saw, a photo or not.
+    pub fn files(&self) -> Result<Vec<String>> {
+        let mut statement = self
+            .connection
+            .prepare("SELECT rel_path FROM photo UNION SELECT rel_path FROM issue ORDER BY 1")?;
+        let rows = statement.query_map([], |row| row.get(0))?;
         rows.collect()
     }
 

@@ -17,6 +17,7 @@ use crate::cache::Cache;
 use crate::changeset::{self, ChangeSet, Wanted};
 use crate::filter::Filter;
 use crate::geo::Geo;
+use crate::names;
 use crate::scope::Scope;
 use crate::tags::{Rule, Rules};
 use crate::tools::folders::{self, FolderMigration};
@@ -38,7 +39,7 @@ pub struct Finder {
 }
 
 /// Every finder, in the order its fixes are applied.
-pub const FINDERS: [Finder; 5] = [
+pub const FINDERS: [Finder; 6] = [
     Finder {
         key: "tags",
         title: "Tag Tree",
@@ -69,6 +70,12 @@ pub const FINDERS: [Finder; 5] = [
         fixes: "Events with one sure folder in the layout",
         pass: "Move events into the folder layout",
     },
+    Finder {
+        key: "file-names",
+        title: "File Names",
+        fixes: "Photos not named by the date they were taken",
+        pass: "Name photos by their date",
+    },
 ];
 
 pub fn finder(key: &str) -> Option<&'static Finder> {
@@ -93,7 +100,12 @@ pub struct Fix {
 enum What {
     Rule(Rule),
     Tidy,
-    Answer { question: String, answer: Answer },
+    Answer {
+        question: String,
+        answer: Answer,
+    },
+    /// The folder whose photos are named by their date.
+    Names(String),
 }
 
 /// Every fix there is in the library, finder by finder. A finder that cannot look is left out,
@@ -132,6 +144,7 @@ fn find_one(key: &str, cache: &Cache, geo: Option<&Geo>) -> Result<Vec<Fix>, Str
             })
             .collect(),
         "folders" => folder_fixes(cache, geo)?,
+        "file-names" => name_fixes(cache)?,
         other => return Err(format!("there is no finder {other}")),
     })
 }
@@ -209,6 +222,57 @@ fn folder_fixes(cache: &Cache, geo: Option<&Geo>) -> Result<Vec<Fix>, String> {
     Ok(fixes)
 }
 
+/// How many of the renames of a fix are shown before the rest is only counted.
+const SHOWN_RENAMES: usize = 3;
+
+fn name_fixes(cache: &Cache) -> Result<Vec<Fix>, String> {
+    Ok(names::folders(cache)?
+        .into_iter()
+        .map(|folder| {
+            let mut detail = format!("{} named by the date taken", counted(folder.renamed));
+            if folder.undated > 0 {
+                detail.push_str(&format!(", {} without a date keep their name", folder.undated));
+            }
+            let mut lines: Vec<(String, String)> = folder
+                .wanted
+                .iter()
+                .filter_map(|one| one.moved.as_ref())
+                .take(SHOWN_RENAMES)
+                .map(|moved| (file_name(&moved.from).to_string(), file_name(&moved.to).to_string()))
+                .collect();
+            if folder.renamed > SHOWN_RENAMES {
+                lines.push(("And".to_string(), counted(folder.renamed - SHOWN_RENAMES)));
+            }
+            if let Some(why) = folder.waits {
+                lines.push(("Waits".to_string(), why));
+            }
+            Fix {
+                key: format!("file-names:{}", folder.dir),
+                finder: "file-names",
+                title: match folder.dir.is_empty() {
+                    true => "The library itself".to_string(),
+                    false => folder.dir.clone(),
+                },
+                detail,
+                photos: folder.renamed,
+                lines,
+                what: What::Names(folder.dir),
+            }
+        })
+        .collect())
+}
+
+fn counted(photos: usize) -> String {
+    match photos {
+        1 => "1 photo".to_string(),
+        _ => format!("{photos} photos"),
+    }
+}
+
+fn file_name(rel_path: &str) -> &str {
+    rel_path.rsplit_once('/').map_or(rel_path, |(_, name)| name)
+}
+
 fn tag_fixes(cache: &Cache) -> Result<Vec<Fix>, String> {
     let failed = |error: rusqlite::Error| error.to_string();
     let mut fixes: Vec<Fix> = tag_vocabulary::shape(cache)
@@ -251,6 +315,7 @@ pub fn change_set(finder: &Finder, fixes: &[&Fix], cache: &Cache, geo: Option<&G
     let mut answers = Answers::default();
     let mut rules = Rules::default();
     let mut tidy = false;
+    let mut named = BTreeSet::new();
     for fix in fixes.iter().filter(|fix| fix.finder == finder.key) {
         match &fix.what {
             What::Rule(rule) => {
@@ -260,6 +325,9 @@ pub fn change_set(finder: &Finder, fixes: &[&Fix], cache: &Cache, geo: Option<&G
             }
             What::Tidy => tidy = true,
             What::Answer { question, answer } => answers.set(question, Some(answer.clone())),
+            What::Names(dir) => {
+                named.insert(dir.clone());
+            }
         }
     }
     let wanted: Vec<Wanted> = match finder.key {
@@ -272,6 +340,11 @@ pub fn change_set(finder: &Finder, fixes: &[&Fix], cache: &Cache, geo: Option<&G
             .map_err(failed)?,
         "places-from-events" => GpsFromEvent.wanted(cache, geo, &whole(), &answers).map_err(failed)?,
         "folders" => FolderMigration.wanted(cache, geo, &whole(), &answers).map_err(failed)?,
+        "file-names" => names::folders(cache)?
+            .into_iter()
+            .filter(|folder| named.contains(&folder.dir))
+            .flat_map(|folder| folder.wanted)
+            .collect(),
         other => return Err(format!("there is no finder {other}")),
     };
     // People from Immich also says which photos Immich knows and the library does not; they are

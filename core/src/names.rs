@@ -3,9 +3,14 @@
 //! settled and never numbered again, and no photo is ever given a name something in its folder
 //! already has, so a rename can neither overwrite a file nor wait on another one.
 
-use std::collections::HashSet;
+use std::collections::{BTreeMap, HashSet};
 
+use crate::cache::Cache;
+use crate::changeset::Wanted;
 use crate::dates;
+use crate::tools::folders::PEOPLE_FIRST;
+use crate::tools::people;
+use crate::write::Move;
 
 pub const EXTENSION: &str = "jpg";
 
@@ -65,6 +70,112 @@ pub fn plan(photos: &[Photo], on_disk: &[String]) -> Vec<Verdict> {
         .into_iter()
         .map(|verdict| verdict.expect("every photo judged"))
         .collect()
+}
+
+/// One folder whose photos are not all named by their date: a move of its own for every photo
+/// that gets a new name, and a refused row for every one that keeps its name for want of a date.
+#[derive(Debug, Clone)]
+pub struct Folder {
+    /// Relative to the library, empty for the library itself.
+    pub dir: String,
+    pub wanted: Vec<Wanted>,
+    pub renamed: usize,
+    pub undated: usize,
+    /// Why some of its photos wait for their people, when they do.
+    pub waits: Option<String>,
+}
+
+/// Every folder of the library with a photo to rename, in path order.
+pub fn folders(cache: &Cache) -> Result<Vec<Folder>, String> {
+    let failed = |error: rusqlite::Error| error.to_string();
+    let mut on_disk: BTreeMap<String, Vec<String>> = BTreeMap::new();
+    for rel_path in cache.files().map_err(failed)? {
+        let (dir, name) = split(&rel_path);
+        on_disk.entry(dir.to_string()).or_default().push(name.to_string());
+    }
+    let mut by_dir: BTreeMap<String, Vec<(Photo, String, Option<String>)>> = BTreeMap::new();
+    for named in cache.named().map_err(failed)? {
+        let (dir, name) = split(&named.rel_path);
+        let photo = Photo {
+            name: name.to_string(),
+            taken_at: named.taken_at,
+            sub_second: named.sub_second,
+        };
+        by_dir
+            .entry(dir.to_string())
+            .or_default()
+            .push((photo, named.rel_path.clone(), named.content_id));
+    }
+
+    let mut found = Vec::new();
+    for (dir, photos) in by_dir {
+        let judged: Vec<Photo> = photos.iter().map(|(photo, _, _)| photo.clone()).collect();
+        let verdicts = plan(&judged, on_disk.get(&dir).map(Vec::as_slice).unwrap_or_default());
+        let mut folder = Folder {
+            dir: dir.clone(),
+            wanted: Vec::new(),
+            renamed: 0,
+            undated: 0,
+            waits: None,
+        };
+        for ((_, rel_path, content_id), verdict) in photos.into_iter().zip(verdicts) {
+            match verdict {
+                Verdict::Settled => {}
+                Verdict::Refused(why) => {
+                    folder.undated += 1;
+                    folder.wanted.push(Wanted::refused(rel_path, why));
+                }
+                Verdict::Rename(name) => {
+                    folder.renamed += 1;
+                    let refused = content_id
+                        .is_none()
+                        .then(|| format!("the scan could not read the image data of {rel_path}"));
+                    let moved = Move {
+                        photos: content_id.map(|id| vec![(rel_path.clone(), id)]).unwrap_or_default(),
+                        from: rel_path,
+                        to: joined(&dir, &name),
+                    };
+                    folder.wanted.push(Wanted::moving(moved, refused));
+                }
+            }
+        }
+        if folder.renamed > 0 {
+            found.push(folder);
+        }
+    }
+
+    let moving: Vec<String> = found
+        .iter()
+        .flat_map(|folder| folder.wanted.iter().filter(|one| one.moved.is_some()))
+        .map(|one| one.rel_path.clone())
+        .collect();
+    if let Some(untold) = people::untold(cache, &moving)? {
+        for folder in &mut found {
+            for one in folder.wanted.iter_mut().filter(|one| one.moved.is_some()) {
+                let Some(names) = untold.get(&one.rel_path).filter(|names| !names.is_empty()) else {
+                    continue;
+                };
+                let why = format!(
+                    "{PEOPLE_FIRST} {} in it and the file does not: write the people first",
+                    names.join(", ")
+                );
+                folder.waits.get_or_insert_with(|| why.clone());
+                one.refused.get_or_insert(why);
+            }
+        }
+    }
+    Ok(found)
+}
+
+fn split(rel_path: &str) -> (&str, &str) {
+    rel_path.rsplit_once('/').unwrap_or(("", rel_path))
+}
+
+fn joined(dir: &str, name: &str) -> String {
+    match dir.is_empty() {
+        true => name.to_string(),
+        false => format!("{dir}/{name}"),
+    }
 }
 
 /// `2019-07-14_153012`, if the date is a real one.
@@ -249,6 +360,217 @@ mod tests {
         assert_eq!(
             plan(&photos, &names(&photos)),
             [renamed("2020-01-01_100000_2.jpg"), renamed("2019-07-14_153012_2.jpg")]
+        );
+    }
+}
+
+#[cfg(all(test, feature = "fixtures"))]
+mod library_tests {
+    use std::collections::BTreeMap;
+    use std::os::unix::fs::MetadataExt;
+    use std::path::Path;
+    use std::sync::atomic::AtomicBool;
+
+    use crate::changeset::Verdict as Row;
+    use crate::fixes::{self, Fix};
+    use crate::immich::{self, fake};
+    use crate::tools::testing::{Library, geo};
+
+    const WEDDING: &str = "Denmark/2018-10-00 Wedding Trip to Copenhagen";
+    const HARBOUR: &str = "Germany/2016-06-00 Harbour Walk";
+    const BEN: &str = "China/2006-09-00 Besuch Ben";
+
+    fn exiftool(root: &Path, rel_path: &str, args: &[&str]) {
+        let done = std::process::Command::new("exiftool")
+            .args(args)
+            .arg("-overwrite_original")
+            .arg(root.join(rel_path))
+            .output()
+            .unwrap();
+        assert!(done.status.success(), "{}", String::from_utf8_lossy(&done.stderr));
+    }
+
+    /// The copy with the shapes the scheme cares about: two photos of one second told apart by
+    /// the fraction against their old names, and one already named by its date.
+    fn staged(name: &str) -> Library {
+        let mut library = Library::new(name);
+        let root = library.root.clone();
+        exiftool(&root, &format!("{HARBOUR}/DSC_0101.JPG"), &["-SubSecTimeOriginal=90"]);
+        exiftool(&root, &format!("{HARBOUR}/DSC_0102.JPG"), &["-SubSecTimeOriginal=20"]);
+        let taken = library.cache.named().unwrap();
+        let at = |rel_path: &str| {
+            taken
+                .iter()
+                .find(|named| named.rel_path == rel_path)
+                .and_then(|named| named.taken_at.clone())
+                .unwrap()
+        };
+        let second = at(&format!("{HARBOUR}/DSC_0101.JPG")).replace('-', ":");
+        exiftool(
+            &root,
+            &format!("{HARBOUR}/DSC_0102.JPG"),
+            &[&format!("-DateTimeOriginal={second}")],
+        );
+        exiftool(
+            &root,
+            &format!("{WEDDING}/DSCF0002.JPG"),
+            &["-DateTimeOriginal=2018:10:06 14:02:11"],
+        );
+        std::fs::rename(
+            root.join(format!("{WEDDING}/DSCF0001.JPG")),
+            root.join(format!("{WEDDING}/2018-10-06_140211_2.jpg")),
+        )
+        .unwrap();
+        library.rescan();
+        library
+    }
+
+    fn name_fixes(library: &Library) -> Vec<Fix> {
+        fixes::find(&library.cache, Some(&geo()))
+            .into_iter()
+            .filter(|fix| fix.finder == "file-names")
+            .collect()
+    }
+
+    /// Every file of the library by its content id where it has one, with its inode and mtime.
+    fn files(library: &Library) -> BTreeMap<String, (String, u64, i64)> {
+        library
+            .cache
+            .named()
+            .unwrap()
+            .into_iter()
+            .map(|named| {
+                let found = std::fs::metadata(library.root.join(&named.rel_path)).unwrap();
+                (
+                    named.content_id.unwrap(),
+                    (
+                        named.rel_path,
+                        found.ino(),
+                        found.mtime_nsec() + found.mtime() * 1_000_000_000,
+                    ),
+                )
+            })
+            .collect()
+    }
+
+    #[test]
+    fn one_fix_per_folder_with_a_photo_to_name_and_none_for_a_folder_without_a_date() {
+        let library = staged("names-find");
+        let found = name_fixes(&library);
+        let wedding = found
+            .iter()
+            .find(|fix| fix.key == format!("file-names:{WEDDING}"))
+            .unwrap();
+        assert_eq!(wedding.photos, 1);
+        assert_eq!(
+            wedding.lines,
+            [("DSCF0002.JPG".to_string(), "2018-10-06_140211.jpg".to_string())]
+        );
+        assert!(
+            !found
+                .iter()
+                .any(|fix| fix.key == "file-names:China/2008-01-00 Holiday SOUTHTOUR"),
+            "its one photo has no date"
+        );
+    }
+
+    #[test]
+    fn a_ticked_folder_is_named_by_date_and_nothing_else_moves() {
+        let mut library = staged("names-apply");
+        let before = files(&library);
+        let found = name_fixes(&library);
+        let ticked: Vec<&Fix> = found
+            .iter()
+            .filter(|fix| {
+                [WEDDING, HARBOUR]
+                    .iter()
+                    .any(|dir| fix.key == format!("file-names:{dir}"))
+            })
+            .collect();
+        assert_eq!(ticked.len(), 2);
+        let finder = fixes::finder("file-names").unwrap();
+        let mut set = fixes::change_set(finder, &ticked, &library.cache, Some(&geo())).unwrap();
+        set.look(&library.root);
+        let summary = library.apply(&set);
+        assert_eq!((summary.written, summary.refused, summary.failed), (5, 0, 0));
+
+        let after = files(&library);
+        assert_eq!(before.len(), after.len());
+        let path = |content: &String| after[content].0.clone();
+        for (content, (was, inode, mtime)) in &before {
+            let (now, now_inode, now_mtime) = &after[content];
+            assert_eq!((inode, mtime), (now_inode, now_mtime), "{was} is the same file");
+            if !was.starts_with(WEDDING) && !was.starts_with(HARBOUR) {
+                assert_eq!(was, now, "outside the ticked folders nothing moves");
+            }
+        }
+        let content_of = |rel_path: &str| {
+            before
+                .iter()
+                .find(|(_, (was, _, _))| was == rel_path)
+                .map(|(content, _)| content.clone())
+                .unwrap()
+        };
+        assert_eq!(
+            path(&content_of(&format!("{WEDDING}/DSCF0002.JPG"))),
+            format!("{WEDDING}/2018-10-06_140211.jpg")
+        );
+        assert_eq!(
+            path(&content_of(&format!("{WEDDING}/2018-10-06_140211_2.jpg"))),
+            format!("{WEDDING}/2018-10-06_140211_2.jpg")
+        );
+        let later = path(&content_of(&format!("{HARBOUR}/DSC_0101.JPG")));
+        let earlier = path(&content_of(&format!("{HARBOUR}/DSC_0102.JPG")));
+        assert!(later.ends_with("_2.jpg"), "{later}");
+        assert_eq!(earlier, later.replace("_2.jpg", ".jpg"));
+        for rel_path in [&later, &earlier] {
+            assert!(library.root.join(rel_path).is_file(), "{rel_path} is on disk");
+        }
+
+        library.rescan();
+        let again = name_fixes(&library);
+        assert!(
+            !again.iter().any(|fix| [WEDDING, HARBOUR]
+                .iter()
+                .any(|dir| fix.key == format!("file-names:{dir}"))),
+            "{again:?}"
+        );
+    }
+
+    #[test]
+    fn a_photo_whose_people_only_immich_knows_waits_for_them() {
+        let library = staged("names-people");
+        let fake = fake::FakeImmich::serve(fake::Data::over(&library.root));
+        let mut client = immich::Client::new(&fake.url, fake::KEY).unwrap();
+        immich::fetch(
+            &mut client,
+            &immich::beside(library.cache.file()),
+            None,
+            &|_| {},
+            &AtomicBool::new(false),
+        )
+        .unwrap();
+
+        let found = name_fixes(&library);
+        let ben = found.iter().find(|fix| fix.key == format!("file-names:{BEN}")).unwrap();
+        let waits = ben
+            .lines
+            .iter()
+            .find(|(name, _)| name == "Waits")
+            .map(|(_, why)| why.clone());
+        assert_eq!(
+            waits.as_deref(),
+            Some("Immich names Ben in it and the file does not: write the people first")
+        );
+        let finder = fixes::finder("file-names").unwrap();
+        let set = fixes::change_set(finder, &[ben], &library.cache, None).unwrap();
+        assert!(
+            set.rows.iter().all(|row| matches!(row.verdict, Row::Refused(_))),
+            "{:?}",
+            set.rows
+                .iter()
+                .map(|row| (&row.rel_path, &row.verdict))
+                .collect::<Vec<_>>()
         );
     }
 }
