@@ -12,6 +12,7 @@ pub mod identity;
 pub mod immich;
 pub mod layout;
 pub mod metadata;
+pub mod names;
 pub mod paths;
 pub mod scan;
 pub mod scope;
