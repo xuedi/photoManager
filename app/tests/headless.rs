@@ -156,6 +156,7 @@ fn the_app_can_be_clicked_through_headless() {
     merges_a_tag(&ui, lib);
     gives_people_from_immich(&ui, lib);
     moves_an_event_into_its_city(&ui, lib);
+    names_photos_by_their_date(&ui, lib);
 
     ui.run(&["act", "win.show-view", "'suggestions'"], lib);
     let state = state(&ui, lib);
@@ -681,6 +682,71 @@ fn moves_an_event_into_its_city(ui: &Ui, library: &Path) {
         library.join("Germany/Hamburg").is_dir(),
         "the city folder holds another event and stays"
     );
+    start_over(ui, library);
+}
+
+/// File Names, clicked through: one folder ticked, its photos named by the date they were taken,
+/// every one the same file as before, and the fix gone.
+fn names_photos_by_their_date(ui: &Ui, library: &Path) {
+    const WALK: &str = "Denmark/2017-09-00 Autumn Walk";
+    const FIX: &str = "file-names:Denmark/2017-09-00 Autumn Walk";
+    let dir = library.join(WALK);
+    let before: Vec<(String, std::time::SystemTime)> = ["DSCF0101.JPG", "DSCF0102.JPG"]
+        .iter()
+        .map(|name| {
+            let file = dir.join(name);
+            (
+                photomanager_core::identity::content_id(&std::fs::read(&file).unwrap()).unwrap(),
+                std::fs::metadata(&file).unwrap().modified().unwrap(),
+            )
+        })
+        .collect();
+
+    let listed = suggestions(ui, library, |listed| {
+        listed["fixes"].as_array().unwrap().iter().any(|fix| fix["key"] == FIX)
+    });
+    let fix = listed["fixes"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|fix| fix["key"] == FIX)
+        .unwrap()
+        .clone();
+    assert_eq!(fix["photos"].as_u64(), Some(2), "{fix}");
+    ui.run(&["click", "Suggestions", "--role", "tab"], library);
+    ui.run(&["act", "win.tick-fix", &format!("('{FIX}', true)")], library);
+    ui.run(&["click", "Apply Selected", "--role", "button"], library);
+    let applied = suggestions(ui, library, |listed| {
+        listed["applied"].is_array() && listed["busy"] == false
+    });
+    let passes = applied["applied"].as_array().unwrap();
+    assert_eq!(passes.len(), 1, "{applied}");
+    assert_eq!(passes[0]["finder"], "file-names", "{applied}");
+    assert_eq!(passes[0]["written"].as_u64(), Some(2), "{applied}");
+    assert!(
+        !applied["fixes"].as_array().unwrap().iter().any(|fix| fix["key"] == FIX),
+        "{applied}"
+    );
+
+    let mut names: Vec<String> = std::fs::read_dir(&dir)
+        .unwrap()
+        .map(|entry| entry.unwrap().file_name().to_string_lossy().to_string())
+        .collect();
+    names.sort();
+    assert_eq!(names, ["2017-08-26_100000.jpg", "2017-08-26_113000.jpg"]);
+    for (name, (content, mtime)) in names.iter().zip(&before) {
+        let file = dir.join(name);
+        assert_eq!(
+            photomanager_core::identity::content_id(&std::fs::read(&file).unwrap()).as_deref(),
+            Some(content.as_str()),
+            "{name}"
+        );
+        assert_eq!(
+            &std::fs::metadata(&file).unwrap().modified().unwrap(),
+            mtime,
+            "{name} keeps its mtime"
+        );
+    }
     start_over(ui, library);
 }
 

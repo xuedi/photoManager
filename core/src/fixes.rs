@@ -229,10 +229,11 @@ fn name_fixes(cache: &Cache) -> Result<Vec<Fix>, String> {
     Ok(names::folders(cache)?
         .into_iter()
         .map(|folder| {
-            let mut detail = format!("{} named by the date taken", counted(folder.renamed));
-            if folder.undated > 0 {
-                detail.push_str(&format!(", {} without a date keep their name", folder.undated));
-            }
+            let detail = match folder.undated {
+                0 => "Named by the date taken".to_string(),
+                1 => "Named by the date taken, 1 without a date keeps its name".to_string(),
+                undated => format!("Named by the date taken, {undated} without a date keep their name"),
+            };
             let mut lines: Vec<(String, String)> = folder
                 .wanted
                 .iter()

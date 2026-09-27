@@ -186,6 +186,7 @@ fn suggests_fixes_to_tick(window: &Window, opened: &Rc<Library>) {
         BEIJING,
         "places-from-events:Germany/2016-06-00 Harbour Walk",
         FOLDER,
+        "file-names:Denmark/2018-10-00 Wedding Trip to Copenhagen",
     ] {
         assert!(keys.contains(&wanted), "{wanted} is not in {keys:?}");
     }
@@ -195,10 +196,17 @@ fn suggests_fixes_to_tick(window: &Window, opened: &Rc<Library>) {
         (2, "Beijing, Beijing, China")
     );
     let shown = labels(page.upcast_ref());
-    for group in ["Tag Tree", "Places from Tags", "Places from Events", "Folders"] {
+    for group in [
+        "Tag Tree",
+        "Places from Tags",
+        "Places from Events",
+        "Folders",
+        "File Names",
+    ] {
         assert!(shown.iter().any(|label| label == group), "no group {group}");
     }
     assert!(shown.iter().position(|label| label == "Tag Tree") < shown.iter().position(|label| label == "Folders"));
+    assert!(shown.iter().position(|label| label == "Folders") < shown.iter().position(|label| label == "File Names"));
     assert_eq!(
         window.dashboard().suggestions_line(),
         Some(format!("{} Suggestions", found.len()))
