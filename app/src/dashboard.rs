@@ -434,7 +434,7 @@ impl Dashboard {
                 .build();
             bar.update_property(&[gtk::accessible::Property::Label(&format!("{} coverage", gap.title()))]);
             row.add_suffix(&bar);
-            clickable(&row, measure.missing, &Filter::missing(*gap));
+            activates(&row, measure.missing, &Filter::missing(*gap));
             self.keep(&group, row.upcast());
         }
     }
@@ -566,15 +566,22 @@ impl Dashboard {
     }
 }
 
-/// A row that shows its photos when activated, if it has any.
+/// A row that shows its photos when activated, if it has any, with an arrow that says so.
 fn clickable(row: &adw::ActionRow, count: i64, filter: &Filter) {
+    if activates(row, count, filter) {
+        row.add_suffix(&gtk::Image::from_icon_name("go-next-symbolic"));
+    }
+}
+
+/// A row that shows its photos when activated, if it has any.
+fn activates(row: &adw::ActionRow, count: i64, filter: &Filter) -> bool {
     if count == 0 {
-        return;
+        return false;
     }
     row.set_activatable(true);
     row.set_action_name(Some(SHOW_PHOTOS));
     row.set_action_target_value(Some(&filter.to_string().to_variant()));
-    row.add_suffix(&gtk::Image::from_icon_name("go-next-symbolic"));
+    true
 }
 
 fn by_gap(places: &[Place], gap: Gap) -> Vec<&Place> {
