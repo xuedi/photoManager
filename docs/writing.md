@@ -142,8 +142,8 @@ write of a temporary copy.
 
 The engine has one more thing it does besides writing fields: it takes a folder or a photo to
 another place in the library. Nothing inside a photo changes, not even its modification time; a
-rename keeps them all. It is how an event goes into its place in the folder layout, or a photo
-lying loose in a folder into an event.
+rename keeps them all. It is how an event goes into its place in the folder layout, a photo
+lying loose in a folder into an event, or a photo to its new name in the same folder.
 
 An event moves by **one rename**. On one filesystem that is atomic: the event is in its old folder
 or in its new one, never half in each, whatever happens in between. Its sub-folders go with it as

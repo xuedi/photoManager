@@ -11,7 +11,7 @@ How the parts of photoManager work. One file per subsystem, added when the subsy
 | [writing.md](writing.md) | the only part that changes a photo: how one write works, what is proved, moving a folder, why there is no undo |
 | [preview.md](preview.md) | what a tool would change, on screen: the change set, the estimate, the confirmation |
 | [tools.md](tools.md) | the edits the person drives: what a tool is, the scope, Set Place, the offset of a date, Shift Dates, Set Date, Set Time Zone, the tags, Move Event |
-| [suggestions.md](suggestions.md) | the fixes the app is sure of, ticked and applied finder by finder: the tag tree, people from Immich, places from tags and from events, folders |
+| [suggestions.md](suggestions.md) | the fixes the app is sure of, ticked and applied finder by finder: the tag tree, people from Immich, places from tags and from events, folders, file names |
 | [dashboard.md](dashboard.md) | what the library is missing and where, and the filters that name a set of photos |
 | [gallery.md](gallery.md) | finding photos by place, tag and gap, the grid and its pictures, the scope a tool is handed |
 | [photo.md](photo.md) | one photo: the full size, stepping, the panel, the map, and editing one photo safely |

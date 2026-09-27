@@ -21,6 +21,7 @@ refused for good is no fix and is not listed.
 | Places from Tags | one places tag of photos without GPS | the place data knows the name exactly |
 | Places from Events | one event with photos without GPS | every located photo of the event stands in one town |
 | Folders | one event off the folder layout | every level of its folder is sure |
+| File Names | one folder whose photos are not named by their date | the photo has a date |
 
 ## The tab
 
@@ -33,7 +34,8 @@ dashboard has a line with the same number that opens the tab.
 **Apply Selected** writes the ticked fixes, finder by finder, in the order of the table above: each
 finder one pass, and the library read again before the next one, so
 each finder works on what the photos say now. The tags come before the people, and the people
-before any folder moves, so an event the people gate held back moves once its people are written
+before any folder moves, and the folder moves before the file names, so a photo is renamed in the
+folder it ends up in. An event the people gate held back moves once its people are written
 in the same apply. A fix that an earlier pass already made unnecessary changes nothing and is
 skipped. The first write of all asks first whether the photos are backed up, like any apply
 ([preview.md](preview.md)); after that the ticks are the confirmation. Cancel stops after the pass
@@ -153,6 +155,44 @@ carries. A city is spelled the way the library already spells it, so folders and
 
 Measured over a copy of a real cache, finding every fix takes a few seconds off the main thread,
 most of it the folders.
+
+## File Names
+
+Every photo is named by the moment it was taken, `YYYY-MM-DD_HHMMSS.jpg`, from the date in the
+file as the camera's clock said it. No colon, because not every computer a synced library reaches
+allows one, and the extension always `.jpg` in lower case. One fix per folder - an event, one of
+its sub-folders, the loose photos of a country - and a photo never leaves its folder.
+
+```mermaid
+flowchart TD
+    photo[a photo of the folder] --> dated{a date?}
+    dated -- no --> keeps[keeps its name]
+    dated -- yes --> fits{its name already the scheme<br/>for that date?}
+    fits -- yes --> settled[settled]
+    fits -- no --> free[the first of the date's names<br/>nothing in the folder has]
+    free --> gate{Immich names someone<br/>the file does not?}
+    gate -- yes --> waits[waits for its people]
+    gate -- no --> renamed[renamed]
+```
+
+- **More photos in one second** are `_2`, `_3` and on, in the order of the fraction of the second
+  the camera wrote, then of their old names. The first has the bare name.
+- **Settled is never numbered again.** A name that is already one of the scheme's names for the
+  photo's own date stays, whatever number it has. A photo added later takes the next free number,
+  and nobody else moves; a second look at a renamed folder finds nothing.
+- **No name anything in the folder has** is ever given, a photo or any other file, told apart
+  without regard to case because a synced copy on another computer may not tell `a.jpg` from
+  `A.jpg`. So a rename never waits on another one, two photos never swap names, and nothing can
+  be overwritten; the engine refuses a target that is there all the same.
+- **The people gate** holds a photo back as it holds an event: to Immich a renamed file is a new
+  one, so the people go into the file first.
+- **One pass of renames**, each a move of one photo inside its folder
+  ([writing.md](writing.md#moving-a-folder)): not a byte of the photo changes, not even its
+  modification time, and nothing is uploaded again.
+
+Measured over a copy of a real library, every folder is found in well under a second, and renaming
+thousands of photos takes about 11 ms each, most of it proving the image data before the rename.
+Every file was the same file afterwards, and the scan after read none of them again.
 
 ## Not here
 
