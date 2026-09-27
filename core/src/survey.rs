@@ -290,6 +290,11 @@ fn tidy(cache: &Cache) -> Result<Vec<Finding>> {
         "events in other folders than the layout says, and folders without a date".to_string(),
         Filter::of(Kind::OffLayout),
     )?;
+    add(
+        "Not named by their date".to_string(),
+        "photos whose file name is not the date they were taken".to_string(),
+        Filter::of(Kind::OffName),
+    )?;
     for (kind, title, detail) in [
         (IssueKind::Sidecar, "Sidecars", "XMP files next to the photos"),
         (IssueKind::NotAPhoto, "Not photos", "files that are not JPEG images"),
@@ -420,6 +425,7 @@ mod fixture_tests {
                 ("places/inGreece/Atens and places/inGreece/athens", 3),
                 ("Loose files", 1),
                 ("In event sub-folders", 2),
+                ("Not named by their date", 35),
             ]
         );
     }

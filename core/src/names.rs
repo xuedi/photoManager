@@ -474,6 +474,58 @@ mod library_tests {
         );
     }
 
+    /// The dashboard's count and the finder's renames are one test in two languages.
+    fn agree(library: &Library) {
+        use crate::filter::{Filter, Kind};
+        let renames: usize = super::folders(&library.cache)
+            .unwrap()
+            .iter()
+            .map(|folder| folder.renamed)
+            .sum();
+        let off = Filter::of(Kind::OffName);
+        assert_eq!(off.count(&library.cache).unwrap() as usize, renames);
+        let listed: Vec<String> = super::folders(&library.cache)
+            .unwrap()
+            .into_iter()
+            .flat_map(|folder| folder.wanted)
+            .filter(|one| one.moved.is_some())
+            .map(|one| one.rel_path)
+            .collect();
+        let mut listed = listed;
+        listed.sort();
+        assert_eq!(off.paths(&library.cache).unwrap(), listed);
+    }
+
+    #[test]
+    fn the_filter_counts_exactly_the_photos_the_finder_renames() {
+        let mut library = staged("names-filter");
+        agree(&library);
+        let root = library.root.clone();
+        for (from, to) in [
+            (
+                format!("{HARBOUR}/DSC_0103.JPG"),
+                format!("{HARBOUR}/2016-06-00_000000.jpg"),
+            ),
+            (
+                format!("{WEDDING}/DSCF0002.JPG"),
+                format!("{WEDDING}/2018-10-06_140211.JPG"),
+            ),
+        ] {
+            std::fs::rename(root.join(from), root.join(to)).unwrap();
+        }
+        library.rescan();
+        agree(&library);
+        assert!(
+            crate::filter::Filter::of(crate::filter::Kind::OffName)
+                .within(WEDDING)
+                .paths(&library.cache)
+                .unwrap()
+                .iter()
+                .all(|path| path.ends_with(".JPG")),
+            "the settled one is not counted"
+        );
+    }
+
     #[test]
     fn a_ticked_folder_is_named_by_date_and_nothing_else_moves() {
         let mut library = staged("names-apply");

@@ -116,6 +116,8 @@ pub enum Kind {
     Tagged(Vec<String>),
     /// Photos in a folder below their event's.
     SubFolder,
+    /// Photos with a date whose file name is not one the naming scheme gives that date.
+    OffName,
     /// Files in a folder of the layout's levels, or in the library root, not in any event.
     Loose,
     /// Events in folders that are not the layout's, and folders where an event should be whose
@@ -131,9 +133,10 @@ impl Kind {
             Kind::Missing(_) => 0,
             Kind::Tagged(_) => 1,
             Kind::SubFolder => 2,
-            Kind::Loose => 3,
-            Kind::OffLayout => 4,
-            Kind::Issue(_) => 5,
+            Kind::OffName => 3,
+            Kind::Loose => 4,
+            Kind::OffLayout => 5,
+            Kind::Issue(_) => 6,
         }
     }
 
@@ -148,6 +151,7 @@ impl Kind {
             Kind::Missing(gap) => format!("Photos {}", gap.lacking()),
             Kind::Tagged(paths) => format!("Photos tagged {}", paths.join(" or ")),
             Kind::SubFolder => "Photos in event sub-folders".to_string(),
+            Kind::OffName => "Photos not named by their date".to_string(),
             Kind::Loose => "Loose files".to_string(),
             Kind::OffLayout => "Files off the layout".to_string(),
             Kind::Issue(kind) => format!("Files with the issue {}", kind.as_str()),
@@ -160,6 +164,7 @@ impl Kind {
             Kind::Missing(gap) => gap.lacking().to_string(),
             Kind::Tagged(paths) => format!("tagged {}", paths.join(" or ")),
             Kind::SubFolder => "in event sub-folders".to_string(),
+            Kind::OffName => "not named by their date".to_string(),
             Kind::Loose => "loose".to_string(),
             Kind::OffLayout => "off the layout".to_string(),
             Kind::Issue(kind) => format!("with the issue {}", kind.as_str()),
@@ -169,6 +174,7 @@ impl Kind {
     fn parse(text: &str) -> std::result::Result<Kind, String> {
         Ok(match text {
             "sub-folder" => Kind::SubFolder,
+            "off-name" => Kind::OffName,
             "loose" => Kind::Loose,
             "off-layout" => Kind::OffLayout,
             _ => {
@@ -211,6 +217,7 @@ impl Kind {
                 format!("p.id IN (SELECT photo_id FROM tag WHERE {})", any.join(" OR "))
             }
             Kind::SubFolder => "p.event_dir IS NOT NULL AND p.sub_path IS NOT NULL".to_string(),
+            Kind::OffName => off_name(),
             Kind::Loose => issue(format!(
                 "kind = '{off_layout}' AND detail IN ('{}', '{}')",
                 loose[0], loose[1]
@@ -225,6 +232,26 @@ impl Kind {
             }
         }
     }
+}
+
+/// The same test as `names::plan`, in SQL: a real date, and a name that is not `YYYY-MM-DD_HHMMSS`
+/// with an optional `_N` from 2 on and `.jpg`. SQLite normalises an impossible date, so a date
+/// that does not come back as itself is none.
+fn off_name() -> String {
+    let name = "substr(p.rel_path, length(rtrim(p.rel_path, replace(p.rel_path, '/', ''))) + 1)";
+    let stem = "substr(p.taken_at, 1, 10) || '_' || substr(p.taken_at, 12, 2) || substr(p.taken_at, 15, 2) \
+        || substr(p.taken_at, 18, 2)";
+    let number = format!("substr({name}, 19, length({name}) - 22)");
+    format!(
+        "p.taken_at GLOB '[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9] [0-9][0-9]:[0-9][0-9]:[0-9][0-9]'
+        AND datetime(p.taken_at) = p.taken_at
+        AND NOT (
+            {name} = {stem} || '.{ext}'
+            OR (substr({name}, 1, 18) = {stem} || '_' AND {name} GLOB '*.{ext}'
+                AND {number} GLOB '[1-9]*' AND {number} NOT GLOB '*[^0-9]*' AND {number} != '1')
+        )",
+        ext = crate::names::EXTENSION
+    )
 }
 
 /// How the photos of a set are listed.
@@ -466,6 +493,7 @@ impl std::fmt::Display for Filter {
                 Kind::Missing(gap) => write!(f, "{}", gap.key())?,
                 Kind::Tagged(paths) => write!(f, "tag:{}", paths.join("|"))?,
                 Kind::SubFolder => write!(f, "sub-folder")?,
+                Kind::OffName => write!(f, "off-name")?,
                 Kind::Loose => write!(f, "loose")?,
                 Kind::OffLayout => write!(f, "off-layout")?,
                 Kind::Issue(kind) => write!(f, "issue:{}", kind.as_str())?,
@@ -554,6 +582,8 @@ pub(crate) mod tests {
             "tag:mixed/food",
             "tag:mixed/funny|mixed/Funny@Ireland",
             "sub-folder",
+            "off-name",
+            "no-gps+off-name@Greece",
             "loose",
             "off-layout",
             "issue:sidecar",
