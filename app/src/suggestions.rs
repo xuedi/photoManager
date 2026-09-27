@@ -12,7 +12,7 @@ use std::rc::Rc;
 use adw::prelude::*;
 use adw::subclass::prelude::*;
 use gtk::glib;
-use photomanager_core::fixes::{FINDERS, Fix, Pass};
+use photomanager_core::fixes::{self, FINDERS, Fix, Pass};
 
 use crate::library::{Event, Library};
 
@@ -49,6 +49,11 @@ mod imp {
         pub toast: RefCell<String>,
         pub applied: RefCell<Option<Vec<Pass>>>,
         pub listeners: RefCell<Vec<Listener>>,
+        pub scrolled: gtk::ScrolledWindow,
+        /// The finder whose group is to be shown once the fixes are there.
+        pub wanted: RefCell<Option<String>>,
+        /// The finder whose group was shown last, for the tests.
+        pub revealed: RefCell<Option<String>>,
     }
 
     impl std::fmt::Debug for Suggestions {
@@ -352,6 +357,47 @@ impl Suggestions {
             imp.groups.borrow_mut().push(group);
         }
         self.show_ticked();
+        self.show_wanted();
+    }
+
+    /// Shows one finder's group, as soon as the fixes are found. A finder without a fix now says
+    /// so, since what it cannot be sure of is done with the tools.
+    pub fn reveal(&self, finder: &str) {
+        *self.imp().wanted.borrow_mut() = Some(finder.to_string());
+        self.show_wanted();
+    }
+
+    pub fn revealed(&self) -> Option<String> {
+        self.imp().revealed.borrow().clone()
+    }
+
+    fn show_wanted(&self) {
+        let imp = self.imp();
+        if imp.busy.get() || imp.found.borrow().is_none() {
+            return;
+        }
+        let Some(finder) = imp.wanted.take() else {
+            return;
+        };
+        let at = imp.everies.borrow().iter().position(|(key, _, _)| *key == finder);
+        let Some(at) = at else {
+            let title = fixes::finder(&finder).map_or(finder.as_str(), |finder| finder.title);
+            imp.toasts.add_toast(adw::Toast::new(&format!(
+                "Nothing in {title} the app is sure of - fix these with the tools"
+            )));
+            *imp.revealed.borrow_mut() = None;
+            return;
+        };
+        let group = imp.groups.borrow()[at].clone();
+        imp.everies.borrow()[at].2.grab_focus();
+        *imp.revealed.borrow_mut() = Some(finder);
+        let scrolled = imp.scrolled.clone();
+        glib::idle_add_local_once(move || {
+            if let Some(point) = group.compute_point(&scrolled, &gtk::graphene::Point::zero()) {
+                let adjustment = scrolled.vadjustment();
+                adjustment.set_value(adjustment.value() + f64::from(point.y()) - 12.0);
+            }
+        });
     }
 
     /// One fix: its check, what it is about and how many photos, and its lines below it where it
@@ -450,13 +496,11 @@ impl Suggestions {
         imp.bar.set_revealed(false);
 
         let clamp = adw::Clamp::builder().maximum_size(720).child(&imp.content).build();
-        let scrolled = gtk::ScrolledWindow::builder()
-            .hscrollbar_policy(gtk::PolicyType::Never)
-            .vexpand(true)
-            .child(&clamp)
-            .build();
+        imp.scrolled.set_hscrollbar_policy(gtk::PolicyType::Never);
+        imp.scrolled.set_vexpand(true);
+        imp.scrolled.set_child(Some(&clamp));
         let view = adw::ToolbarView::new();
-        view.set_content(Some(&scrolled));
+        view.set_content(Some(&imp.scrolled));
         view.add_bottom_bar(&imp.bar);
         imp.toasts.set_child(Some(&view));
         self.set_child(Some(&imp.toasts));

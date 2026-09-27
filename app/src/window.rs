@@ -5,6 +5,7 @@ use adw::subclass::prelude::*;
 use gtk::glib;
 use gtk::glib::subclass::InitializingObject;
 use photomanager_core::filter::{Filter, Gap, Order};
+use photomanager_core::remedy::Remedy;
 use photomanager_core::scan::Mode;
 use photomanager_core::scope::Scope;
 
@@ -186,6 +187,25 @@ impl Window {
             .unwrap_or_default()
     }
 
+    /// Opens where the photos of a finding are fixed: its group of fixes, or its tool scoped to
+    /// them. `false` when nothing in the application fixes it.
+    pub fn fix(&self, filter: &Filter) -> bool {
+        let imp = self.imp();
+        match Remedy::of(filter) {
+            Some(Remedy::Fixes(finder)) => {
+                self.show_view("suggestions");
+                imp.suggestions.reveal(finder.key);
+            }
+            Some(Remedy::Tool { edit, scope }) => {
+                imp.tools.set_scope(Scope::Filter(scope));
+                self.show_view("tools");
+                imp.tools.run(edit.key());
+            }
+            None => return false,
+        }
+        true
+    }
+
     pub fn show_view(&self, name: &str) -> bool {
         let stack = &self.imp().stack;
         if stack.child_by_name(name).is_none() {
@@ -215,6 +235,19 @@ impl Window {
                 };
                 match text.parse::<Filter>() {
                     Ok(filter) => window.show_photos(filter),
+                    Err(why) => tracing::warn!(why, "no such set of photos"),
+                }
+            })
+            .build();
+        let fix = gtk::gio::ActionEntry::builder("fix")
+            .parameter_type(Some(glib::VariantTy::STRING))
+            .activate(|window: &Window, _, parameter| {
+                let Some(text) = parameter.and_then(|value| value.str()) else {
+                    return;
+                };
+                match text.parse::<Filter>() {
+                    Ok(filter) if window.fix(&filter) => {}
+                    Ok(_) => tracing::warn!(filter = text, "nothing fixes it"),
                     Err(why) => tracing::warn!(why, "no such set of photos"),
                 }
             })
@@ -385,6 +418,7 @@ impl Window {
         self.add_action_entries([
             show_view,
             show_photos,
+            fix,
             sort,
             gap,
             place,

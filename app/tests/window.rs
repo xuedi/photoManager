@@ -156,6 +156,7 @@ fn scans_into_its_cache() {
     reads_the_panel(&window);
     edits_one_photo(&window);
     suggests_fixes_to_tick(&window, &opened);
+    leads_a_finding_to_its_fix(&window);
 
     previews_what_a_tool_would_change(&window, &opened);
     lists_the_tools_for_a_scope(&window, &opened, &library);
@@ -241,6 +242,57 @@ fn suggests_fixes_to_tick(window: &Window, opened: &Rc<Library>) {
 
     act("win.tick-fix", Some((FOLDER, false).to_variant()));
     assert!(page.applied().is_none(), "nothing was written");
+    window.show_view("dashboard");
+}
+
+/// The dashboard's Fix opens where a finding is fixed: the tool on exactly those photos, or the
+/// finder's group on the Suggestions tab. Nothing is written.
+fn leads_a_finding_to_its_fix(window: &Window) {
+    const EVENT: &str = "no-gps@Germany/2016-06-00 Harbour Walk";
+    let act = |target: &str| WidgetExt::activate_action(window, "win.fix", Some(&target.to_variant())).unwrap();
+    let scoped = || match window.scope() {
+        Scope::Filter(filter) => filter.to_string(),
+        Scope::Photos { title, .. } => title,
+    };
+    let form = || window.visible_dialog().map(|dialog| dialog.title().to_string());
+
+    window.show_view("dashboard");
+    let shown = labels(window.dashboard().upcast_ref());
+    assert!(
+        shown.iter().any(|label| label == "Not named by their date"),
+        "{shown:?}"
+    );
+    assert!(shown.iter().any(|label| label == "Fix"), "the findings offer their fix");
+
+    act("no-gps");
+    assert_eq!(window.visible_view(), "tools");
+    assert_eq!(scoped(), "no-gps");
+    assert_eq!(form().as_deref(), Some("Set Place"));
+    window.visible_dialog().unwrap().force_close();
+
+    act(EVENT);
+    assert_eq!(scoped(), EVENT, "a gap of one event stays that event's");
+    assert_eq!(form().as_deref(), Some("Set Place"));
+    window.visible_dialog().unwrap().force_close();
+
+    act("date-off-folder");
+    assert_eq!(form().as_deref(), Some("Shift Dates"));
+    window.visible_dialog().unwrap().force_close();
+
+    let page = window.suggestions();
+    act("off-name");
+    assert_eq!(window.visible_view(), "suggestions");
+    until(
+        || page.revealed().as_deref() == Some("file-names"),
+        "the File Names group was shown",
+    );
+    act("sub-folder");
+    until(
+        || page.revealed().as_deref() == Some("folders"),
+        "the Folders group was shown",
+    );
+
+    WidgetExt::activate_action(window, "win.tools-scope", Some(&"all".to_variant())).unwrap();
     window.show_view("dashboard");
 }
 

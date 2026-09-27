@@ -14,6 +14,7 @@ pub mod layout;
 pub mod metadata;
 pub mod names;
 pub mod paths;
+pub mod remedy;
 pub mod scan;
 pub mod scope;
 pub mod settings;

@@ -6,6 +6,7 @@ use adw::subclass::prelude::*;
 use gtk::glib;
 use gtk::glib::subclass::InitializingObject;
 use photomanager_core::filter::{Filter, Gap};
+use photomanager_core::remedy::Remedy;
 use photomanager_core::scan::Mode;
 use photomanager_core::survey::{Measure, Place, Survey};
 
@@ -434,6 +435,9 @@ impl Dashboard {
                 .build();
             bar.update_property(&[gtk::accessible::Property::Label(&format!("{} coverage", gap.title()))]);
             row.add_suffix(&bar);
+            if let Some(fix) = fix_button(measure.missing, &Filter::missing(*gap), gap.title()) {
+                row.add_suffix(&fix);
+            }
             activates(&row, measure.missing, &Filter::missing(*gap));
             self.keep(&group, row.upcast());
         }
@@ -462,6 +466,9 @@ impl Dashboard {
                         .title(glib::markup_escape_text(&country.name))
                         .subtitle(so_far(gap, measure))
                         .build();
+                    if let Some(fix) = fix_button(measure.missing, &country.filter(gap), &country.name) {
+                        row.add_suffix(&fix);
+                    }
                     clickable(&row, measure.missing, &country.filter(gap));
                     row.upcast()
                 }
@@ -482,12 +489,18 @@ impl Dashboard {
                         "Show the photos of {}",
                         country.name
                     ))]);
+                    if let Some(fix) = fix_button(measure.missing, &country.filter(gap), &country.name) {
+                        row.add_suffix(&fix);
+                    }
                     row.add_suffix(&show);
                     for event in events {
                         let inner = adw::ActionRow::builder()
                             .title(glib::markup_escape_text(&event.name))
                             .subtitle(so_far(gap, event.gap(gap)))
                             .build();
+                        if let Some(fix) = fix_button(event.gap(gap).missing, &event.filter(gap), &event.name) {
+                            inner.add_suffix(&fix);
+                        }
                         clickable(&inner, event.gap(gap).missing, &event.filter(gap));
                         row.add_row(&inner);
                     }
@@ -511,6 +524,9 @@ impl Dashboard {
             let count = gtk::Label::builder().label(finding.count.to_string()).build();
             count.add_css_class("dim-label");
             row.add_suffix(&count);
+            if let Some(fix) = fix_button(finding.count, &finding.filter, &finding.title) {
+                row.add_suffix(&fix);
+            }
             clickable(&row, finding.count, &finding.filter);
             self.keep(&group, row.upcast());
         }
@@ -564,6 +580,27 @@ impl Dashboard {
             true
         });
     }
+}
+
+/// A button that opens where these photos are fixed, if there are any and the application fixes
+/// them. `what` names the finding for a screen reader.
+fn fix_button(count: i64, filter: &Filter, what: &str) -> Option<gtk::Button> {
+    if count == 0 {
+        return None;
+    }
+    let remedy = Remedy::of(filter)?;
+    let button = gtk::Button::builder()
+        .label("Fix")
+        .tooltip_text(remedy.tells())
+        .valign(gtk::Align::Center)
+        .action_name("win.fix")
+        .action_target(&filter.to_string().to_variant())
+        .build();
+    button.add_css_class("flat");
+    // A button with a text is named by it; every row's would be "Fix".
+    button.reset_relation(gtk::AccessibleRelation::LabelledBy);
+    button.update_property(&[gtk::accessible::Property::Label(&format!("Fix {what}"))]);
+    Some(button)
 }
 
 /// A row that shows its photos when activated, if it has any, with an arrow that says so.
