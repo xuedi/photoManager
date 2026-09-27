@@ -25,7 +25,9 @@ refused for good is no fix and is not listed.
 
 ## The tab
 
-The fixes are grouped by finder, in the order they are applied, each group with **Select All**.
+The fixes are grouped by finder, in the order they are applied, each group with **Select All**. The
+dashboard's **Fix** on a finding opens the tab scrolled to the group that fixes it
+([dashboard.md](dashboard.md#from-a-finding-to-its-fix)).
 Each fix is a row with a check, its photo count, and its lines below it where it has any. The
 checks live only in the window, in memory: a new list starts with none ticked, and a fix not
 ticked is simply there again next time. The tab carries the number of fixes as a badge, and the

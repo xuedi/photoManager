@@ -41,10 +41,48 @@ the time zone of home, are not wrong.
   nothing looks further than one parent,
 - loose files, photos in event sub-folders, and folders where an event should be but whose name
   has no date, each on its own because each is fixed by a different step of the folder migration,
+- photos not named by their date: a photo with a date whose file name is not one of the names
+  the [File Names](suggestions.md#file-names) fix gives that date. It counts exactly the photos
+  that fix would rename,
 - sidecars, files that are not photos, unreadable files and duplicate content, from the issues.
 
-These say what is untidy; how to fix it is the step after, on the Suggestions tab. While it has
-any, a line at the top of the dashboard says how many and opens it ([suggestions.md](suggestions.md)).
+These say what is untidy; how to fix it is the step after. While the Suggestions tab has any
+fixes, a line at the top of the dashboard says how many and opens it
+([suggestions.md](suggestions.md)).
+
+## From a finding to its fix
+
+The dashboard is also the check that the library keeps to its conventions: every way it breaks
+them is a row here. A row shows its photos when clicked; a **Fix** button beside it opens where
+those photos are fixed. What is fixed where is decided from the row's filter alone:
+
+| Finding | Fix opens |
+|---------|-----------|
+| no GPS, no location text | Set Place, scoped to exactly those photos |
+| no date | Set Date, scoped |
+| date disagrees with the folder | Shift Dates, scoped |
+| no tag | Add Tag, scoped |
+| no people | the People fixes |
+| `mixed`, case twins, tags that look alike | the Tag Tree fixes |
+| loose files, sub-folders, off the layout | the Folders fixes |
+| not named by their date | the File Names fixes |
+| sidecars, not photos, unreadable, duplicate content | nothing: only a person can decide what goes |
+
+A gap of one country or one event keeps its folder: Fix on the photos without GPS of one event
+opens Set Place on that event's photos without GPS, and nothing else. A group of fixes is opened
+on the Suggestions tab, scrolled to it; when nothing in it is sure right now, the tab says to use
+the tools, which is where those photos are fixed by hand. A Fix never writes anything: the tool's
+preview or the tick of a fix still comes first.
+
+```mermaid
+flowchart LR
+    row[a finding and its filter] --> remedy{what fixes it?}
+    remedy -- a tool --> tool[the tool, scoped to the filter]
+    remedy -- sure fixes --> group[its group on Suggestions]
+    remedy -- nothing --> none[no button]
+    tool --> preview[preview, then apply]
+    group --> tick[tick, then apply]
+```
 
 ## Filters, and why a number cannot lie
 
@@ -58,6 +96,7 @@ narrowed to a folder. It has a written form, which is what a click hands to the
 | `no-gps@Germany`, `no-gps@Germany/2019-07-13 Sommerfest` | the same, inside a folder or an event folder |
 | `tag:mixed`, `tag:mixed/funny\|mixed/Funny` | photos with any of these tags or a tag below them, compared as spelled |
 | `loose`, `sub-folder`, `off-layout` | the folder findings |
+| `off-name` | the photos not named by their date |
 | `issue:sidecar`, `issue:duplicate content` | files with that issue |
 | `all` | every photo |
 | `no-gps+tag:people@Germany` | parts joined by `+` must all hold: here, photos tagged under `people` in that folder, without GPS |
@@ -88,5 +127,7 @@ way over a copy of real photos.
 ## Staying fast
 
 The survey asks only for columns that sit together in one covering index, so it never reads the
-photo rows themselves with their raw metadata. Measured over a copy of a real library of thousands
-of photos, it takes well under a tenth of a second in a release build.
+photo rows themselves with their raw metadata. The one exception is the names: the file name and
+the date sit in no index together, so that finding reads the rows. Measured over a copy of a real
+library of thousands of photos, the whole survey takes under a fifth of a second in a release
+build, off the main thread.
