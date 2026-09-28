@@ -29,6 +29,30 @@ fix:
     cargo fmt
     cargo clippy --workspace --all-targets {{dev}} --features photomanager-core/fixtures --fix --allow-dirty -- -D warnings
 
+# build a release and install it for this user, so it starts from the app launcher
+install:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    cargo build --release
+    bin="$HOME/.local/bin/{{app}}"
+    apps="$HOME/.local/share/applications"
+    icons="$HOME/.local/share/icons/hicolor/scalable/apps"
+    mkdir -p "$(dirname "$bin")" "$apps" "$icons"
+    # a copy first, then a rename, so a running instance keeps its binary
+    cp target/release/{{app}} "$bin.new"
+    mv -f "$bin.new" "$bin"
+    sed "s|@BIN@|$bin|" data/org.beijingcode.PhotoManager.desktop > "$apps/org.beijingcode.PhotoManager.desktop"
+    cp assets/photomanager.svg "$icons/org.beijingcode.PhotoManager.svg"
+    update-desktop-database -q "$apps" 2>/dev/null || true
+    gtk-update-icon-cache -q -t "$HOME/.local/share/icons/hicolor" 2>/dev/null || true
+    echo "installed $bin"
+
+# take the installed application away again; the cache and the settings stay
+uninstall:
+    rm -f "$HOME/.local/bin/{{app}}" \
+        "$HOME/.local/share/applications/org.beijingcode.PhotoManager.desktop" \
+        "$HOME/.local/share/icons/hicolor/scalable/apps/org.beijingcode.PhotoManager.svg"
+
 # unit tests, without the ones that need a display
 test:
     cargo test --workspace {{dev}} --features photomanager-core/fixtures

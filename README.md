@@ -29,6 +29,7 @@ not another viewer. It is the thing that finds what is wrong, shows you what it 
 changes it only when you say so.
 
 <p align="center"><img src="assets/dashboard.png" alt="The dashboard, showing what the library holds and what it is missing"></p>
+<p align="center"><a href="assets/screenshots/README.md">more screenshots</a></p>
 
 ## Why photoManager
 
@@ -92,6 +93,7 @@ $ just run       # run it against your library
 $ just check     # format, lint and test
 $ just fixture   # write a small stand-in library to /tmp
 $ just ui        # open the app on that stand-in library, in a session of its own
+$ just install   # a release build in ~/.local/bin, with its icon, in the app launcher
 ```
 
 By default the library is expected at `~/Nextcloud/Photos`; `PHOTOMANAGER_LIBRARY` points it

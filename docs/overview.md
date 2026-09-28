@@ -154,7 +154,10 @@ shortcuts and tests all use:
 
 ## Running and testing
 
-`just build`, `just run`, `just check`. Tests come in three kinds:
+`just build`, `just run`, `just check`. `just install` puts a release build in `~/.local/bin`
+with a desktop file and the icon, so it starts from the GNOME launcher like any other
+application; it replaces only those three, so the cache, the place data and the settings carry
+over from one install to the next. Tests come in three kinds:
 
 - unit tests in `core`, no display needed,
 - widget tests that build the window and drive its actions,

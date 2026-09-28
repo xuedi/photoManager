@@ -1,0 +1,11 @@
+[Desktop Entry]
+Type=Application
+Name=Photo Manager
+GenericName=Photo Library Manager
+Comment=Put your photo library's data in order
+Exec=@BIN@
+Icon=org.beijingcode.PhotoManager
+Terminal=false
+Categories=Graphics;Photography;GTK;GNOME;
+Keywords=photo;picture;metadata;exif;xmp;tags;gps;places;library;
+StartupNotify=true
