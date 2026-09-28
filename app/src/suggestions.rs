@@ -44,6 +44,8 @@ mod imp {
         pub asking: Cell<u64>,
         pub busy: Cell<bool>,
         pub applying: Cell<bool>,
+        /// Pulses the bar after an apply, until the fixes left are found.
+        pub checking: RefCell<Option<glib::SourceId>>,
         /// Checks set from code, which are no clicks.
         pub setting: Cell<bool>,
         pub toast: RefCell<String>,
@@ -141,6 +143,7 @@ impl Suggestions {
             }
             page.show();
             page.tell();
+            page.checked();
         });
     }
 
@@ -247,14 +250,11 @@ impl Suggestions {
                 imp.progress.set_text(Some(&note));
             }
             Event::Fixed(passes) => {
-                self.running(false);
                 imp.ticked.borrow_mut().clear();
                 self.say(&told(&passes));
                 *imp.applied.borrow_mut() = Some(passes);
                 self.show();
-                if let Some(window) = self.root().and_downcast::<crate::window::Window>() {
-                    window.scan(photomanager_core::scan::Mode::Reconcile);
-                }
+                self.check();
             }
             Event::Failed(why) => {
                 self.running(false);
@@ -262,6 +262,34 @@ impl Suggestions {
                 tracing::error!(why, "the suggestions were not applied");
             }
             _ => {}
+        }
+    }
+
+    /// Keeps the page busy while the fixes left are found again, which the scan after an apply
+    /// sets off; the list and the count change together once they are there.
+    fn check(&self) {
+        let imp = self.imp();
+        imp.cancel.set_visible(false);
+        imp.progress.set_text(Some("Checking what is left"));
+        let page = self.downgrade();
+        let pulse = glib::timeout_add_local(std::time::Duration::from_millis(150), move || match page.upgrade() {
+            Some(page) => {
+                page.imp().progress.pulse();
+                glib::ControlFlow::Continue
+            }
+            None => glib::ControlFlow::Break,
+        });
+        *imp.checking.borrow_mut() = Some(pulse);
+        match self.root().and_downcast::<crate::window::Window>() {
+            Some(window) => window.scan(photomanager_core::scan::Mode::Reconcile),
+            None => self.ask(),
+        }
+    }
+
+    fn checked(&self) {
+        if let Some(pulse) = self.imp().checking.take() {
+            pulse.remove();
+            self.running(false);
         }
     }
 
