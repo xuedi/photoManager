@@ -46,6 +46,12 @@ template $PmGallery: Adw.BreakpointBin {
                 label: "Tags";
                 tooltip: "The tag tree";
               }
+
+              Adw.Toggle {
+                name: "people";
+                label: "People";
+                tooltip: "Who the photos name";
+              }
             }
 
             Stack sidebars {
@@ -88,6 +94,54 @@ template $PmGallery: Adw.BreakpointBin {
                       label: "Tags";
                     }
                   };
+                };
+              }
+
+              StackPage {
+                name: "people";
+
+                child: Box {
+                  orientation: vertical;
+
+                  SearchEntry people_search {
+                    placeholder-text: "Search People";
+                    margin-start: 6;
+                    margin-end: 6;
+                    margin-bottom: 6;
+
+                    accessibility {
+                      label: "Search People";
+                    }
+                  }
+
+                  ScrolledWindow {
+                    hscrollbar-policy: never;
+                    vexpand: true;
+
+                    child: ListView people_list {
+                      single-click-activate: true;
+
+                      styles [
+                        "navigation-sidebar",
+                      ]
+
+                      accessibility {
+                        label: "People";
+                      }
+                    };
+                  }
+
+                  Adw.StatusPage people_empty {
+                    visible: false;
+                    vexpand: true;
+                    icon-name: "avatar-default-symbolic";
+                    title: "No People";
+                    description: "No photo names a person yet.";
+
+                    styles [
+                      "compact",
+                    ]
+                  }
                 };
               }
             }
@@ -150,12 +204,6 @@ template $PmGallery: Adw.BreakpointBin {
                 spacing: 6;
                 halign: end;
 
-                Box chips {
-                  orientation: horizontal;
-                  spacing: 6;
-                  valign: center;
-                }
-
                 DropDown gap {
                   valign: center;
                   tooltip-text: "Only the photos missing a field";
@@ -173,6 +221,19 @@ template $PmGallery: Adw.BreakpointBin {
                     label: "Sort By";
                   }
                 }
+              }
+            }
+
+            Adw.WrapBox chips {
+              visible: false;
+              child-spacing: 6;
+              line-spacing: 6;
+              margin-bottom: 6;
+              margin-start: 6;
+              margin-end: 6;
+
+              accessibility {
+                label: "Filter";
               }
             }
 

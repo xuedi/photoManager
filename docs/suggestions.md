@@ -17,7 +17,7 @@ refused for good is no fix and is not listed.
 | Finder | One fix is | Sure when |
 |--------|------------|-----------|
 | Tag Tree | one rename rule, or the tag fields that disagree | the shape of the tree leaves one place for the tag |
-| People | one person Immich names | exactly one people tag has the person's name |
+| People | one person Immich names | no other person in Immich has the name |
 | Places from Tags | one places tag of photos without GPS | the place data knows the name exactly |
 | Places from Events | one event with photos without GPS | every located photo of the event stands in one town |
 | Folders | one event off the folder layout | every level of its folder is sure |
@@ -86,27 +86,36 @@ is where they are made.
 ## People
 
 Immich knows who is in the photos: its face recognition found the faces and a person named them.
-The files know it only where someone tagged a person by hand. This finder writes what Immich knows
-into the files, so a photo moved or renamed later loses nothing that only Immich knew. Immich is
-only read, never written.
+The files know it only where an older program drew a box or someone named a person by hand. This
+finder writes what Immich knows into the files, so a photo moved or renamed later loses nothing
+that only Immich knew. A person is a field of the photo of its own - the face regions and the
+persons - not a tag: the `people` tags are neither read nor written here. Immich is only read,
+never written.
 
 - **What it reads.** The snapshot beside the cache, fetched with **Get People from Immich** on the
   dashboard ([cache.md](cache.md#what-immich-knows)): Immich's address is set in Preferences, its
   API key is kept in the GNOME keyring. A person without a name, or hidden, is never written.
-- **Sure** is one tag of the people tree with the person's exact name, in either spelling of the
-  root. Two tags of that name, or a name that is only near one, are not sure: rename the tag or
-  the person in Immich until they agree.
-- **What a photo gets.** A face region for the person, named with the last level of the person's
-  tag; the person named in `PersonInImage`; and the tag in all five tag fields with every level.
-  What it carried stays: a tag is only added. The region list is replaced as a whole, so Immich
-  decides the faces.
+- **Sure** is Immich's name, as it is, whatever the tags call the person. Two persons of one name
+  in Immich are not sure, since the files could not tell them apart: their fix is listed as
+  refused, with why, until one of them is renamed there. A person renamed in Immich and fetched
+  again gets a new fix that renames them in the files.
+- **What a photo gets.** Immich's faces of the ticked persons, merged into what the photo already
+  says - never replacing it. A box the file has on the same face as one of Immich's (most of the
+  smaller box covered) takes Immich's name and box; a box of the same name elsewhere in the photo
+  gives way to Immich's too, as a person is in a photo once. Every other box stays exactly as it
+  was, and so does every person the file names without a box. `PersonInImage` then names every
+  box, then everyone without one. Nothing else is written: no tag, no date, no place.
+- **One person at a time.** A photo of two persons gets the one ticked; the other stays for their
+  own fix.
 - **The boxes.** Immich measures a face on its preview, turned the way the photo is shown. The
   file wants the box on the stored picture, before any turn, so every box is turned back by the
   photo's orientation - each of the eight - and clamped to the picture, and the stored size is
   written with it.
 - **Refused, with why.** A photo Immich has offline; one whose stored size or turn is not what
   Immich saw, or whose faces were measured on a picture of another shape, because its boxes would
-  land somewhere else. A person whose photos all say it already, or are all refused, is no fix.
+  land somewhere else. A photo whose own boxes were measured on a picture of another shape, since
+  the kept boxes and Immich's would not fit together, and one with a box without a name, which a
+  write could not keep. A person whose photos all say it already, or are all refused, is no fix.
 - **Immich afterwards.** A write changes a photo's modification time, so Immich reads it again on
   its next library scan and matches the faces to the old ones by where they are; a write that
   changes only metadata keeps every face on the same person. Immich's own face import is to stay

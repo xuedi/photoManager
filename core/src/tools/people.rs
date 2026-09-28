@@ -1,32 +1,32 @@
-//! People from Immich: who Immich found in each photo, written into the photo itself. One
-//! question per named person, answered with the people tag that person is; then each photo gets
-//! a face region for every answered person Immich found in it, the persons named, and their tags.
+//! People from Immich: who Immich found in each photo, written into the photo itself under the
+//! name Immich gives them, with a face box on each face. A person is sure when Immich has no one
+//! else of that name.
 //!
-//! Immich is the master for the faces and the files for the tags: the region list is replaced as
-//! a whole, a tag is only ever added. What Immich knows comes from the snapshot beside the cache,
-//! fetched on a button; this tool never talks to Immich itself.
+//! What the file says about people is merged, never replaced: a box on a face Immich found too
+//! takes Immich's name and box, every other box stays as it is, and a person named without a box
+//! stays named. Tags are not touched: a person is not a tag. What Immich knows comes from the
+//! snapshot beside the cache, fetched on a button; this never talks to Immich itself.
 
-use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
+use std::collections::{BTreeMap, BTreeSet, HashMap};
 
 use unicode_normalization::UnicodeNormalization;
 
-use super::{Answer, Answers, Offer, Question, Tool};
-use crate::browse::{self, TagTree};
+use crate::browse;
 use crate::cache::{self, Cache};
 use crate::changeset::{self, Wanted};
 use crate::filter::Filter;
-use crate::geo::Geo;
 use crate::immich::{self, Asset, Face, Person, Snapshot, boxes};
+use crate::metadata::Regions;
 use crate::scope::Scope;
 use crate::tags;
 use crate::write::{self, Change, Faces, Field};
-
-pub struct PeopleFromImmich;
 
 /// The root every person's tag is under, in either spelling.
 const PEOPLE: &str = "people";
 /// How far the shape of the picture Immich measured on may be from the file's.
 const SHAPE: f64 = 0.02;
+/// How much of the smaller of two boxes the other must cover for both to be on one face.
+const SAME_FACE: f64 = 0.5;
 
 /// What the snapshot says, arranged for asking about photos.
 struct Known {
@@ -77,10 +77,6 @@ impl Known {
     }
 }
 
-fn failed(why: String) -> rusqlite::Error {
-    rusqlite::Error::SqliteFailure(rusqlite::ffi::Error::new(1), Some(why))
-}
-
 /// Lower case and one spelling of every letter, so `Anna` and `anna` are one name.
 fn fold(name: &str) -> String {
     name.trim().nfc().collect::<String>().to_lowercase()
@@ -94,16 +90,6 @@ fn is_people(path: &str) -> bool {
     path.split('/')
         .next()
         .is_some_and(|root| root.eq_ignore_ascii_case(PEOPLE))
-}
-
-/// Every person tag of the tree: the tags under `people` nothing is below, in either spelling
-/// of the root, with how many photos carry each.
-fn person_tags(tree: &TagTree) -> Vec<(String, i64)> {
-    tree.nodes()
-        .filter(|(path, _)| is_people(path) && path.contains('/'))
-        .filter(|(path, _)| tree.children(path).is_empty())
-        .map(|(path, count)| (path.to_string(), count))
-        .collect()
 }
 
 fn words(name: &str) -> Vec<&str> {
@@ -132,246 +118,240 @@ fn nearness(name: &str, tag: &str) -> Option<f64> {
     (shorter >= 4 && browse::distance(&name, &tag) <= allowed).then_some(0.5)
 }
 
-/// A new tag for a person no tag names yet.
-fn new_tag(name: &str) -> Option<String> {
-    let cleaned: String = name
-        .trim()
-        .replace(['/', '|'], " ")
-        .split_whitespace()
-        .collect::<Vec<&str>>()
-        .join(" ");
-    tags::path(&format!("{PEOPLE}/{cleaned}")).ok()
+/// A person Immich names in the library's photos, and what writing them would come to.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Found {
+    /// Immich's id of the person.
+    pub id: String,
+    pub name: String,
+    /// Photos writing them would change.
+    pub photos: usize,
+    /// Why nothing can be written for them, when nothing can.
+    pub refused: Option<String>,
 }
 
-/// What a person could be tagged as, best first: the one tag of the same name is sure; tags of
-/// nearly the same name follow, then a new tag.
-fn offers(name: &str, known: &[(String, i64)]) -> Vec<Offer> {
-    let tag = |path: &str, confidence: f64, words: String| Offer {
-        confidence,
-        ..Offer::of_answer(Answer::Tag(path.to_string()), words)
-    };
-    let exact: Vec<&(String, i64)> = known
-        .iter()
-        .filter(|(path, _)| fold(leaf(path)) == fold(name))
-        .collect();
-    let mut offered: Vec<Offer> = exact
-        .iter()
-        .map(|(path, _)| {
-            Offer {
-                exact: true,
-                ..tag(path, 1.0, path.clone())
-            }
-            .with_sure(exact.len() == 1)
-        })
-        .collect();
-    let mut near: Vec<(f64, i64, &String)> = known
-        .iter()
-        .filter(|(path, _)| fold(leaf(path)) != fold(name))
-        .filter_map(|(path, count)| Some((nearness(name, path)?, *count, path)))
-        .collect();
-    near.sort_by(|one, other| {
-        other
-            .0
-            .total_cmp(&one.0)
-            .then(other.1.cmp(&one.1))
-            .then(one.2.cmp(other.2))
-    });
-    offered.extend(
-        near.iter()
-            .take(5)
-            .map(|(confidence, _, path)| tag(path, *confidence, (*path).clone())),
-    );
-    if exact.is_empty()
-        && let Some(path) = new_tag(name)
-    {
-        offered.push(tag(&path, 0.3, format!("{path}, a new tag")));
-    }
-    offered
+/// Why a person cannot be written at all: another person in Immich has the same name, and the
+/// files would not tell the two apart.
+fn ambiguous(known: &Known, person: &Person) -> Option<String> {
+    let twins = known
+        .people
+        .values()
+        .filter(|other| other.named() && fold(&other.name) == fold(&person.name))
+        .count();
+    (twins > 1).then(|| {
+        format!(
+            "Immich has {twins} persons named {}: rename one there so the files can tell them apart",
+            person.name.trim()
+        )
+    })
 }
 
-/// The tag each person was answered with, by Immich person id. Left alone is no tag.
-fn tag_of(answers: &Answers, person: &Person) -> Option<String> {
-    match answers.get(&person.id) {
-        Some(Answer::Tag(path)) => Some(path.clone()),
-        _ => None,
-    }
-}
-
-impl Tool for PeopleFromImmich {
-    type Settings = Answers;
-
-    fn questions(
-        &self,
-        cache: &Cache,
-        _geo: Option<&Geo>,
-        scope: &Scope,
-        answers: &Answers,
-    ) -> Result<Vec<Question>, String> {
-        let Some(known) = Known::load(cache)? else {
-            return Ok(Vec::new());
-        };
-        let mut photos: BTreeMap<&str, BTreeSet<&str>> = BTreeMap::new();
-        for rel_path in scope.paths(cache).map_err(|error| error.to_string())? {
-            let Some(asset) = known.assets.get(&rel_path) else {
-                continue;
-            };
-            for (_, person) in known.named(asset) {
-                photos.entry(person.id.as_str()).or_default().insert(asset.id.as_str());
-            }
-        }
-        let tags = person_tags(&TagTree::take(cache).map_err(|error| error.to_string())?);
-        let mut questions: Vec<Question> = photos
-            .into_iter()
-            .filter_map(|(id, assets)| {
-                let person = known.people.get(id)?;
-                Some(Question {
-                    answer: answers.get(id).cloned(),
-                    ..Question::place(id, person.name.clone(), assets.len(), offers(&person.name, &tags))
-                })
-            })
-            .collect();
-        questions.sort_by(|one, other| other.photos.cmp(&one.photos).then(one.title.cmp(&other.title)));
-        Ok(questions)
-    }
-
-    fn wanted(
-        &self,
-        cache: &Cache,
-        _geo: Option<&Geo>,
-        scope: &Scope,
-        answers: &Answers,
-    ) -> cache::Result<Vec<Wanted>> {
-        let Some(known) = Known::load(cache).map_err(failed)? else {
-            return Ok(Vec::new());
-        };
-        let paths = scope.paths(cache)?;
-        let in_scope: HashSet<&String> = paths.iter().collect();
-        let mut chosen: Vec<String> = Vec::new();
-        for rel_path in &paths {
-            if let Some(asset) = known.assets.get(rel_path)
-                && known.named(asset).any(|(_, person)| tag_of(answers, person).is_some())
-            {
-                chosen.push(rel_path.clone());
-            }
-        }
-        let stated = cache.stated(&chosen)?;
-        let shapes = cache.shapes(&chosen)?;
-
-        let mut wanted = Vec::new();
-        for rel_path in &chosen {
-            let (Some(asset), Some(photo)) = (known.assets.get(rel_path), stated.get(rel_path)) else {
-                continue;
-            };
-            let shape = shapes.get(rel_path).copied().unwrap_or_default();
-            let found: Vec<(&Face, String)> = known
-                .named(asset)
-                .filter_map(|(face, person)| Some((face, tag_of(answers, person)?)))
-                .collect();
-
-            let mut fields = Vec::new();
-            let mut then = photo.said.tags.clone();
-            let mut added = false;
-            for (_, tag) in &found {
-                if !then.contains(tag) {
-                    then.push(tag.clone());
-                    added = true;
-                }
-            }
-            if added {
-                fields.push(Field::Tags(tags::deepest(&then)));
-            }
-            let faces = shape.width.zip(shape.height).map(|(width, height)| {
-                let mut faces: Vec<write::Face> = found
-                    .iter()
-                    .filter_map(|(face, tag)| {
-                        let area = boxes::stored(face, shape.orientation)?;
-                        Some(write::Face {
-                            name: leaf(tag).to_string(),
-                            x: area.x,
-                            y: area.y,
-                            width: area.w,
-                            height: area.h,
-                        })
-                    })
-                    .collect();
-                faces.sort_by(|one, other| one.x.total_cmp(&other.x).then(one.y.total_cmp(&other.y)));
-                Faces { width, height, faces }
-            });
-            if let Some(faces) = faces.filter(|faces| !faces.faces.is_empty())
-                && !changeset::regions_say(photo.said.regions.as_ref(), &faces)
-            {
-                fields.push(Field::Faces(Some(faces)));
-            }
-            if fields.is_empty() {
-                continue;
-            }
-            wanted.push(match refusal(asset, shape, &found) {
-                Some(why) => Wanted::refused(rel_path.clone(), why),
-                None => Wanted::new(rel_path.clone(), Change::of(fields)),
-            });
-        }
-
-        if *scope == Scope::Filter(Filter::all()) {
-            let mut unknown: Vec<&String> = known
-                .assets
-                .iter()
-                .filter(|(rel_path, asset)| {
-                    !in_scope.contains(rel_path)
-                        && known.named(asset).any(|(_, person)| tag_of(answers, person).is_some())
-                })
-                .map(|(rel_path, _)| rel_path)
-                .collect();
-            unknown.sort();
-            wanted.extend(
-                unknown
-                    .into_iter()
-                    .map(|rel_path| Wanted::refused(rel_path.clone(), "Immich knows it, the library does not")),
-            );
-        }
-        Ok(wanted)
-    }
-}
-
-/// The persons whose tag is sure - one people tag has their exact name - each with how many
-/// photos writing them would change. A person every photo already says is not among them.
-pub fn sure(cache: &Cache) -> Result<Vec<(Question, usize)>, String> {
-    let whole = Scope::Filter(Filter::all());
-    let asked: Vec<Question> = PeopleFromImmich
-        .questions(cache, None, &whole, &Answers::default())?
-        .into_iter()
-        .filter(Question::confirmable)
-        .collect();
-    let (Some(known), false) = (Known::load(cache)?, asked.is_empty()) else {
+/// Every person Immich names in the photos of the library whose photos do not all say them yet,
+/// the most photos first. A person the files cannot tell from another is listed as refused.
+pub fn sure(cache: &Cache) -> Result<Vec<Found>, String> {
+    let Some(known) = Known::load(cache)? else {
         return Ok(Vec::new());
     };
-    let mut answers = Answers::default();
-    for question in &asked {
-        answers.set(&question.key, question.sure().map(|offer| offer.answer.clone()));
-    }
-    let changed: HashSet<String> = PeopleFromImmich
-        .wanted(cache, None, &whole, &answers)
-        .map_err(|error| error.to_string())?
-        .into_iter()
-        .filter(|wanted| wanted.refused.is_none())
-        .map(|wanted| wanted.rel_path)
-        .collect();
-    let mut photos: HashMap<&str, usize> = HashMap::new();
-    for rel_path in &changed {
-        let Some(asset) = known.assets.get(rel_path) else {
+    let failed = |error: rusqlite::Error| error.to_string();
+    let mut photos: BTreeMap<&str, Vec<String>> = BTreeMap::new();
+    for rel_path in Scope::Filter(Filter::all()).paths(cache).map_err(failed)? {
+        let Some(asset) = known.assets.get(&rel_path) else {
             continue;
         };
-        let persons: HashSet<&str> = known.named(asset).map(|(_, person)| person.id.as_str()).collect();
-        for person in persons {
-            *photos.entry(person).or_default() += 1;
+        let persons: BTreeSet<&str> = known.named(asset).map(|(_, person)| person.id.as_str()).collect();
+        for id in persons {
+            photos.entry(id).or_default().push(rel_path.clone());
         }
     }
-    Ok(asked
+    let every: Vec<String> = photos
+        .values()
+        .flatten()
+        .cloned()
+        .collect::<BTreeSet<_>>()
         .into_iter()
-        .filter_map(|question| {
-            let count = photos.get(question.key.as_str()).copied().unwrap_or_default();
-            (count > 0).then_some((question, count))
+        .collect();
+    let stated = cache.stated(&every).map_err(failed)?;
+    let shapes = cache.shapes(&every).map_err(failed)?;
+
+    let mut found = Vec::new();
+    for (id, rel_paths) in photos {
+        let Some(person) = known.people.get(id) else {
+            continue;
+        };
+        let refused = ambiguous(&known, person);
+        let chosen = BTreeSet::from([id.to_string()]);
+        let changed = rel_paths
+            .iter()
+            .filter(|rel_path| {
+                let said = stated.get(*rel_path).and_then(|stated| stated.said.regions.as_ref());
+                let shape = shapes.get(*rel_path).copied().unwrap_or_default();
+                let asset = &known.assets[*rel_path];
+                matches!(merged(&known, asset, said, shape, &chosen), Some(Ok(_)))
+            })
+            .count();
+        let photos = match refused {
+            Some(_) => rel_paths.len(),
+            None => changed,
+        };
+        if photos > 0 && (refused.is_none() || changed > 0) {
+            found.push(Found {
+                id: id.to_string(),
+                name: person.name.trim().to_string(),
+                photos,
+                refused,
+            });
+        }
+    }
+    found.sort_by(|one, other| other.photos.cmp(&one.photos).then(one.name.cmp(&other.name)));
+    Ok(found)
+}
+
+/// Writes these persons, by Immich id, into the photos of the scope Immich finds them in.
+pub fn wanted(cache: &Cache, persons: &BTreeSet<String>, scope: &Scope) -> cache::Result<Vec<Wanted>> {
+    let Some(known) = Known::load(cache).map_err(failed)? else {
+        return Ok(Vec::new());
+    };
+    let chosen: Vec<String> = scope
+        .paths(cache)?
+        .into_iter()
+        .filter(|rel_path| {
+            known
+                .assets
+                .get(rel_path)
+                .is_some_and(|asset| known.named(asset).any(|(_, person)| persons.contains(&person.id)))
         })
-        .collect())
+        .collect();
+    let stated = cache.stated(&chosen)?;
+    let shapes = cache.shapes(&chosen)?;
+    let refused: HashMap<&str, String> = persons
+        .iter()
+        .filter_map(|id| Some((id.as_str(), ambiguous(&known, known.people.get(id)?)?)))
+        .collect();
+
+    let mut wanted = Vec::new();
+    for rel_path in &chosen {
+        let asset = &known.assets[rel_path];
+        let why = known
+            .named(asset)
+            .find_map(|(_, person)| refused.get(person.id.as_str()).cloned());
+        if let Some(why) = why {
+            wanted.push(Wanted::refused(rel_path.clone(), why));
+            continue;
+        }
+        let said = stated.get(rel_path).and_then(|stated| stated.said.regions.as_ref());
+        let shape = shapes.get(rel_path).copied().unwrap_or_default();
+        match merged(&known, asset, said, shape, persons) {
+            Some(Ok(faces)) => wanted.push(Wanted::new(rel_path.clone(), Change::of([Field::Faces(Some(faces))]))),
+            Some(Err(why)) => wanted.push(Wanted::refused(rel_path.clone(), why)),
+            None => {}
+        }
+    }
+    Ok(wanted)
+}
+
+/// How much of the smaller box the two share, from 0 to 1.
+fn shared(one: &write::Face, other: &write::Face) -> f64 {
+    let span = |centre: f64, size: f64| (centre - size / 2.0, centre + size / 2.0);
+    let overlap = |(a0, a1): (f64, f64), (b0, b1): (f64, f64)| (a1.min(b1) - a0.max(b0)).max(0.0);
+    let across = overlap(span(one.x, one.width), span(other.x, other.width));
+    let down = overlap(span(one.y, one.height), span(other.y, other.height));
+    let smaller = (one.width * one.height).min(other.width * other.height);
+    match smaller > 0.0 {
+        true => across * down / smaller,
+        false => 0.0,
+    }
+}
+
+/// The regions a photo gets when the chosen persons Immich found in it are merged into what it
+/// says: `None` when it says that already or Immich finds none of them in it, `Err` when a box
+/// would land somewhere else than the face or something the file says would be lost.
+fn merged(
+    known: &Known,
+    asset: &Asset,
+    said: Option<&Regions>,
+    shape: cache::Shape,
+    persons: &BTreeSet<String>,
+) -> Option<Result<Faces, String>> {
+    let found: Vec<(&Face, &Person)> = known
+        .named(asset)
+        .filter(|(_, person)| persons.contains(&person.id))
+        .collect();
+    if found.is_empty() {
+        return None;
+    }
+    if let Some(why) = refusal(asset, shape, &found) {
+        return Some(Err(why));
+    }
+    let (Some(width), Some(height)) = (shape.width, shape.height) else {
+        return Some(Err("the scan found no size for it".to_string()));
+    };
+    let immich: Vec<write::Face> = found
+        .iter()
+        .filter_map(|(face, person)| {
+            let area = boxes::stored(face, shape.orientation)?;
+            Some(write::Face {
+                name: person.name.trim().to_string(),
+                x: area.x,
+                y: area.y,
+                width: area.w,
+                height: area.h,
+            })
+        })
+        .collect();
+    if immich.is_empty() {
+        return None;
+    }
+    let names: BTreeSet<String> = immich.iter().map(|face| fold(&face.name)).collect();
+
+    let (old, persons) = match said {
+        Some(said) => (said.faces.as_slice(), said.persons.as_slice()),
+        None => (&[][..], &[][..]),
+    };
+    let kept: Vec<&write::Face> = old
+        .iter()
+        .filter(|face| !names.contains(&fold(&face.name)))
+        .filter(|face| !immich.iter().any(|new| shared(face, new) >= SAME_FACE))
+        .collect();
+    if kept.iter().any(|face| face.name.trim().is_empty()) {
+        return Some(Err("a face box without a name would be lost".to_string()));
+    }
+    if let Some(said) = said
+        && !kept.is_empty()
+        && let (Some(their_width), Some(their_height)) = (said.width, said.height)
+    {
+        let theirs = their_width as f64 / their_height.max(1) as f64;
+        let ours = width as f64 / height as f64;
+        if (theirs / ours - 1.0).abs() > SHAPE {
+            return Some(Err(format!(
+                "its face boxes were measured on a picture of {their_width} by {their_height}, the file is {width} by {height}"
+            )));
+        }
+    }
+
+    let mut faces: Vec<write::Face> = kept.into_iter().cloned().chain(immich).collect();
+    faces.sort_by(|one, other| one.x.total_cmp(&other.x).then(one.y.total_cmp(&other.y)));
+    let boxed_before: BTreeSet<String> = old.iter().map(|face| fold(&face.name)).collect();
+    let boxed_after: BTreeSet<String> = faces.iter().map(|face| fold(&face.name)).collect();
+    let mut unboxed: Vec<String> = Vec::new();
+    for name in persons.iter().map(|name| name.trim()) {
+        let folded = fold(name);
+        if !boxed_before.contains(&folded)
+            && !boxed_after.contains(&folded)
+            && !unboxed.iter().any(|known| fold(known) == folded)
+        {
+            unboxed.push(name.to_string());
+        }
+    }
+    let faces = Faces {
+        width,
+        height,
+        faces,
+        persons: unboxed,
+    };
+    match changeset::regions_say(said, &faces) {
+        true => None,
+        false => Some(Ok(faces)),
+    }
 }
 
 /// The photos among these in which Immich names someone the file does not: no face region and no
@@ -421,7 +401,7 @@ pub fn untold(cache: &Cache, rel_paths: &[String]) -> Result<Option<BTreeMap<Str
 
 /// Why a box would land somewhere else than the face, if it would: the photo is offline in
 /// Immich, or the file is not the picture Immich measured the faces on.
-fn refusal(asset: &Asset, shape: cache::Shape, found: &[(&Face, String)]) -> Option<String> {
+fn refusal(asset: &Asset, shape: cache::Shape, found: &[(&Face, &Person)]) -> Option<String> {
     if asset.offline {
         return Some("Immich has it offline".to_string());
     }
@@ -452,6 +432,10 @@ fn refusal(asset: &Asset, shape: cache::Shape, found: &[(&Face, String)]) -> Opt
         .map(|(face, _)| face.image_width as f64 / face.image_height.max(1) as f64)
         .find(|measured| (measured / shown - 1.0).abs() > SHAPE);
     measured.map(|_| "Immich measured the faces on a picture of another shape".to_string())
+}
+
+fn failed(why: String) -> rusqlite::Error {
+    rusqlite::Error::SqliteFailure(rusqlite::ffi::Error::new(1), Some(why))
 }
 
 #[cfg(all(test, feature = "fixtures"))]

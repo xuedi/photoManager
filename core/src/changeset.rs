@@ -506,7 +506,9 @@ fn difference(field: &Field, said: Option<&Said>) -> Difference {
             },
         },
         Field::Faces(faces) => {
-            let after = shown_faces(faces.as_ref().map(|faces| faces.faces.as_slice()).unwrap_or_default());
+            let after = faces
+                .as_ref()
+                .map_or(NONE.to_string(), |faces| shown_people(&faces.faces, &faces.persons));
             Difference {
                 what: "people",
                 before: said.map(|said| shown_regions(said.regions.as_ref(), faces.as_ref(), &after)),
@@ -528,30 +530,39 @@ fn difference(field: &Field, said: Option<&Said>) -> Difference {
 
 /// Whether a photo's regions already say what these faces would, as far as the cache knows.
 pub fn regions_say(said: Option<&Regions>, wanted: &change::Faces) -> bool {
-    let after = shown_faces(&wanted.faces);
+    let after = shown_people(&wanted.faces, &wanted.persons);
     shown_regions(said, Some(wanted), &after) == after
 }
 
-/// The names of the regions, in the order the file lists them.
-fn shown_faces(faces: &[change::Face]) -> String {
-    match faces.is_empty() {
+/// The names of the boxes in the order the file lists them, then the persons without one.
+fn shown_people(faces: &[change::Face], persons: &[String]) -> String {
+    let boxed: Vec<&str> = faces.iter().map(|face| face.name.trim()).collect();
+    let mut unboxed: Vec<&str> = Vec::new();
+    for name in persons.iter().map(|name| name.trim()) {
+        if !name.is_empty() && !boxed.contains(&name) && !unboxed.contains(&name) {
+            unboxed.push(name);
+        }
+    }
+    let unboxed = unboxed.into_iter().map(|name| format!("{name} (no box)"));
+    let all: Vec<String> = boxed.iter().map(|name| name.to_string()).chain(unboxed).collect();
+    match all.is_empty() {
         true => NONE.to_string(),
-        false => faces
-            .iter()
-            .map(|face| face.name.trim())
-            .collect::<Vec<&str>>()
-            .join(", "),
+        false => all.join(", "),
     }
 }
 
 /// What the photo's regions say, and when they name the same people as the change but differ in
 /// anything else, what: so a row never reads as settled when a box would still move.
 fn shown_regions(said: Option<&Regions>, wanted: Option<&change::Faces>, after: &str) -> String {
-    let names = shown_faces(said.map(|said| said.faces.as_slice()).unwrap_or_default());
+    let names = said.map_or(NONE.to_string(), |said| shown_people(&said.faces, &said.persons));
     let persons_differ = || {
         let mut named: Vec<String> = said.map(|said| said.persons.clone()).unwrap_or_default();
         let mut wanted: Vec<String> = wanted
-            .map(|wanted| wanted.faces.iter().map(|face| face.name.trim().to_string()).collect())
+            .map(|wanted| {
+                let boxed = wanted.faces.iter().map(|face| face.name.trim().to_string());
+                let unboxed = wanted.persons.iter().map(|name| name.trim().to_string());
+                boxed.chain(unboxed).filter(|name| !name.is_empty()).collect()
+            })
             .unwrap_or_default();
         for list in [&mut named, &mut wanted] {
             list.sort();

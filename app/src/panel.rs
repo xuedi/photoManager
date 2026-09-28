@@ -339,11 +339,17 @@ impl Panel {
         match details.people.is_empty() {
             true => self.note(&group, "No people"),
             false => {
-                for name in &details.people {
+                for (name, boxed) in &details.people {
                     let row = adw::ActionRow::builder().title(name).use_markup(false).build();
                     row.add_prefix(&gtk::Image::from_icon_name("avatar-default-symbolic"));
+                    match boxed {
+                        true => self.texts.push(format!("Person: {name}")),
+                        false => {
+                            row.set_subtitle("No face box");
+                            self.texts.push(format!("Person: {name}, no face box"));
+                        }
+                    }
                     group.add(&row);
-                    self.texts.push(format!("Person: {name}"));
                 }
             }
         }

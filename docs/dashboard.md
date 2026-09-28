@@ -73,7 +73,7 @@ connection to the cache, so it can run while the cache itself is busy with somet
 | date | it carries no date of its own, the same test as the `no date` issue |
 | date agrees with the folder | its date and its event folder's date are more than a day apart; only the parts the folder states count, so `2006-09-00` compares year and month. Photos without a date, or outside a folder with a year, are not counted either way |
 | tags | it has no tag at all |
-| people | it has no tag under a `people` root, whatever the case of the root |
+| people | it names no person, in a face region or in the IPTC persons; a `people` tag is a tag, not a person |
 | location text | no city in the IPTC or XMP location fields |
 
 A day either side still agrees because photos taken after midnight, or with the camera still on
@@ -142,6 +142,7 @@ narrowed to a folder. It has a written form, which is what a click hands to the
 | `no-gps`, `no-date`, `date-off-folder`, `no-tag`, `no-people`, `no-location` | the photos missing that field |
 | `no-gps@Germany`, `no-gps@Germany/2019-07-13 Sommerfest` | the same, inside a folder or an event folder |
 | `tag:mixed`, `tag:mixed/funny\|mixed/Funny` | photos with any of these tags or a tag below them, compared as spelled |
+| `person:Anna`, `person:Anna\|Ben` | photos naming any of these persons, with a face box or without, compared as spelled |
 | `loose`, `sub-folder`, `off-layout` | the folder findings |
 | `off-name` | the photos not named by their date |
 | `issue:sidecar`, `issue:duplicate content` | files with that issue |

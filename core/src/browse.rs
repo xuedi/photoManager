@@ -1,10 +1,13 @@
-//! What the gallery browses by: the top folders and their events, and the tag tree, each with
-//! how many photos it holds. Counts are of the whole library, so they do not move while the
-//! other controls are changed.
+//! What the gallery browses by: the top folders and their events, the tag tree and the persons,
+//! each with how many photos it holds in the whole library, and how many it would show with the
+//! other parts of a filter.
 
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::{BTreeMap, BTreeSet, HashMap};
+
+use rusqlite::params_from_iter;
 
 use crate::cache::{Cache, Result};
+use crate::filter::Filter;
 
 /// A top folder of the library - a country, a year, whatever the layout starts with - or an
 /// event inside one. An event right in the library root is a top folder with no events.
@@ -57,6 +60,96 @@ pub fn places(cache: &Cache) -> Result<Vec<Place>> {
         }
     }
     Ok(tops)
+}
+
+/// A person the photos name, with or without a face box.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Person {
+    pub name: String,
+    pub photos: i64,
+}
+
+/// Every person the photos name, the most photos first, then by name.
+pub fn people(cache: &Cache) -> Result<Vec<Person>> {
+    let mut statement = cache.connection().prepare(
+        "SELECT name, count(DISTINCT photo_id) AS photos FROM person GROUP BY name ORDER BY photos DESC, name",
+    )?;
+    let rows = statement.query_map([], |row| {
+        Ok(Person {
+            name: row.get(0)?,
+            photos: row.get(1)?,
+        })
+    })?;
+    rows.collect()
+}
+
+/// How many photos each entry of each sidebar would show combined with the parts of the filter
+/// the other sidebars and the gap own: a place counted without the folder, a tag without the tag,
+/// a person without the person. An entry that is not here would show none.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct Following {
+    /// By folder, a top folder and an event alike.
+    pub places: HashMap<String, i64>,
+    /// By path, counting the photos below it once.
+    pub tags: HashMap<String, i64>,
+    /// By name.
+    pub people: HashMap<String, i64>,
+}
+
+pub fn following(cache: &Cache, filter: &Filter) -> Result<Following> {
+    let connection = cache.connection();
+    let mut places = HashMap::new();
+    let (ids, params) = filter.clone().anywhere().ids();
+    let mut statement = connection.prepare(&format!(
+        "SELECT substr(rel_path, 1, instr(rel_path, '/') - 1) AS top, event_dir, count(*) FROM photo
+         WHERE instr(rel_path, '/') > 0 AND id IN ({ids})
+         GROUP BY top, event_dir"
+    ))?;
+    let rows = statement.query_map(params_from_iter(params.iter()), |row| {
+        Ok((
+            row.get::<_, String>(0)?,
+            row.get::<_, Option<String>>(1)?,
+            row.get::<_, i64>(2)?,
+        ))
+    })?;
+    for row in rows {
+        let (top, event_dir, photos) = row?;
+        *places.entry(top.clone()).or_default() += photos;
+        if let Some(folder) = event_dir.filter(|folder| *folder != top) {
+            *places.entry(folder).or_default() += photos;
+        }
+    }
+
+    let (ids, params) = filter.clone().with_tag(None).ids();
+    let mut statement = connection.prepare(&format!(
+        "SELECT photo_id, path FROM tag WHERE photo_id IN ({ids}) ORDER BY photo_id"
+    ))?;
+    let rows = statement.query_map(params_from_iter(params.iter()), |row| {
+        Ok((row.get::<_, i64>(0)?, row.get::<_, String>(1)?))
+    })?;
+    let mut by_photo: Vec<Vec<String>> = Vec::new();
+    let mut last = None;
+    for row in rows {
+        let (id, path) = row?;
+        if last != Some(id) {
+            by_photo.push(Vec::new());
+            last = Some(id);
+        }
+        by_photo.last_mut().expect("just pushed").push(path);
+    }
+    let tags = TagTree::counted(by_photo)
+        .nodes()
+        .map(|(path, count)| (path.to_string(), count))
+        .collect();
+
+    let (ids, params) = filter.clone().with_person(None).ids();
+    let mut statement = connection.prepare(&format!(
+        "SELECT name, count(DISTINCT photo_id) FROM person WHERE photo_id IN ({ids}) GROUP BY name"
+    ))?;
+    let people = statement
+        .query_map(params_from_iter(params.iter()), |row| Ok((row.get(0)?, row.get(1)?)))?
+        .collect::<Result<_>>()?;
+    Ok(Following { places, tags, people })
 }
 
 /// A tag and everything below it.
@@ -332,6 +425,55 @@ mod fixture_tests {
     use super::*;
     use crate::filter::tests::scanned;
     use crate::filter::{Filter, Kind};
+
+    #[test]
+    fn the_counts_follow_the_other_parts_and_each_is_what_choosing_it_shows() {
+        let cache = scanned("browse-following");
+        let whole = following(&cache, &Filter::all()).unwrap();
+        for place in places(&cache).unwrap() {
+            assert_eq!(whole.places.get(&place.folder), Some(&place.photos), "{}", place.folder);
+            for event in &place.events {
+                assert_eq!(whole.places.get(&event.folder), Some(&event.photos), "{}", event.folder);
+            }
+        }
+        let tree = TagTree::take(&cache).unwrap();
+        for (path, count) in tree.nodes() {
+            assert_eq!(whole.tags.get(path), Some(&count), "{path}");
+        }
+        for person in people(&cache).unwrap() {
+            assert_eq!(whole.people.get(&person.name), Some(&person.photos));
+        }
+
+        let chosen = Filter::all()
+            .with_person(Some("Tom"))
+            .with_gap(Some(crate::filter::Gap::Gps));
+        let narrowed = following(&cache, &chosen).unwrap();
+        assert_eq!(narrowed.places.get("Germany"), Some(&1));
+        assert_eq!(narrowed.places.get("China"), None, "a country without Tom shows none");
+        assert_eq!(
+            narrowed.people.get("Mia"),
+            Some(&1),
+            "the person is counted without the person"
+        );
+        assert_eq!(narrowed.people.get("Tom"), Some(&1));
+        for (folder, count) in &narrowed.places {
+            assert_eq!(chosen.clone().within(folder).count(&cache).unwrap(), *count, "{folder}");
+        }
+        for (path, count) in &narrowed.tags {
+            assert_eq!(
+                chosen.clone().with_tag(Some(path)).count(&cache).unwrap(),
+                *count,
+                "{path}"
+            );
+        }
+        for (name, count) in &narrowed.people {
+            assert_eq!(
+                chosen.clone().with_person(Some(name)).count(&cache).unwrap(),
+                *count,
+                "{name}"
+            );
+        }
+    }
 
     #[test]
     fn a_tag_counts_the_photos_below_it_once() {

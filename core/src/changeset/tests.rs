@@ -512,10 +512,11 @@ fn a_region_written_is_read_back_by_the_scan_and_then_settled() {
                 height: 0.2,
             },
         ],
+        persons: vec!["Mia".to_string()],
     };
     let wanted = [Wanted::new(LOCATED, Change::of([Field::Faces(Some(faces.clone()))]))];
     let set = setup.set("Name the faces", &wanted);
-    assert_eq!(set.rows[0].tells(), "people: none -> Anna, Ben");
+    assert_eq!(set.rows[0].tells(), "people: none -> Anna, Ben, Mia (no box)");
     assert_eq!(set.rows[0].verdict, Verdict::Change);
     let summary = setup.apply(&set);
     assert_eq!(summary.written, 1, "{summary:?}");
@@ -528,7 +529,7 @@ fn a_region_written_is_read_back_by_the_scan_and_then_settled() {
         .expect("the scan keeps the regions");
     assert_eq!((read.width, read.height), (Some(24), Some(16)));
     assert_eq!(read.faces, faces.faces, "equal to what was written");
-    assert_eq!(read.persons, ["Anna", "Ben"]);
+    assert_eq!(read.persons, ["Anna", "Ben", "Mia"]);
     let again = setup.set("Name the faces", &wanted);
     assert_eq!(again.rows[0].verdict, Verdict::Nothing, "{}", again.rows[0].tells());
 
@@ -546,6 +547,19 @@ fn a_region_written_is_read_back_by_the_scan_and_then_settled() {
         "Move a box",
         &[Wanted::new(LOCATED, Change::of([Field::Faces(Some(moved))]))],
     );
-    assert_eq!(other.rows[0].tells(), "people: Anna, Ben (other boxes) -> Anna, Ben");
+    assert_eq!(
+        other.rows[0].tells(),
+        "people: Anna, Ben, Mia (no box) (other boxes) -> Anna, Ben, Mia (no box)"
+    );
+
+    let unboxed = crate::write::Faces {
+        persons: Vec::new(),
+        ..faces.clone()
+    };
+    let dropped = setup.set(
+        "Forget who has no box",
+        &[Wanted::new(LOCATED, Change::of([Field::Faces(Some(unboxed))]))],
+    );
+    assert_eq!(dropped.rows[0].tells(), "people: Anna, Ben, Mia (no box) -> Anna, Ben");
     assert_eq!(other.rows[0].verdict, Verdict::Change);
 }

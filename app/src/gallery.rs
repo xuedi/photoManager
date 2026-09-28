@@ -1,7 +1,9 @@
 //! Finding the photos a tool should work on. The page shows exactly `Filter::photos` of one
 //! filter, and each control owns one part of it: the place sidebar the folder, the tag sidebar
-//! the tag, the dropdown the gap. Whatever else the dashboard handed over stays as a chip. Every
-//! change ends in `show`, so a click here and a click on the dashboard end up in the same place.
+//! the tag, the people sidebar the person, the dropdown the gap. Every part, and whatever else the
+//! dashboard handed over, is also a chip above the grid, so what narrows the grid is in sight
+//! whichever sidebar is open or when none is. Every change ends in `show`, so a click here and a
+//! click on the dashboard end up in the same place.
 //!
 //! The grid is a `GtkGridView` over a list store of small cell objects, bound by hand in the
 //! factory. A cell asks for its picture when it is bound and lets go of it when it is unbound.
@@ -17,7 +19,7 @@ use adw::subclass::prelude::*;
 use gtk::glib::subclass::InitializingObject;
 use gtk::{gdk, gio, glib, pango};
 
-use photomanager_core::browse::{Place, Tag};
+use photomanager_core::browse::{Following, Person, Place, Tag};
 use photomanager_core::filter::{Filter, Gap, Kind, Listed, Order};
 use photomanager_core::scope::Scope;
 
@@ -26,6 +28,65 @@ use crate::photo::PhotoPage;
 use crate::thumbnails::{self, Loader, Request, Slot};
 
 const ORDERS: [Order; 2] = [Order::Date, Order::Name];
+
+/// A sidebar, and the part of the filter it owns.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Side {
+    Places,
+    Tags,
+    People,
+}
+
+impl Side {
+    const ALL: [Side; 3] = [Side::Places, Side::Tags, Side::People];
+
+    fn name(self) -> &'static str {
+        match self {
+            Side::Places => "places",
+            Side::Tags => "tags",
+            Side::People => "people",
+        }
+    }
+
+    fn title(self) -> &'static str {
+        match self {
+            Side::Places => "Places",
+            Side::Tags => "Tags",
+            Side::People => "People",
+        }
+    }
+
+    /// The row of this sidebar the filter has chosen, by its key.
+    fn chosen(self, filter: &Filter) -> Option<String> {
+        match self {
+            Side::Places => filter.within.clone(),
+            Side::Tags => chosen_tag(filter),
+            Side::People => match filter.persons() {
+                Some([one]) => Some(one.clone()),
+                _ => None,
+            },
+        }
+    }
+
+    /// How many photos an entry would show with the other parts, when that is known.
+    fn counted(self, following: &Following, key: &str) -> i64 {
+        let counts = match self {
+            Side::Places => &following.places,
+            Side::Tags => &following.tags,
+            Side::People => &following.people,
+        };
+        counts.get(key).copied().unwrap_or(0)
+    }
+
+    /// Whether any part of the filter is this sidebar's to show.
+    fn narrows(self, filter: &Filter) -> bool {
+        match self {
+            Side::Places => filter.within.is_some(),
+            Side::Tags => filter.tags().is_some(),
+            Side::People => filter.persons().is_some(),
+        }
+    }
+}
 
 mod node {
     use super::*;
@@ -74,6 +135,10 @@ mod node {
         pub fn of_tag(tag: &Tag) -> Node {
             let children = tag.children.iter().map(Node::of_tag).collect();
             Node::new(&tag.name, &tag.path, tag.photos, children)
+        }
+
+        pub fn of_person(person: &Person) -> Node {
+            Node::new(&person.name, &person.name, person.photos, Vec::new())
         }
 
         pub fn name(&self) -> String {
@@ -266,11 +331,17 @@ mod imp {
         #[template_child]
         pub tags_list: TemplateChild<gtk::ListView>,
         #[template_child]
+        pub people_search: TemplateChild<gtk::SearchEntry>,
+        #[template_child]
+        pub people_list: TemplateChild<gtk::ListView>,
+        #[template_child]
+        pub people_empty: TemplateChild<adw::StatusPage>,
+        #[template_child]
         pub title: TemplateChild<gtk::Label>,
         #[template_child]
         pub count: TemplateChild<gtk::Label>,
         #[template_child]
-        pub chips: TemplateChild<gtk::Box>,
+        pub chips: TemplateChild<adw::WrapBox>,
         #[template_child]
         pub gap: TemplateChild<gtk::DropDown>,
         #[template_child]
@@ -298,16 +369,26 @@ mod imp {
         pub file_paths: OnceCell<gtk::StringList>,
         pub places: OnceCell<gio::ListStore>,
         pub tags: OnceCell<gio::ListStore>,
+        pub people: OnceCell<gio::ListStore>,
+        pub people_found: OnceCell<gtk::CustomFilter>,
         pub place_tree: OnceCell<gtk::TreeListModel>,
         pub tag_tree: OnceCell<gtk::TreeListModel>,
-        /// Every sidebar row made, so its mark can follow the filter.
-        pub rows: RefCell<Vec<(glib::WeakRef<gtk::ListItem>, bool)>>,
+        /// The dot on each sidebar's tab that says it narrows the grid.
+        pub dots: RefCell<Vec<(Side, gtk::Image)>>,
+        /// Every sidebar row made, so its mark and count can follow the filter.
+        pub rows: RefCell<Vec<(glib::WeakRef<gtk::ListItem>, Side)>>,
+        /// What each entry would show with the other parts of the filter on screen.
+        pub following: RefCell<Option<Following>>,
+        /// The last recount asked for; an older one that comes back later is dropped.
+        pub recount: Cell<u64>,
+        pub recounting: Cell<bool>,
         /// The library version the sidebars were read at.
         pub seen: Cell<Option<u64>>,
         pub loading: Cell<bool>,
         /// A control set from the filter is not a person changing it.
         pub updating: Cell<bool>,
-        pub chip_buttons: RefCell<Vec<gtk::Button>>,
+        /// Each chip above the grid, with what it says.
+        pub chip_buttons: RefCell<Vec<(gtk::Button, String)>>,
         pub toast: RefCell<String>,
     }
 
@@ -335,10 +416,13 @@ mod imp {
             gallery.build_grid();
             gallery.build_photo();
             gallery.build_files();
-            let places = gallery.build_tree(&self.places_list, gallery.places_store(), true);
+            let places = gallery.build_tree(&self.places_list, gallery.places_store().upcast_ref(), Side::Places);
             let _ = self.place_tree.set(places);
-            let tags = gallery.build_tree(&self.tags_list, gallery.tags_store(), false);
+            let tags = gallery.build_tree(&self.tags_list, gallery.tags_store().upcast_ref(), Side::Tags);
             let _ = self.tag_tree.set(tags);
+            let found = gallery.build_people();
+            gallery.build_tree(&self.people_list, found.upcast_ref(), Side::People);
+            gallery.build_tabs();
         }
     }
 
@@ -440,15 +524,82 @@ impl Gallery {
         self.show(filter);
     }
 
-    /// Takes a part the dashboard handed over back out.
-    pub fn remove_part(&self, kind: &Kind) {
-        let filter = self.filter().without(kind);
+    /// Narrows to the photos naming a person; the one already chosen widens back.
+    pub fn choose_person(&self, name: &str) {
+        let filter = self.filter();
+        let filter = match Side::People.chosen(&filter).as_deref() == Some(name) {
+            true => filter.with_person(None),
+            false => filter.with_person(Some(name)),
+        };
         self.show(filter);
+    }
+
+    /// Takes one part of the filter out, and nothing else.
+    pub fn remove_part(&self, part: &Part) {
+        let filter = self.filter();
+        let filter = match part {
+            Part::Within => filter.anywhere(),
+            Part::Kind(kind) => filter.without(kind),
+        };
+        self.show(filter);
+    }
+
+    /// Back to the whole library, in the same order.
+    pub fn clear_filter(&self) {
+        self.show(Filter::all());
+    }
+
+    /// Narrows the people list to the names holding this text.
+    pub fn search_people(&self, text: &str) {
+        self.imp().people_search.set_text(text);
+        self.refilter_people();
+    }
+
+    /// The people the list shows, after the search.
+    pub fn people_listed(&self) -> Vec<String> {
+        let list = self.imp().people_list.model();
+        let Some(list) = list else {
+            return Vec::new();
+        };
+        (0..list.n_items())
+            .filter_map(|at| list.item(at).and_downcast::<gtk::TreeListRow>())
+            .filter_map(|row| row.item().and_downcast::<Node>())
+            .map(|node| node.name())
+            .collect()
+    }
+
+    /// The sidebars whose tab carries a dot, by name.
+    pub fn dots(&self) -> Vec<String> {
+        self.imp()
+            .dots
+            .borrow()
+            .iter()
+            .filter(|(_, dot)| dot.get_visible())
+            .map(|(side, _)| side.name().to_string())
+            .collect()
+    }
+
+    /// Opens a sidebar by its name.
+    pub fn browse_by(&self, name: &str) {
+        self.imp().browse_by.set_active_name(Some(name));
     }
 
     /// Whether the photos asked for last are still on their way.
     pub fn is_loading(&self) -> bool {
         self.imp().loading.get()
+    }
+
+    /// Whether the sidebar counts for the filter on screen are still on their way.
+    pub fn is_recounting(&self) -> bool {
+        self.imp().recounting.get()
+    }
+
+    /// What the sidebar shows for an entry: its count, and whether it is dimmed for showing none.
+    pub fn count_shown(&self, side: &str, key: &str) -> Option<(i64, bool)> {
+        let side = Side::ALL.into_iter().find(|each| each.name() == side)?;
+        let following = self.imp().following.borrow();
+        let count = side.counted(following.as_ref()?, key);
+        Some((count, count == 0))
     }
 
     /// `grid`, `files` or `empty`.
@@ -469,9 +620,26 @@ impl Gallery {
             .collect()
     }
 
-    /// The parts shown as chips, by title.
+    /// What the chips above the grid say, in their order.
     pub fn chips(&self) -> Vec<String> {
-        self.extras().iter().map(Kind::title).collect()
+        self.imp()
+            .chip_buttons
+            .borrow()
+            .iter()
+            .map(|(_, said)| said.clone())
+            .collect()
+    }
+
+    /// Clicks the chip that says this, as a person would.
+    pub fn close_chip(&self, said: &str) -> bool {
+        let chip = self
+            .imp()
+            .chip_buttons
+            .borrow()
+            .iter()
+            .find(|(_, text)| text == said)
+            .map(|(button, _)| button.clone());
+        chip.map(|chip| chip.emit_clicked()).is_some()
     }
 
     /// How many cells show a picture right now.
@@ -599,24 +767,57 @@ impl Gallery {
         self.imp().filter.borrow().clone().unwrap_or_default()
     }
 
-    /// Whatever the controls do not own.
-    fn extras(&self) -> Vec<Kind> {
+    /// Every part of the filter, each as its chip says it: the parts in their order, then the
+    /// folder.
+    fn parts(&self) -> Vec<(Part, String, String)> {
         let filter = self.filter();
-        filter
+        let mut parts: Vec<(Part, String, String)> = filter
             .kinds()
             .iter()
-            .filter(|kind| match kind {
-                Kind::Missing(_) => false,
-                Kind::Tagged(paths) => paths.len() > 1,
-                _ => true,
+            .map(|kind| {
+                let (said, tells) = match kind {
+                    Kind::Missing(gap) => (gap.lacking().to_string(), format!("Photos {}", gap.lacking())),
+                    Kind::Tagged(paths) if paths.len() == 1 => (format!("tag: {}", paths[0]), kind.title()),
+                    Kind::Person(names) if names.len() == 1 => (names[0].clone(), kind.title()),
+                    _ => (kind.title(), kind.title()),
+                };
+                (Part::Kind(kind.clone()), said, tells)
             })
-            .cloned()
-            .collect()
+            .collect();
+        if let Some(folder) = &filter.within {
+            let name = folder.rsplit('/').next().unwrap_or(folder).to_string();
+            parts.push((Part::Within, name, format!("In {folder}")));
+        }
+        parts
     }
 
     fn is_stale(&self) -> bool {
         let library = self.imp().library.borrow().clone();
         library.is_some_and(|library| self.imp().seen.get() != Some(library.version()))
+    }
+
+    /// Counts every sidebar again for the filter on screen, off the main thread.
+    fn recount(&self, library: &Library) {
+        let imp = self.imp();
+        let asked = imp.recount.get() + 1;
+        imp.recount.set(asked);
+        imp.recounting.set(true);
+        let gallery = self.downgrade();
+        library.following(&self.filter(), move |counted| {
+            let Some(gallery) = gallery.upgrade() else {
+                return;
+            };
+            let imp = gallery.imp();
+            if imp.recount.get() != asked {
+                return;
+            }
+            imp.recounting.set(false);
+            match counted {
+                Ok(following) => *imp.following.borrow_mut() = Some(following),
+                Err(why) => tracing::error!(why, "the sidebars could not be counted"),
+            }
+            gallery.mark_rows();
+        });
     }
 
     fn requery(&self) {
@@ -625,6 +826,7 @@ impl Gallery {
             self.fill(Vec::new());
             return;
         };
+        self.recount(&library);
         if self.is_stale() {
             imp.seen.set(Some(library.version()));
             if let Some(loader) = imp.loader.borrow().as_ref() {
@@ -689,10 +891,14 @@ impl Gallery {
     fn fill_sidebars(&self, sidebars: &Sidebars) {
         let places: Vec<Node> = sidebars.places.iter().map(Node::of_place).collect();
         let tags: Vec<Node> = sidebars.tags.tree().iter().map(Node::of_tag).collect();
+        let people: Vec<Node> = sidebars.people.iter().map(Node::of_person).collect();
         let store = self.places_store();
         store.splice(0, store.n_items(), &places);
         let store = self.tags_store();
         store.splice(0, store.n_items(), &tags);
+        let store = self.people_store();
+        store.splice(0, store.n_items(), &people);
+        self.show_people_empty();
         self.mark_rows();
     }
 
@@ -710,33 +916,70 @@ impl Gallery {
         imp.sort.set_selected(at as u32);
         imp.updating.set(false);
 
-        for chip in imp.chip_buttons.borrow_mut().drain(..) {
-            imp.chips.remove(&chip);
+        self.show_chips();
+        for (side, dot) in imp.dots.borrow().iter() {
+            let narrows = side.narrows(&filter);
+            dot.set_visible(narrows);
+            // The tab's button is made by the toggle group around the content.
+            let mut button = dot.parent();
+            while let Some(widget) = button.as_ref().filter(|widget| !widget.is::<gtk::ToggleButton>()) {
+                button = widget.parent();
+            }
+            if let Some(button) = button {
+                match narrows {
+                    true => button.update_property(&[gtk::accessible::Property::Description("Narrows the photos")]),
+                    false => button.reset_property(gtk::AccessibleProperty::Description),
+                }
+            }
         }
-        for kind in self.extras() {
-            let title = kind.title();
+        self.show_header();
+        self.mark_rows();
+    }
+
+    /// One chip per part of the filter, each closing its part, and Clear All after them; none
+    /// for the whole library.
+    fn show_chips(&self) {
+        let imp = self.imp();
+        while let Some(child) = imp.chips.first_child() {
+            imp.chips.remove(&child);
+        }
+        imp.chip_buttons.borrow_mut().clear();
+        let parts = self.parts();
+        imp.chips.set_visible(!parts.is_empty());
+        if parts.is_empty() {
+            return;
+        }
+        for (part, said, tells) in parts {
             let chip = gtk::Button::builder()
                 .child(
                     &adw::ButtonContent::builder()
                         .icon_name("window-close-symbolic")
-                        .label(&title)
+                        .label(&said)
                         .can_shrink(true)
                         .build(),
                 )
-                .tooltip_text("Show without this")
-                .valign(gtk::Align::Center)
+                .tooltip_text(format!("{tells}. Show without this"))
                 .build();
-            chip.update_property(&[gtk::accessible::Property::Label(&format!("Remove {title}"))]);
+            chip.update_property(&[gtk::accessible::Property::Label(&format!("Remove {said}"))]);
             chip.connect_clicked(glib::clone!(
                 #[weak(rename_to = gallery)]
                 self,
-                move |_| gallery.remove_part(&kind)
+                move |_| gallery.remove_part(&part)
             ));
             imp.chips.append(&chip);
-            imp.chip_buttons.borrow_mut().push(chip);
+            imp.chip_buttons.borrow_mut().push((chip, said));
         }
-        self.show_header();
-        self.mark_rows();
+        let clear = gtk::Button::builder()
+            .label("Clear All")
+            .tooltip_text("Show every photo")
+            .build();
+        clear.add_css_class("flat");
+        clear.connect_clicked(glib::clone!(
+            #[weak(rename_to = gallery)]
+            self,
+            move |_| gallery.clear_filter()
+        ));
+        imp.chips.append(&clear);
     }
 
     fn show_header(&self) {
@@ -764,12 +1007,12 @@ impl Gallery {
         imp.selected.set_label(&format!("{selected} selected"));
     }
 
-    /// Sets each sidebar row's mark to whether it is the chosen place or tag, and opens the
-    /// rows above the chosen one so it can be seen.
+    /// Sets each sidebar row's mark to whether it is the chosen place, tag or person, and opens
+    /// the rows above the chosen one so it can be seen.
     fn mark_rows(&self) {
         let filter = self.filter();
-        let place = filter.within.clone();
-        let tag = chosen_tag(&filter);
+        let place = Side::Places.chosen(&filter);
+        let tag = Side::Tags.chosen(&filter);
         let imp = self.imp();
         for (tree, chosen) in [(imp.place_tree.get(), &place), (imp.tag_tree.get(), &tag)] {
             if let (Some(tree), Some(chosen)) = (tree, chosen) {
@@ -777,15 +1020,12 @@ impl Gallery {
                 reveal(roots.collect(), chosen);
             }
         }
-        self.imp().rows.borrow_mut().retain(|(item, is_place)| {
+        let following = imp.following.borrow();
+        imp.rows.borrow_mut().retain(|(item, side)| {
             let Some(item) = item.upgrade() else {
                 return false;
             };
-            let chosen = match is_place {
-                true => place.as_ref(),
-                false => tag.as_ref(),
-            };
-            mark(&item, chosen);
+            mark(&item, *side, side.chosen(&filter).as_ref(), following.as_ref());
             true
         });
     }
@@ -944,7 +1184,83 @@ impl Gallery {
         imp.files.set_factory(Some(&factory));
     }
 
-    fn build_tree(&self, list: &gtk::ListView, roots: &gio::ListStore, is_place: bool) -> gtk::TreeListModel {
+    /// The dot on each tab, beside its name.
+    fn build_tabs(&self) {
+        let imp = self.imp();
+        for side in Side::ALL {
+            let Some(toggle) = imp.browse_by.toggle_by_name(side.name()) else {
+                continue;
+            };
+            let dot = gtk::Image::from_icon_name("media-record-symbolic");
+            dot.set_pixel_size(8);
+            dot.add_css_class("accent");
+            dot.set_visible(false);
+            dot.set_accessible_role(gtk::AccessibleRole::Presentation);
+            let label = gtk::Label::new(Some(side.title()));
+            let content = gtk::Box::builder().spacing(4).halign(gtk::Align::Center).build();
+            content.append(&label);
+            content.append(&dot);
+            toggle.set_child(Some(&content));
+            if let Some(button) = content.parent() {
+                button.update_relation(&[gtk::accessible::Relation::LabelledBy(&[label.upcast_ref()])]);
+            }
+            imp.dots.borrow_mut().push((side, dot));
+        }
+    }
+
+    /// The people list, narrowed by the search above it.
+    fn build_people(&self) -> gtk::FilterListModel {
+        let imp = self.imp();
+        let search = imp.people_search.downgrade();
+        let found = gtk::CustomFilter::new(move |item| {
+            let text = search
+                .upgrade()
+                .map(|entry| entry.text().to_lowercase())
+                .unwrap_or_default();
+            let text = text.trim();
+            text.is_empty()
+                || item
+                    .downcast_ref::<Node>()
+                    .is_some_and(|node| node.name().to_lowercase().contains(text))
+        });
+        let model = gtk::FilterListModel::new(Some(self.people_store().clone()), Some(found.clone()));
+        imp.people_search.connect_search_changed(glib::clone!(
+            #[weak(rename_to = gallery)]
+            self,
+            move |_| gallery.refilter_people()
+        ));
+        let _ = imp.people_found.set(found);
+        model
+    }
+
+    fn refilter_people(&self) {
+        if let Some(found) = self.imp().people_found.get() {
+            found.changed(gtk::FilterChange::Different);
+        }
+        self.show_people_empty();
+    }
+
+    /// The status page instead of an empty list: no people at all, or none the search finds.
+    fn show_people_empty(&self) {
+        let imp = self.imp();
+        let searched = !imp.people_search.text().trim().is_empty();
+        let none = self.people_listed().is_empty();
+        imp.people_empty.set_visible(none);
+        imp.people_list.set_visible(!none);
+        match searched {
+            true => {
+                imp.people_empty.set_title("No Match");
+                imp.people_empty
+                    .set_description(Some("No person has that in their name."));
+            }
+            false => {
+                imp.people_empty.set_title("No People");
+                imp.people_empty.set_description(Some("No photo names a person yet."));
+            }
+        }
+    }
+
+    fn build_tree(&self, list: &gtk::ListView, roots: &gio::ListModel, side: Side) -> gtk::TreeListModel {
         let tree = gtk::TreeListModel::new(roots.clone(), false, false, |item| {
             item.downcast_ref::<Node>()
                 .and_then(Node::children)
@@ -975,7 +1291,7 @@ impl Gallery {
                 let expander = gtk::TreeExpander::new();
                 expander.set_child(Some(&row));
                 item.set_child(Some(&expander));
-                gallery.imp().rows.borrow_mut().push((item.downgrade(), is_place));
+                gallery.imp().rows.borrow_mut().push((item.downgrade(), side));
             }
         ));
         factory.connect_bind(glib::clone!(
@@ -994,17 +1310,12 @@ impl Gallery {
                 };
                 expander.set_list_row(Some(&row));
                 let parts = row_parts(&expander);
-                if let Some((name, _, count)) = parts {
+                if let Some((name, _, _)) = parts {
                     name.set_label(&node.name());
                     name.set_tooltip_text(Some(&node.key()));
-                    count.set_label(&node.photos().to_string());
                 }
-                let filter = gallery.filter();
-                let chosen = match is_place {
-                    true => filter.within.clone(),
-                    false => chosen_tag(&filter),
-                };
-                mark(&item, chosen.as_ref());
+                let following = gallery.imp().following.borrow();
+                mark(&item, side, side.chosen(&gallery.filter()).as_ref(), following.as_ref());
             }
         ));
         list.set_factory(Some(&factory));
@@ -1022,9 +1333,10 @@ impl Gallery {
                 else {
                     return;
                 };
-                match is_place {
-                    true => gallery.choose_place(&node.key()),
-                    false => gallery.choose_tag(&node.key()),
+                match side {
+                    Side::Places => gallery.choose_place(&node.key()),
+                    Side::Tags => gallery.choose_tag(&node.key()),
+                    Side::People => gallery.choose_person(&node.key()),
                 }
             }
         ));
@@ -1052,6 +1364,18 @@ impl Gallery {
     fn tags_store(&self) -> &gio::ListStore {
         self.imp().tags.get_or_init(gio::ListStore::new::<Node>)
     }
+
+    fn people_store(&self) -> &gio::ListStore {
+        self.imp().people.get_or_init(gio::ListStore::new::<Node>)
+    }
+}
+
+/// A part of the filter a chip stands for.
+#[derive(Debug, Clone, PartialEq)]
+pub enum Part {
+    Kind(Kind),
+    /// The folder it is narrowed to.
+    Within,
 }
 
 /// The one tag the tag sidebar owns, when the filter has exactly one.
@@ -1085,8 +1409,9 @@ fn row_parts(expander: &gtk::TreeExpander) -> Option<(gtk::Label, gtk::Image, gt
     Some((name, check, count))
 }
 
-/// Shows the check on the row that is the chosen place or tag, and says so.
-fn mark(item: &gtk::ListItem, chosen: Option<&String>) {
+/// Shows the check on the row that is the chosen place, tag or person, and how many photos the
+/// row would show with the other parts; a row that would show none is dimmed.
+fn mark(item: &gtk::ListItem, side: Side, chosen: Option<&String>, following: Option<&Following>) {
     let Some(expander) = item.child().and_downcast::<gtk::TreeExpander>() else {
         return;
     };
@@ -1099,10 +1424,18 @@ fn mark(item: &gtk::ListItem, chosen: Option<&String>) {
         return;
     };
     let is_chosen = chosen == Some(&node.key());
-    if let Some((_, check, _)) = row_parts(&expander) {
+    let photos = following.map_or(node.photos(), |following| side.counted(following, &node.key()));
+    if let Some((name, check, count)) = row_parts(&expander) {
         check.set_visible(is_chosen);
+        count.set_label(&photos.to_string());
+        for label in [&name, &count] {
+            match photos == 0 && !is_chosen {
+                true => label.add_css_class("dimmed"),
+                false => label.remove_css_class("dimmed"),
+            }
+        }
     }
-    let mut label = format!("{}, {} photos", node.name(), node.photos());
+    let mut label = format!("{}, {photos} photos", node.name());
     if is_chosen {
         label.push_str(", chosen");
     }

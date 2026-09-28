@@ -296,6 +296,14 @@ impl Window {
                 }
             })
             .build();
+        let person = gtk::gio::ActionEntry::builder("gallery-person")
+            .parameter_type(Some(glib::VariantTy::STRING))
+            .activate(|window: &Window, _, parameter| {
+                if let Some(name) = parameter.and_then(|value| value.str()) {
+                    window.imp().gallery.choose_person(name);
+                }
+            })
+            .build();
         let gallery_all = gtk::gio::ActionEntry::builder("gallery-select-all")
             .activate(|window: &Window, _, _| window.imp().gallery.select_all())
             .build();
@@ -432,6 +440,7 @@ impl Window {
             gap,
             place,
             tag,
+            person,
             gallery_all,
             gallery_none,
             use_as_scope,

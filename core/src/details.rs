@@ -47,8 +47,9 @@ pub struct Details {
     pub width: Option<i64>,
     pub height: Option<i64>,
     pub tags: Vec<String>,
-    /// Names from `people` tags, either spelling of the root, and from face regions.
-    pub people: Vec<String>,
+    /// The persons it names, by name, each with whether a face box says where they are. The
+    /// `people` tags are tags, not persons.
+    pub people: Vec<(String, bool)>,
     /// Each issue the scan found, and what it said about it.
     pub issues: Vec<(String, Option<String>)>,
     /// Every field the scan read, by name.
@@ -78,9 +79,6 @@ pub(crate) const PLACE_FIELDS: [[&str; 2]; 5] = [
     ["Xmp.iptcCore.Location", "Iptc.Application2.SubLocation"],
 ];
 
-const REGIONS: &str = "Xmp.mwg-rs.Regions/";
-const REGION_NAME: &str = "/mwg-rs:Name";
-const PERSON_IN_IMAGE: &str = "Xmp.iptcExt.PersonInImage";
 const ALTITUDE: &str = "Exif.GPSInfo.GPSAltitude";
 const ALTITUDE_REF: &str = "Exif.GPSInfo.GPSAltitudeRef";
 
@@ -138,6 +136,10 @@ impl Details {
         details.tags = statement
             .query_map(params![id], |row| row.get(0))?
             .collect::<Result<Vec<String>>>()?;
+        let mut statement = connection.prepare("SELECT name, boxed FROM person WHERE photo_id = ?1 ORDER BY name")?;
+        details.people = statement
+            .query_map(params![id], |row| Ok((row.get(0)?, row.get(1)?)))?
+            .collect::<Result<Vec<_>>>()?;
         let mut statement = connection.prepare("SELECT kind, detail FROM issue WHERE rel_path = ?1 ORDER BY kind")?;
         details.issues = statement
             .query_map(params![rel_path], |row| Ok((row.get(0)?, row.get(1)?)))?
@@ -146,7 +148,6 @@ impl Details {
         details.raw = raw_fields(&raw);
         details.place = place(&details.raw);
         details.altitude = altitude(&details.raw);
-        details.people = people(&details.tags, &details.raw);
         Ok(Some(details))
     }
 
@@ -427,36 +428,6 @@ fn altitude(raw: &[(String, String)]) -> Option<f64> {
     };
     let below = lookup(raw, ALTITUDE_REF) == Some("1");
     Some(if below { -metres } else { metres })
-}
-
-/// The leaves of the `people` tags - a group like `people/family` is not a person - and every
-/// name a face region or the IPTC person field gives.
-fn people(tags: &[String], raw: &[(String, String)]) -> Vec<String> {
-    let below: Vec<&String> = tags
-        .iter()
-        .filter(|tag| root(tag).eq_ignore_ascii_case("people") && tag.contains('/'))
-        .collect();
-    let mut names: Vec<String> = below
-        .iter()
-        .filter(|tag| !below.iter().any(|other| other.starts_with(&format!("{tag}/"))))
-        .filter_map(|tag| tag.rsplit('/').next())
-        .map(String::from)
-        .collect();
-    for (key, value) in raw {
-        let named = (key.starts_with(REGIONS) && key.ends_with(REGION_NAME)) || key == PERSON_IN_IMAGE;
-        if named {
-            names.extend(
-                value
-                    .split(", ")
-                    .map(str::trim)
-                    .filter(|name| !name.is_empty())
-                    .map(String::from),
-            );
-        }
-    }
-    names.sort();
-    names.dedup();
-    names
 }
 
 fn tidy_text(text: &Option<String>) -> Option<String> {

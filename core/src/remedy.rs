@@ -34,6 +34,7 @@ impl Remedy {
             Kind::Missing(Gap::Tags) => tool(Edit::AddTag),
             Kind::Missing(Gap::People) => fixes("people"),
             Kind::Tagged(_) => fixes("tags"),
+            Kind::Person(_) => None,
             Kind::SubFolder | Kind::Loose | Kind::OffLayout => fixes("folders"),
             Kind::OffName => fixes("file-names"),
             Kind::Issue(_) => None,

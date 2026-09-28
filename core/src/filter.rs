@@ -2,7 +2,7 @@
 //! shows. The count and the list come from one predicate, so they cannot disagree.
 //!
 //! Written out as `no-gps`, `no-gps@Germany`, `no-gps@Germany/2019-07-13 Sommerfest`,
-//! `tag:mixed/food`, `tag:mixed/funny|mixed/Funny`, `issue:sidecar`. What follows the `@` is a
+//! `tag:mixed/food`, `tag:mixed/funny|mixed/Funny`, `person:Anna`, `issue:sidecar`. What follows the `@` is a
 //! folder inside the library. Parts joined by `+` must all hold: `no-gps+tag:mixed@China`.
 
 use rusqlite::params_from_iter;
@@ -95,10 +95,7 @@ impl Gap {
             }
             // Set-based, not correlated: SQLite builds the set once instead of asking per photo.
             Gap::Tags => "p.id NOT IN (SELECT photo_id FROM tag)",
-            Gap::People => {
-                "p.id NOT IN (SELECT photo_id FROM tag
-                    WHERE lower(path) = 'people' OR lower(substr(path, 1, 7)) = 'people/')"
-            }
+            Gap::People => "p.id NOT IN (SELECT photo_id FROM person)",
             Gap::Location => "p.location_city IS NULL",
         }
     }
@@ -114,6 +111,8 @@ pub enum Kind {
     Missing(Gap),
     /// Photos carrying any of these tags or a tag below them.
     Tagged(Vec<String>),
+    /// Photos naming any of these persons, with a face box or without.
+    Person(Vec<String>),
     /// Photos in a folder below their event's.
     SubFolder,
     /// Photos with a date whose file name is not one the naming scheme gives that date.
@@ -132,11 +131,12 @@ impl Kind {
         match self {
             Kind::Missing(_) => 0,
             Kind::Tagged(_) => 1,
-            Kind::SubFolder => 2,
-            Kind::OffName => 3,
-            Kind::Loose => 4,
-            Kind::OffLayout => 5,
-            Kind::Issue(_) => 6,
+            Kind::Person(_) => 2,
+            Kind::SubFolder => 3,
+            Kind::OffName => 4,
+            Kind::Loose => 5,
+            Kind::OffLayout => 6,
+            Kind::Issue(_) => 7,
         }
     }
 
@@ -150,6 +150,7 @@ impl Kind {
         match self {
             Kind::Missing(gap) => format!("Photos {}", gap.lacking()),
             Kind::Tagged(paths) => format!("Photos tagged {}", paths.join(" or ")),
+            Kind::Person(names) => format!("Photos of {}", names.join(" or ")),
             Kind::SubFolder => "Photos in event sub-folders".to_string(),
             Kind::OffName => "Photos not named by their date".to_string(),
             Kind::Loose => "Loose files".to_string(),
@@ -163,6 +164,7 @@ impl Kind {
         match self {
             Kind::Missing(gap) => gap.lacking().to_string(),
             Kind::Tagged(paths) => format!("tagged {}", paths.join(" or ")),
+            Kind::Person(names) => format!("of {}", names.join(" or ")),
             Kind::SubFolder => "in event sub-folders".to_string(),
             Kind::OffName => "not named by their date".to_string(),
             Kind::Loose => "loose".to_string(),
@@ -186,6 +188,12 @@ impl Kind {
                         return Err("an empty tag".to_string());
                     }
                     Kind::Tagged(paths)
+                } else if let Some(names) = text.strip_prefix("person:") {
+                    let names: Vec<String> = names.split('|').map(str::to_string).collect();
+                    if names.iter().any(|name| name.trim().is_empty()) {
+                        return Err("an empty name".to_string());
+                    }
+                    Kind::Person(names)
                 } else if let Some(name) = text.strip_prefix("issue:") {
                     match IssueKind::named(name) {
                         Some(IssueKind::OffLayout) => return Err("ask for loose or off-layout".to_string()),
@@ -215,6 +223,15 @@ impl Kind {
                     any.push(format!("path = ?{n} OR (path >= ?{n} || '/' AND path < ?{n} || '0')"));
                 }
                 format!("p.id IN (SELECT photo_id FROM tag WHERE {})", any.join(" OR "))
+            }
+            Kind::Person(names) => {
+                let first = params.len() + 1;
+                params.extend(names.iter().cloned());
+                let holes: Vec<String> = (first..=params.len()).map(|n| format!("?{n}")).collect();
+                format!(
+                    "p.id IN (SELECT photo_id FROM person WHERE name IN ({}))",
+                    holes.join(", ")
+                )
             }
             Kind::SubFolder => "p.event_dir IS NOT NULL AND p.sub_path IS NOT NULL".to_string(),
             Kind::OffName => off_name(),
@@ -357,6 +374,18 @@ impl Filter {
         }
     }
 
+    /// Sets the person part to one person, or clears it.
+    pub fn with_person(self, name: Option<&str>) -> Filter {
+        let filter = match self.persons().map(<[String]>::to_vec) {
+            Some(old) => self.without(&Kind::Person(old)),
+            None => self,
+        };
+        match name {
+            Some(name) => filter.with(Kind::Person(vec![name.to_string()])),
+            None => filter,
+        }
+    }
+
     pub fn kinds(&self) -> &[Kind] {
         &self.kinds
     }
@@ -371,6 +400,13 @@ impl Filter {
     pub fn tags(&self) -> Option<&[String]> {
         self.kinds.iter().find_map(|kind| match kind {
             Kind::Tagged(paths) => Some(paths.as_slice()),
+            _ => None,
+        })
+    }
+
+    pub fn persons(&self) -> Option<&[String]> {
+        self.kinds.iter().find_map(|kind| match kind {
+            Kind::Person(names) => Some(names.as_slice()),
             _ => None,
         })
     }
@@ -443,6 +479,11 @@ impl Filter {
         rows.collect()
     }
 
+    /// The set as a query of photo ids, to be asked inside another, with its parameters.
+    pub(crate) fn ids(&self) -> (String, Vec<String>) {
+        self.sql("p.id", "")
+    }
+
     /// Photos are asked of the photo table. Once one kind is of files that may not be photos,
     /// the set is asked of the issues instead, with the photo each one is, if it is one.
     fn sql(&self, select: &str, order: &str) -> (String, Vec<String>) {
@@ -492,6 +533,7 @@ impl std::fmt::Display for Filter {
             match kind {
                 Kind::Missing(gap) => write!(f, "{}", gap.key())?,
                 Kind::Tagged(paths) => write!(f, "tag:{}", paths.join("|"))?,
+                Kind::Person(names) => write!(f, "person:{}", names.join("|"))?,
                 Kind::SubFolder => write!(f, "sub-folder")?,
                 Kind::OffName => write!(f, "off-name")?,
                 Kind::Loose => write!(f, "loose")?,
@@ -581,6 +623,9 @@ pub(crate) mod tests {
             "date-off-folder@China/2006-09-00 Besuch Ben",
             "tag:mixed/food",
             "tag:mixed/funny|mixed/Funny@Ireland",
+            "person:Anna",
+            "person:Anna Maria|Tom@Germany",
+            "no-gps+tag:mixed+person:Anna",
             "sub-folder",
             "off-name",
             "no-gps+off-name@Greece",
@@ -650,6 +695,9 @@ pub(crate) mod tests {
             "no-gps@",
             "tag:",
             "tag:a||b",
+            "person:",
+            "person:Anna| ",
+            "person:Anna+person:Tom",
             "issue:nonsense",
             "issue:off the layout",
             "no-gps+no-date",
@@ -674,6 +722,9 @@ pub(crate) mod tests {
             "no-gps@Germany",
             "tag:mixed",
             "tag:people",
+            "person:Anna",
+            "person:Mia|Tom",
+            "person:Nobody",
             "sub-folder",
             "loose",
             "issue:no date",
@@ -699,6 +750,8 @@ pub(crate) mod tests {
             ("no-people+sub-folder", vec!["no-people", "sub-folder"]),
             ("no-gps+loose", vec!["no-gps", "loose"]),
             ("tag:people+issue:no date", vec!["tag:people", "issue:no date"]),
+            ("tag:people+person:Tom", vec!["tag:people", "person:Tom"]),
+            ("no-gps+person:Anna|Mia", vec!["no-gps", "person:Anna|Mia"]),
         ] {
             let combined = filter(text);
             assert_eq!(combined.to_string().parse::<Filter>().unwrap(), combined);
@@ -806,11 +859,43 @@ pub(crate) mod tests {
     }
 
     #[test]
-    fn people_are_found_under_either_spelling_of_the_root() {
+    fn the_people_gap_counts_the_persons_not_the_people_tags() {
         let cache = scanned("people");
         let without = filter("no-people").paths(&cache).unwrap();
-        assert!(!without.contains(&"Ireland/2008-10-03 Galway/Kira/IMG_0002.JPG".to_string()));
+        assert!(
+            without.contains(&"Ireland/2008-10-03 Galway/Kira/IMG_0002.JPG".to_string()),
+            "a people tag names no person"
+        );
         assert!(!without.contains(&"Germany/2019-07-13 Sommerfest/IMAG0001.jpg".to_string()));
-        assert_eq!(without.len(), crate::fixtures::photo_count() - 3);
+        assert!(
+            !without.contains(&"Denmark/2018-10-00 Wedding Trip to Copenhagen/DSCF0002.JPG".to_string()),
+            "a person without a box is a person"
+        );
+        assert_eq!(without.len(), crate::fixtures::photo_count() - 2);
+    }
+
+    #[test]
+    fn a_person_is_one_part_that_combines_with_the_rest() {
+        let cache = scanned("persons");
+        let count = |text: &str| filter(text).count(&cache).unwrap();
+        assert_eq!(count("person:Anna"), 1);
+        assert_eq!(count("person:Mia"), 1);
+        assert_eq!(count("person:Anna|Mia"), 2, "either of them");
+        assert_eq!(count("person:Anna|Tom"), 1, "one photo of both is one photo");
+        assert_eq!(count("person:anna"), 0, "a name is compared as it is spelled");
+        assert_eq!(count("person:Anna@Germany"), 1);
+        assert_eq!(count("person:Anna@Denmark"), 0);
+        assert_eq!(count("tag:people/family+person:Anna"), 1);
+
+        let chosen = Filter::all().with_tag(Some("people")).with_person(Some("Tom"));
+        assert_eq!(chosen.to_string(), "tag:people+person:Tom");
+        assert_eq!(chosen.persons(), Some(&["Tom".to_string()][..]));
+        assert_eq!(chosen.title(), "Photos tagged people, of Tom");
+        assert_eq!(
+            chosen.clone().with_person(Some("Mia")).to_string(),
+            "tag:people+person:Mia"
+        );
+        assert_eq!(chosen.with_person(None).to_string(), "tag:people");
+        assert_eq!(filter("person:Mia|Tom").title(), "Photos of Mia or Tom");
     }
 }

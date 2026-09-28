@@ -135,6 +135,8 @@ fn state(window: &Window, paths: &Paths, library: Option<&Library>) -> String {
             "kept": shown.kept(),
             "selected": shown.selected(),
             "chips": shown.chips(),
+            "dots": shown.dots(),
+            "people": shown.people_listed(),
             "toast": shown.toast(),
         })
     });

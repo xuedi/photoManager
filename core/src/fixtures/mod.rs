@@ -14,13 +14,20 @@
 //! off, an event without camera names, and photos without a date between dated ones, at the end of
 //! their folder and in a month folder. One photo carries the small picture cameras embed, the rest
 //! do not. The one turned by its orientation is
-//! stored wider than tall, so the right way up it stands taller than wide.
+//! stored wider than tall, so the right way up it stands taller than wide. One photo carries the
+//! face boxes an older program drew, and one names a person without a box.
 //!
 //! Only for tests and for looking at the application without touching real photos.
 
 use std::io::{Error, ErrorKind, Result};
 use std::path::Path;
 use std::process::Command;
+
+/// Face boxes an older program drew: one on a face Immich also finds, named as the tag names the
+/// person, and one on a face Immich does not know.
+const OLDER_REGIONS: &str = "-XMP-mwg-rs:RegionInfo={AppliedToDimensions={W=16,H=16,Unit=pixel},\
+    RegionList=[{Area={X=0.26,Y=0.3,W=0.28,H=0.38,Unit=normalized},Name=Anna,Type=Face},\
+    {Area={X=0.5,Y=0.85,W=0.1,H=0.1,Unit=normalized},Name=Tom,Type=Face}]}";
 
 /// One distinct image per photo, so every photo has its own content id.
 const IMAGES: [&[u8]; 39] = [
@@ -118,7 +125,11 @@ const PHOTOS: &[Photo] = &[
     },
     Photo {
         path: "Denmark/2018-10-00 Wedding Trip to Copenhagen/DSCF0002.JPG",
-        metadata: &["-DateTimeOriginal=2018:10:06 14:03:40", "-Model=X100S"],
+        metadata: &[
+            "-DateTimeOriginal=2018:10:06 14:03:40",
+            "-Model=X100S",
+            "-XMP-iptcExt:PersonInImage=Mia",
+        ],
     },
     Photo {
         path: "Germany/2019-07-13 Sommerfest/img_0657.jpg",
@@ -149,6 +160,9 @@ const PHOTOS: &[Photo] = &[
             "-TagsList=people/me",
             "-TagsList=places/inGermany",
             "-XMP-microsoft:LastKeywordXMP=people/family/Tom",
+            OLDER_REGIONS,
+            "-XMP-iptcExt:PersonInImage=Anna",
+            "-XMP-iptcExt:PersonInImage=Tom",
         ],
     },
     Photo {

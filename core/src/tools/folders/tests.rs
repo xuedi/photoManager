@@ -5,7 +5,7 @@ use crate::changeset::{ChangeSet, Verdict};
 use crate::filter::Filter;
 use crate::immich::{self, fake};
 use crate::tools::Settings;
-use crate::tools::people::PeopleFromImmich;
+use crate::tools::people;
 use crate::tools::testing::{Driven, confirm_sure};
 use crate::tools::testing::{Library, geo};
 use crate::write::{Engine, Outcome};
@@ -407,18 +407,9 @@ fn an_event_whose_people_only_immich_knows_waits_for_them() {
             (GARDEN, "would change".to_string()),
         ]
     );
-    let people = &PeopleFromImmich;
-    let answers = people
-        .answered(None, "p-ben", Some(Answer::Tag("people/groupChina/Ben".to_string())))
-        .unwrap();
-    let written = people
-        .built(
-            &library.cache,
-            None,
-            &Scope::Filter(Filter::all().within(BEN)),
-            Some(&answers),
-        )
-        .unwrap();
+    let ben = std::collections::BTreeSet::from(["p-ben".to_string()]);
+    let people = people::wanted(&library.cache, &ben, &Scope::Filter(Filter::all().within(BEN))).unwrap();
+    let written = ChangeSet::build(&library.cache, "Write people from Immich", &people).unwrap();
     assert!(library.apply(&written).written > 0);
     library.rescan();
     let set = looked(&library, Some(&settings));

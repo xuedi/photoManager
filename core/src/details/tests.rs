@@ -51,35 +51,6 @@ fn coordinates_round_trip_and_bad_ones_say_why() {
 }
 
 #[test]
-fn people_come_from_both_roots_and_from_face_regions() {
-    let tags: Vec<String> = [
-        "people",
-        "people/family",
-        "people/family/Anna",
-        "People/Kira",
-        "places/inGermany",
-    ]
-    .map(String::from)
-    .to_vec();
-    let raw = vec![
-        (
-            "Xmp.mwg-rs.Regions/mwg-rs:RegionList[1]/mwg-rs:Name".to_string(),
-            "Ben".to_string(),
-        ),
-        (
-            "Xmp.mwg-rs.Regions/mwg-rs:RegionList[1]/mwg-rs:Type".to_string(),
-            "Face".to_string(),
-        ),
-        (PERSON_IN_IMAGE.to_string(), "Anna, Lu".to_string()),
-    ];
-    assert_eq!(
-        people(&tags, &raw),
-        ["Anna", "Ben", "Kira", "Lu"],
-        "a group is not a person, a name is only listed once"
-    );
-}
-
-#[test]
 fn an_altitude_is_read_from_a_rational() {
     let raw = |value: &str, below: &str| {
         vec![
@@ -312,7 +283,7 @@ mod on_the_fixture {
     }
 
     #[test]
-    fn people_come_from_either_spelling_and_from_regions() {
+    fn people_are_the_persons_the_photo_names() {
         let (_, cache) = scanned("people", |root| {
             let status = Command::new("exiftool")
                 .args([
@@ -326,15 +297,19 @@ mod on_the_fixture {
                 .unwrap();
             assert!(status.success());
         });
+        let people = |rel_path: &str| Details::of(&cache, rel_path).unwrap().unwrap().people;
+        let person = |name: &str, boxed: bool| (name.to_string(), boxed);
         assert_eq!(
-            Details::of(&cache, PEOPLE).unwrap().unwrap().people,
-            ["Anna", "Tom", "me"]
+            people(PEOPLE),
+            [person("Anna", true), person("Tom", true)],
+            "the persons of the face regions, not the people tags"
         );
-        assert_eq!(Details::of(&cache, KIRA).unwrap().unwrap().people, ["Kira"]);
+        assert!(people(KIRA).is_empty(), "a people tag names no person");
+        assert_eq!(people(LOCATED), [person("Ben", true)]);
         assert_eq!(
-            Details::of(&cache, LOCATED).unwrap().unwrap().people,
-            ["Ben"],
-            "a face region names a person too"
+            people("Denmark/2018-10-00 Wedding Trip to Copenhagen/DSCF0002.JPG"),
+            [person("Mia", false)],
+            "a person without a face box"
         );
     }
 

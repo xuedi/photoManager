@@ -1,11 +1,11 @@
 # Gallery
 
-Where the photos a tool should work on are found. Pick a folder or an event, a tag, a field that
-is missing, or any combination, and the grid shows exactly those photos. Select some or all of
+Where the photos a tool should work on are found. Pick a folder or an event, a tag, a person, a
+field that is missing, or any combination, and the grid shows exactly those photos. Select some or all of
 them and hand them on as the **scope** of the next tool. Viewing is here to support finding, and
 nothing on the grid writes. One photo opens on a [page of its own](photo.md).
 
-## One filter, three controls
+## One filter, four controls
 
 The page always shows one [filter](dashboard.md#filters-and-why-a-number-cannot-lie): a set of
 parts that must all hold, optionally inside one folder. Each control owns exactly one part of it,
@@ -14,34 +14,61 @@ filter is set, the controls follow it, the grid is filled again.
 
 | Control | Owns | Written as |
 |---------|------|------------|
-| place sidebar | a top folder or an event folder | `@Germany`, `@Germany/2019-07-13 Sommerfest` |
-| tag sidebar | one tag, everything below it included | `tag:people` |
+| Places sidebar | a top folder or an event folder | `@Germany`, `@Germany/2019-07-13 Sommerfest` |
+| Tags sidebar | one tag, everything below it included | `tag:people` |
+| People sidebar | one person the photos name | `person:Anna` |
 | missing field dropdown | one gap, or none | `no-gps` |
-| a chip | anything else the dashboard handed over: a folder finding, an issue, a pair of tags spelled alike | `loose`, `tag:mixed/funny\|mixed/Funny` |
 
-So `no-gps+tag:people@Germany/2019-07-13 Sommerfest` is the photos of that event, tagged under
-`people`, without GPS. Selecting the chosen place or tag again widens back; closing a chip takes
-its part out and nothing else.
+Whatever else the dashboard hands over - a folder finding, an issue, a pair of tags spelled alike
+(`loose`, `tag:mixed/funny|mixed/Funny`) - has no control of its own.
+
+So `no-gps+tag:people+person:Anna@Germany/2019-07-13 Sommerfest` is the photos of that event,
+tagged under `people`, naming Anna, without GPS. Selecting the chosen place, tag or person again
+widens back.
+
+## The active filter, in sight
+
+The three sidebars share one pane, so a part chosen on one is out of sight on the others. Every
+part of the filter is therefore also a chip in one strip above the grid: the missing field, the
+tag, the person, the folder, and whatever the dashboard handed over. Closing a chip takes its part
+out and nothing else, and the control that owns it follows; **Clear All** goes back to the whole
+library. The strip wraps to another line only when it has to, and is not there when nothing is
+chosen. It sits above the grid rather than in the sidebar because the sidebar folds away on a
+narrow window and can be hidden, and a narrowed grid whose filter is out of sight misleads. Each
+sidebar's tab carries a dot while it narrows the grid.
 
 ```mermaid
 flowchart LR
     dashboard[a number on the dashboard] -- win.show-photos --> show
-    places[place sidebar] --> show
-    tags[tag sidebar] --> show
+    places[Places sidebar] --> show
+    tags[Tags sidebar] --> show
+    people[People sidebar] --> show
     gap[missing field] --> show
-    chip[closing a chip] --> show
-    show[show the filter] --> controls[every control follows it]
+    chip[closing a chip, Clear All] --> show
+    show[show the filter] --> controls[every control, chip and dot follows it]
     show --> query[list its photos<br/>off the main thread]
+    show --> recount[count every sidebar again<br/>off the main thread]
     query --> grid
 ```
 
-The sidebars count the photos of the whole library, not of the current filter, so the numbers do
-not move while the other controls are changed. The place sidebar is the library's top folders -
-countries, years or whatever the [folder layout](cache.md#folder-names) starts with - each with
-the events below it; an event right in the library root is an entry of its own. It follows the
-folders as they are on disk, so a library halfway into another layout shows both. A top folder's
-count includes its loose photos, which belong to no event. Tags are shown as they are spelled: `People` and `people` are two roots, the
-same way the filter tells them apart.
+## The sidebars and their counts
+
+The Places sidebar is the library's top folders - countries, years or whatever the
+[folder layout](cache.md#folder-names) starts with - each with the events below it; an event right
+in the library root is an entry of its own. It follows the folders as they are on disk, so a
+library halfway into another layout shows both. A top folder's count includes its loose photos,
+which belong to no event. Tags are shown as they are spelled: `People` and `people` are two roots,
+the same way the filter tells them apart. The People sidebar lists every person the photos name,
+with a face box or without ([cache.md](cache.md#face-regions)), the most photos first, with a
+search above it. It comes from the files, not from Immich: a person no photo names yet is not
+there.
+
+Each entry counts the photos it would show combined with the parts the other controls own: with
+a person chosen, a country counts only that person's photos in it, and one they are never in
+counts none and is dimmed. With nothing else chosen, that is the library's own count. The counts
+are worked out again off the main thread whenever the filter changes, and only the answer to the
+newest filter is shown; measured over a large real library, all three lists are counted again in
+well under a tenth of a second.
 
 Photos are sorted by their own date, undated ones last, or by path, so an event reads in folder
 order. A set in which no file is a photo, such as sidecars, is a plain list of paths instead of a

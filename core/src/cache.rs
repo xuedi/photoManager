@@ -23,6 +23,18 @@ const PLACED: &str = "CREATE TABLE IF NOT EXISTS placed (layout TEXT NOT NULL)";
 /// so a rebuilt cache was never scanned, which is true.
 const RAN: &str = "CREATE TABLE IF NOT EXISTS ran (job TEXT PRIMARY KEY, at TEXT NOT NULL, what TEXT NOT NULL)";
 
+/// Every person a photo names, one row per name: in a face region, `boxed`, or only in the IPTC
+/// persons. Added the same way, and filled from the regions the rows already hold the first time.
+const PERSON: &str = "
+CREATE TABLE person (
+    photo_id INTEGER NOT NULL REFERENCES photo (id) ON DELETE CASCADE,
+    name     TEXT NOT NULL,
+    boxed    INTEGER NOT NULL
+);
+CREATE INDEX person_photo ON person (photo_id);
+CREATE INDEX person_name ON person (name);
+";
+
 /// Bumped when the reading of a path changes, so every row is placed again once.
 const PLACEMENT_VERSION: &str = "2";
 
@@ -245,6 +257,7 @@ impl Cache {
         connection.query_row("SELECT count(*) FROM photo", [], |row| row.get::<_, i64>(0))?;
         connection.execute_batch(PLACED)?;
         connection.execute_batch(RAN)?;
+        derive_persons(&connection)?;
         Ok(Some(Cache::with(connection, file)?))
     }
 
@@ -274,6 +287,7 @@ impl Cache {
         connection.execute_batch(SCHEMA)?;
         connection.execute_batch(PLACED)?;
         connection.execute_batch(RAN)?;
+        connection.execute_batch(PERSON)?;
         connection.pragma_update(None, "user_version", SCHEMA_VERSION)?;
         Cache::with(connection, file)
     }
@@ -943,6 +957,37 @@ fn holes(count: usize) -> String {
     std::iter::repeat_n("?", count).collect::<Vec<&str>>().join(",")
 }
 
+/// Makes the person table of a cache that has none yet, from the regions its rows hold: no photo
+/// is read again.
+fn derive_persons(connection: &Connection) -> Result<()> {
+    let there: bool = connection.query_row(
+        "SELECT count(*) > 0 FROM sqlite_master WHERE type = 'table' AND name = 'person'",
+        [],
+        |row| row.get(0),
+    )?;
+    if there {
+        return Ok(());
+    }
+    let transaction = connection.unchecked_transaction()?;
+    transaction.execute_batch(PERSON)?;
+    let mut rows = 0;
+    {
+        let mut statement = transaction.prepare("SELECT id, regions FROM photo WHERE regions IS NOT NULL")?;
+        let regions = statement.query_map([], |row| Ok((row.get::<_, i64>(0)?, row.get::<_, String>(1)?)))?;
+        let mut insert = transaction.prepare("INSERT INTO person (photo_id, name, boxed) VALUES (?1, ?2, ?3)")?;
+        for row in regions {
+            let (id, text) = row?;
+            for (name, boxed) in Regions::read(&text).map(|regions| regions.named()).unwrap_or_default() {
+                insert.execute(params![id, name, boxed])?;
+                rows += 1;
+            }
+        }
+    }
+    transaction.commit()?;
+    tracing::info!(rows, "persons taken from the face regions");
+    Ok(())
+}
+
 fn prepare(connection: &Connection) -> Result<()> {
     connection.pragma_update(None, "journal_mode", "WAL")?;
     connection.pragma_update(None, "synchronous", "NORMAL")?;
@@ -1085,6 +1130,12 @@ impl Writer<'_> {
         for path in &metadata.tags {
             let leaf = path.rsplit('/').next().unwrap_or(path);
             tags.execute(params![id, path, leaf])?;
+        }
+        let mut persons = self
+            .transaction
+            .prepare_cached("INSERT INTO person (photo_id, name, boxed) VALUES (?1, ?2, ?3)")?;
+        for (name, boxed) in metadata.regions.as_ref().map(Regions::named).unwrap_or_default() {
+            persons.execute(params![id, name, boxed])?;
         }
         Ok(id)
     }
@@ -1285,6 +1336,88 @@ mod tests {
         assert!(looked.ran("scan").unwrap().is_some(), "a read-only look sees it");
         let cache = cache.rebuild().unwrap();
         assert_eq!(cache.ran("scan").unwrap(), None, "a rebuilt cache was never scanned");
+    }
+
+    fn persons(cache: &Cache) -> Vec<(String, String, bool)> {
+        let mut statement = cache
+            .connection()
+            .prepare(
+                "SELECT p.rel_path, s.name, s.boxed FROM person s JOIN photo p ON p.id = s.photo_id
+                 ORDER BY p.rel_path, s.name",
+            )
+            .unwrap();
+        let rows = statement
+            .query_map([], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)))
+            .unwrap();
+        rows.collect::<Result<_>>().unwrap()
+    }
+
+    #[test]
+    fn persons_are_kept_as_the_scan_reads_them_and_derived_the_same_from_the_regions() {
+        let file = temp("persons");
+        let mut cache = Cache::open(&file).unwrap();
+        let face = |name: &str| crate::write::Face {
+            name: name.to_string(),
+            x: 0.5,
+            y: 0.5,
+            width: 0.1,
+            height: 0.1,
+        };
+        let metadata = Metadata {
+            regions: Some(Regions {
+                width: Some(100),
+                height: Some(80),
+                faces: vec![face("Anna"), face(""), face(" Ben ")],
+                persons: vec!["Anna".to_string(), "Ben".to_string(), "Cleo".to_string()],
+            }),
+            ..Metadata::empty()
+        };
+        let writer = cache.transaction().unwrap();
+        let fingerprint = Fingerprint {
+            size: 10,
+            mtime_ns: 20,
+            inode: 30,
+        };
+        let placed = Placement::parse("Atlantis/2024-05-01 Picnic/P1.JPG", &Layout::default());
+        writer
+            .put(
+                "Atlantis/2024-05-01 Picnic/P1.JPG",
+                fingerprint,
+                Some("abc"),
+                &placed,
+                &metadata,
+            )
+            .unwrap();
+        writer.commit().unwrap();
+        put_one(&mut cache, "Atlantis/2024-05-01 Picnic/P2.JPG");
+        let scanned = persons(&cache);
+        assert_eq!(
+            scanned,
+            [
+                (
+                    "Atlantis/2024-05-01 Picnic/P1.JPG".to_string(),
+                    "Anna".to_string(),
+                    true
+                ),
+                ("Atlantis/2024-05-01 Picnic/P1.JPG".to_string(), "Ben".to_string(), true),
+                (
+                    "Atlantis/2024-05-01 Picnic/P1.JPG".to_string(),
+                    "Cleo".to_string(),
+                    false
+                ),
+            ],
+            "a region without a name is nobody, a name only the persons give has no box"
+        );
+
+        cache.connection().execute_batch("DROP TABLE person").unwrap();
+        drop(cache);
+        let cache = Cache::open(&file).unwrap();
+        assert_eq!(persons(&cache), scanned, "derived on open, as the scan wrote them");
+        cache
+            .connection()
+            .execute("DELETE FROM photo WHERE rel_path LIKE '%P1.JPG'", [])
+            .unwrap();
+        assert!(persons(&cache).is_empty(), "they go with their photo");
     }
 
     #[test]

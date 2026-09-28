@@ -5,13 +5,7 @@ use serde_json::Value;
 use super::*;
 use crate::changeset::ChangeSet;
 use crate::immich::fake::{self, Data, FakeImmich};
-use crate::tools::Settings;
 use crate::tools::testing::Library;
-use crate::tools::testing::{Driven, confirm_sure};
-
-fn tool() -> &'static PeopleFromImmich {
-    &PeopleFromImmich
-}
 
 fn whole() -> Scope {
     Scope::Filter(Filter::all())
@@ -37,18 +31,36 @@ fn fetch_again(library: &Library, immich: &FakeImmich) {
     .unwrap();
 }
 
-fn answered(settings: Option<&str>, person: &str, tag: &str) -> String {
-    tool()
-        .answered(settings, person, Some(Answer::Tag(tag.to_string())))
-        .unwrap()
+/// A photo Immich knows nobody in, which names a person without a box.
+const MIA: &str = "Denmark/2018-10-00 Wedding Trip to Copenhagen/DSCF0002.JPG";
+
+fn persons(ids: &[&str]) -> BTreeSet<String> {
+    ids.iter().map(|id| id.to_string()).collect()
 }
 
-/// Ann is Anna, and everyone else what is offered first.
-fn every_answer() -> String {
-    let settings = answered(None, "p-ann", "people/family/Anna");
-    let settings = answered(Some(&settings), "p-ben", "people/groupChina/Ben");
-    let settings = answered(Some(&settings), "p-kira", "People/Kira");
-    answered(Some(&settings), "p-lena", "people/Lena Park")
+fn built(library: &Library, ids: &[&str]) -> ChangeSet {
+    let wanted = wanted(&library.cache, &persons(ids), &whole()).unwrap();
+    ChangeSet::build(&library.cache, "Write people from Immich", &wanted).unwrap()
+}
+
+fn found(library: &Library) -> Vec<(String, String, usize, bool)> {
+    sure(&library.cache)
+        .unwrap()
+        .into_iter()
+        .map(|found| (found.id, found.name, found.photos, found.refused.is_some()))
+        .collect()
+}
+
+fn regions(library: &Library, rel_path: &str) -> Regions {
+    library.cache.stated(&[rel_path.to_string()]).unwrap()[rel_path]
+        .said
+        .regions
+        .clone()
+        .unwrap_or_default()
+}
+
+fn names(regions: &Regions) -> Vec<&str> {
+    regions.faces.iter().map(|face| face.name.as_str()).collect()
 }
 
 /// Every field a write here touches, as ExifTool reads it back with `-struct`.
@@ -83,144 +95,82 @@ fn verdicts(set: &ChangeSet) -> Vec<(&str, String)> {
 }
 
 #[test]
-fn every_named_person_is_asked_about_once_with_offers_from_the_people_tree() {
-    let (library, _immich) = fetched("people-asked");
-    let questions = tool().asked(&library.cache, None, &whole(), None).unwrap();
-    let asked: Vec<(&str, &str, usize)> = questions
-        .iter()
-        .map(|question| (question.key.as_str(), question.title.as_str(), question.photos))
+fn every_named_person_is_sure_on_immichs_name_alone() {
+    let (library, _immich) = fetched("people-sure");
+    let person = |id: &str, name: &str, photos: usize| (id.to_string(), name.to_string(), photos, false);
+    assert_eq!(
+        found(&library),
+        [
+            person("p-ben", "Ben", 3),
+            person("p-ann", "Ann", 2),
+            person("p-kira", "Kira", 1),
+            person("p-lena", "Lena Park", 1),
+        ],
+        "whatever their tags are called, neither hidden nor unnamed, the refused photos not counted"
+    );
+}
+
+#[test]
+fn nothing_fetched_finds_nothing() {
+    let library = Library::new("people-none");
+    assert!(sure(&library.cache).unwrap().is_empty());
+    assert!(
+        wanted(&library.cache, &persons(&["p-ben"]), &whole())
+            .unwrap()
+            .is_empty()
+    );
+}
+
+#[test]
+fn two_persons_of_one_name_are_refused_until_one_is_renamed() {
+    let (library, immich) = fetched("people-twins");
+    immich.change(|data| data.rename("p-kira", "Ben"));
+    fetch_again(&library, &immich);
+    let twins: Vec<(String, usize, bool)> = found(&library)
+        .into_iter()
+        .filter(|(_, name, _, _)| name == "Ben")
+        .map(|(id, _, photos, refused)| (id, photos, refused))
         .collect();
     assert_eq!(
-        asked,
-        [
-            ("p-ben", "Ben", 5),
-            ("p-ann", "Ann", 2),
-            ("p-kira", "Kira", 1),
-            ("p-lena", "Lena Park", 1)
-        ],
-        "neither the hidden nor the unnamed person, and only photos of the library"
+        twins,
+        [("p-ben".to_string(), 5, true), ("p-kira".to_string(), 1, true)],
+        "listed, with every photo they are in"
     );
+    let set = built(&library, &["p-ben", "p-kira"]);
+    assert_eq!(set.counts().change, 0);
+    let refused = set.rows.iter().find(|row| row.rel_path == fake::KIRA).unwrap();
+    assert_eq!(
+        refused.verdict.tells(),
+        "refused: Immich has 2 persons named Ben: rename one there so the files can tell them apart"
+    );
+}
 
-    let offered = |key: &str| -> Vec<(String, bool)> {
-        let question = questions.iter().find(|question| question.key == key).unwrap();
-        question
-            .offers
+#[test]
+fn the_persons_are_merged_into_what_the_photo_says_and_no_tag_is_touched() {
+    let (mut library, immich) = fetched("people-write");
+    immich.change(|data| data.add_face(MIA, Some("p-lena"), 0.3, 0.3, 0.6, 0.7));
+    fetch_again(&library, &immich);
+    let tags_before = |library: &Library| -> Vec<Vec<String>> {
+        let every: Vec<String> = [fake::TWO, fake::TURNED, fake::KIRA, fake::LENA, MIA]
+            .map(String::from)
+            .to_vec();
+        let stated = library.cache.stated(&every).unwrap();
+        every
             .iter()
-            .map(|offer| match &offer.answer {
-                Answer::Tag(path) => (path.clone(), offer.sure),
-                other => panic!("{other:?} is no tag"),
-            })
+            .map(|rel_path| stated[rel_path].said.tags.clone())
             .collect()
     };
-    assert_eq!(
-        offered("p-ben")[0],
-        ("people/groupChina/Ben".to_string(), true),
-        "an exact name is sure"
-    );
-    assert_eq!(
-        offered("p-kira")[0],
-        ("People/Kira".to_string(), true),
-        "in either spelling of the root"
-    );
-    assert_eq!(
-        offered("p-ann"),
-        [
-            ("people/family/Anna".to_string(), false),
-            ("people/Ann".to_string(), false)
-        ],
-        "a name that starts another is offered, never sure, and a new tag after it"
-    );
-    assert_eq!(offered("p-lena"), [("people/Lena Park".to_string(), false)]);
+    let tags = tags_before(&library);
 
-    let settings = confirm_sure(&questions, None);
-    let answers = Answers::read(&settings).unwrap();
-    let confirmed: Vec<&String> = answers.0.keys().collect();
-    assert_eq!(confirmed, ["p-ben", "p-kira"], "only the exact ones");
-    let waiting = tool()
-        .asked(&library.cache, None, &whole(), Some(&settings))
-        .unwrap()
-        .iter()
-        .filter(|question| question.waits())
-        .count();
-    assert_eq!(waiting, 2);
-}
-
-#[test]
-fn a_name_in_the_other_order_is_offered_first_but_not_sure() {
-    let known = [
-        ("people/groupChina/Chen Mei".to_string(), 12),
-        ("people/Mei".to_string(), 3),
-    ];
-    let offered = offers("Mei Chen", &known);
-    assert_eq!(offered[0].answer, Answer::Tag("people/groupChina/Chen Mei".to_string()));
-    assert!(!offered[0].sure && !offered[0].exact);
-    assert!(
-        offered
-            .iter()
-            .any(|offer| offer.answer == Answer::Tag("people/Mei Chen".to_string())),
-        "a new tag stays on offer"
-    );
-    assert_ne!(
-        nearness("Mei Lin Chen", "people/Chen Mei"),
-        Some(0.9),
-        "only the same words are the other order"
-    );
-}
-
-#[test]
-fn an_answer_outlives_a_new_fetch_and_a_rename_in_immich() {
-    let (library, immich) = fetched("people-rename");
-    let settings = answered(None, "p-ann", "people/family/Anna");
-    immich.change(|data| data.rename("p-ann", "Anna Maria"));
-    fetch_again(&library, &immich);
-
-    let questions = tool().asked(&library.cache, None, &whole(), Some(&settings)).unwrap();
-    let ann = questions.iter().find(|question| question.key == "p-ann").unwrap();
-    assert_eq!(ann.title, "Anna Maria", "the name is Immich's newest");
-    assert_eq!(ann.answer, Some(Answer::Tag("people/family/Anna".to_string())));
-}
-
-#[test]
-fn nothing_fetched_asks_nothing_and_says_so() {
-    let library = Library::new("people-none");
-    assert!(tool().asked(&library.cache, None, &whole(), None).unwrap().is_empty());
-    assert!(tool().built(&library.cache, None, &whole(), None).unwrap().is_empty());
-    assert!(sure(&library.cache).unwrap().is_empty());
-}
-
-#[test]
-fn the_sure_persons_are_the_exact_ones_until_their_photos_say_them() {
-    let (mut library, _immich) = fetched("people-sure");
-    let found = sure(&library.cache).unwrap();
-    let persons: Vec<(&str, bool)> = found
-        .iter()
-        .map(|(question, photos)| (question.key.as_str(), *photos > 0))
-        .collect();
-    assert_eq!(persons, [("p-ben", true), ("p-kira", true)], "only the exact ones");
-
-    let questions = tool().asked(&library.cache, None, &whole(), None).unwrap();
-    let settings = confirm_sure(&questions, None);
-    let set = tool().built(&library.cache, None, &whole(), Some(&settings)).unwrap();
-    library.apply(&set);
-    library.rescan();
-    assert!(
-        sure(&library.cache).unwrap().is_empty(),
-        "written, nothing is left to suggest"
-    );
-}
-
-#[test]
-fn a_photo_gets_its_regions_persons_and_tags_and_a_second_run_nothing() {
-    let (mut library, immich) = fetched("people-write");
-    let settings = every_answer();
-
-    let set = tool().built(&library.cache, None, &whole(), Some(&settings)).unwrap();
+    let everyone = ["p-ben", "p-ann", "p-kira", "p-lena"];
+    let set = built(&library, &everyone);
     assert_eq!(
         verdicts(&set),
         [
             (fake::BEN_TAGGED, "would change".to_string()),
             (fake::BEN_UNTAGGED, "would change".to_string()),
             (fake::LENA, "would change".to_string()),
+            (MIA, "would change".to_string()),
             (
                 fake::RESIZED,
                 "refused: Immich saw it at 999 by 16, the file is 16 by 16".to_string()
@@ -229,23 +179,42 @@ fn a_photo_gets_its_regions_persons_and_tags_and_a_second_run_nothing() {
             (fake::TURNED, "would change".to_string()),
             (fake::OFFLINE, "refused: Immich has it offline".to_string()),
             (fake::KIRA, "would change".to_string()),
-            (
-                fake::GONE,
-                "refused: the cache does not know it, so scan the library first".to_string()
-            ),
         ]
     );
     let two = set.rows.iter().find(|row| row.rel_path == fake::TWO).unwrap();
-    assert!(two.tells().contains("people: none -> Anna, Ben"), "{}", two.tells());
-    let tagged = set.rows.iter().find(|row| row.rel_path == fake::BEN_TAGGED).unwrap();
-    assert_eq!(
-        tagged.change.fields.len(),
-        1,
-        "a tag the photo carries is not written again"
+    assert!(
+        two.tells().contains("people: Anna, Tom -> Ann, Tom, Ben"),
+        "the box on Ann's face takes her name, Tom's box stays: {}",
+        two.tells()
+    );
+    assert!(
+        set.rows
+            .iter()
+            .all(|row| row.change.fields.iter().all(|field| matches!(field, Field::Faces(_)))),
+        "only the people are written"
     );
 
     let summary = library.apply(&set);
-    assert_eq!(summary.written, 6, "{summary:?}");
+    assert_eq!(summary.written, 7, "{summary:?}");
+    library.rescan();
+    assert_eq!(tags_before(&library), tags, "no tag is added or taken away");
+
+    let two = regions(&library, fake::TWO);
+    assert_eq!(names(&two), ["Ann", "Tom", "Ben"], "never both Anna and Ann");
+    assert_eq!(two.persons, ["Ann", "Tom", "Ben"]);
+    let tom = &two.faces[1];
+    assert_eq!(
+        (tom.x, tom.y, tom.width, tom.height),
+        (0.5, 0.85, 0.1, 0.1),
+        "as it was"
+    );
+
+    let mia = regions(&library, MIA);
+    assert_eq!(names(&mia), ["Lena Park"]);
+    assert_eq!(mia.persons, ["Lena Park", "Mia"], "a person without a box stays named");
+
+    let kira = regions(&library, fake::KIRA);
+    assert_eq!(names(&kira), ["Kira"], "the hidden person is left out");
 
     let turned = read_back(&library, fake::TURNED);
     let region = turned.get("XMP-mwg-rs:RegionInfo").expect("a region");
@@ -257,8 +226,8 @@ fn a_photo_gets_its_regions_persons_and_tags_and_a_second_run_nothing() {
     assert_eq!(region.pointer("/AppliedToDimensions/H"), Some(&Value::from(16)));
     assert_eq!(
         region.pointer("/RegionList/0/Name"),
-        Some(&Value::from("Anna")),
-        "the tag's name"
+        Some(&Value::from("Ann")),
+        "Immich's name, not the tag's"
     );
     assert_eq!(region.pointer("/RegionList/0/Type"), Some(&Value::from("Face")));
     let area = |name: &str| {
@@ -272,39 +241,25 @@ fn a_photo_gets_its_regions_persons_and_tags_and_a_second_run_nothing() {
         (0.208333, 0.8125, 0.25, 0.25),
         "shown top left, stored bottom left of the turned photo"
     );
-    assert_eq!(list(&turned, "XMP-iptcExt:PersonInImage"), ["Anna"]);
-    for (field, want) in [
-        ("XMP-digiKam:TagsList", "people/family/Anna"),
-        ("XMP-lr:HierarchicalSubject", "people|family|Anna"),
-        ("XMP-microsoft:LastKeywordXMP", "people/family/Anna"),
-        ("XMP-dc:Subject", "Anna"),
-        ("IPTC:Keywords", "Anna"),
-    ] {
-        let found = list(&turned, field);
-        assert!(found.contains(&want.to_string()), "{field}: {found:?}");
-    }
-    assert!(
-        list(&turned, "XMP-digiKam:TagsList").contains(&"people/family".to_string()),
-        "every level"
-    );
-    assert!(
-        list(&turned, "XMP-digiKam:TagsList").contains(&"places/inGermany/Hamburg".to_string()),
-        "and what it carried stays"
-    );
+    assert_eq!(list(&turned, "XMP-iptcExt:PersonInImage"), ["Ann"]);
 
-    library.rescan();
-    let again = tool().built(&library.cache, None, &whole(), Some(&settings)).unwrap();
+    let again = built(&library, &everyone);
     assert_eq!(
         again.counts().change,
         0,
         "a second run changes nothing: {:?}",
         verdicts(&again)
     );
-    assert_eq!(again.counts().refused, 3, "the refusals stay");
+    assert_eq!(again.counts().refused, 2, "the refusals stay");
+    assert!(
+        found(&library).is_empty(),
+        "written, nothing is left to suggest: {:?}",
+        found(&library)
+    );
 
     immich.change(|data| data.add_face(fake::LENA, Some("p-ben"), 0.05, 0.05, 0.2, 0.3));
     fetch_again(&library, &immich);
-    let more = tool().built(&library.cache, None, &whole(), Some(&settings)).unwrap();
+    let more = built(&library, &everyone);
     let changed: Vec<&str> = more
         .rows
         .iter()
@@ -312,4 +267,49 @@ fn a_photo_gets_its_regions_persons_and_tags_and_a_second_run_nothing() {
         .map(|row| row.rel_path.as_str())
         .collect();
     assert_eq!(changed, [fake::LENA], "one more face is one photo");
+}
+
+#[test]
+fn a_person_ticked_alone_leaves_the_others_for_their_own_fix() {
+    let (mut library, _immich) = fetched("people-alone");
+    let set = built(&library, &["p-ben"]);
+    let two = set.rows.iter().find(|row| row.rel_path == fake::TWO).unwrap();
+    assert!(
+        two.tells().contains("-> Anna, Tom, Ben"),
+        "Ann is not Ben's to write: {}",
+        two.tells()
+    );
+    library.apply(&set);
+    library.rescan();
+    let left: Vec<String> = sure(&library.cache)
+        .unwrap()
+        .into_iter()
+        .map(|found| found.name)
+        .collect();
+    assert_eq!(left, ["Ann", "Kira", "Lena Park"]);
+}
+
+#[test]
+fn a_box_without_a_name_is_not_lost_the_photo_is_refused() {
+    let (mut library, _immich) = fetched("people-unnamed");
+    let status = std::process::Command::new("exiftool")
+        .args([
+            "-q",
+            "-overwrite_original",
+            "-XMP-mwg-rs:RegionInfo={AppliedToDimensions={W=16,H=16,Unit=pixel},\
+             RegionList=[{Area={X=0.1,Y=0.9,W=0.1,H=0.1,Unit=normalized},Type=Face}]}",
+        ])
+        .arg(library.root.join(fake::LENA))
+        .status()
+        .unwrap();
+    assert!(status.success());
+    library.rescan();
+    let set = built(&library, &["p-lena"]);
+    assert_eq!(
+        verdicts(&set),
+        [(
+            fake::LENA,
+            "refused: a face box without a name would be lost".to_string()
+        )]
+    );
 }

@@ -379,7 +379,7 @@ mod fixture_tests {
             coverage["no-people"],
             Measure {
                 of: all,
-                missing: all - 3
+                missing: all - 2
             }
         );
         assert_eq!(

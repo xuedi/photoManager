@@ -23,7 +23,7 @@ use crate::tags::{Rule, Rules};
 use crate::tools::folders::{self, FolderMigration};
 use crate::tools::gps_from_event::GpsFromEvent;
 use crate::tools::gps_from_places::{self, GpsFromPlacesTag};
-use crate::tools::people::{self, PeopleFromImmich};
+use crate::tools::people;
 use crate::tools::{Answer, Answers, Question, Tool, tag_vocabulary};
 use crate::write::{self, Engine};
 
@@ -49,7 +49,7 @@ pub const FINDERS: [Finder; 6] = [
     Finder {
         key: "people",
         title: "People",
-        fixes: "Who Immich found in a photo, where one people tag has the person's exact name",
+        fixes: "Who Immich found in a photo, under Immich's name, with a box on each face",
         pass: "Write people from Immich",
     },
     Finder {
@@ -106,6 +106,8 @@ enum What {
     },
     /// The folder whose photos are named by their date.
     Names(String),
+    /// The person, by Immich's id, written into the photos Immich finds them in.
+    Person(String),
 }
 
 /// Every fix there is in the library, finder by finder. A finder that cannot look is left out,
@@ -128,10 +130,7 @@ fn whole() -> Scope {
 fn find_one(key: &str, cache: &Cache, geo: Option<&Geo>) -> Result<Vec<Fix>, String> {
     Ok(match key {
         "tags" => tag_fixes(cache)?,
-        "people" => people::sure(cache)?
-            .into_iter()
-            .map(|(question, photos)| answered("people", question, photos, |answer| answer.tells()))
-            .collect(),
+        "people" => people::sure(cache)?.into_iter().map(person_fix).collect(),
         "places-from-tags" => gps_from_places::sure(cache, geo)?
             .into_iter()
             .map(|(question, photos)| answered("places-from-tags", question, photos, |answer| answer.tells()))
@@ -175,6 +174,22 @@ fn answered(finder: &'static str, question: Question, photos: usize, detail: imp
             question: question.key,
             answer,
         },
+    }
+}
+
+fn person_fix(found: people::Found) -> Fix {
+    let mut lines = Vec::new();
+    if let Some(why) = found.refused {
+        lines.push(("Refused".to_string(), why));
+    }
+    Fix {
+        key: format!("people:{}", found.id),
+        finder: "people",
+        title: found.name,
+        detail: "Named as in Immich, with a box on each face".to_string(),
+        photos: found.photos,
+        lines,
+        what: What::Person(found.id),
     }
 }
 
@@ -317,6 +332,7 @@ pub fn change_set(finder: &Finder, fixes: &[&Fix], cache: &Cache, geo: Option<&G
     let mut rules = Rules::default();
     let mut tidy = false;
     let mut named = BTreeSet::new();
+    let mut persons = BTreeSet::new();
     for fix in fixes.iter().filter(|fix| fix.finder == finder.key) {
         match &fix.what {
             What::Rule(rule) => {
@@ -329,13 +345,14 @@ pub fn change_set(finder: &Finder, fixes: &[&Fix], cache: &Cache, geo: Option<&G
             What::Names(dir) => {
                 named.insert(dir.clone());
             }
+            What::Person(id) => {
+                persons.insert(id.clone());
+            }
         }
     }
     let wanted: Vec<Wanted> = match finder.key {
         "tags" => tag_vocabulary::renamed(cache, &whole(), &rules, tidy).map_err(failed)?,
-        "people" => PeopleFromImmich
-            .wanted(cache, geo, &whole(), &answers)
-            .map_err(failed)?,
+        "people" => people::wanted(cache, &persons, &whole()).map_err(failed)?,
         "places-from-tags" => GpsFromPlacesTag
             .wanted(cache, geo, &whole(), &answers)
             .map_err(failed)?,
@@ -348,14 +365,6 @@ pub fn change_set(finder: &Finder, fixes: &[&Fix], cache: &Cache, geo: Option<&G
             .collect(),
         other => return Err(format!("there is no finder {other}")),
     };
-    // People from Immich also says which photos Immich knows and the library does not; they are
-    // no fix of anyone's.
-    let wanted: Vec<Wanted> = wanted
-        .into_iter()
-        .filter(|one| {
-            one.refused.is_none() || finder.key != "people" || cache.known(&one.rel_path).ok().flatten().is_some()
-        })
-        .collect();
     ChangeSet::build(cache, finder.pass, &wanted).map_err(failed)
 }
 

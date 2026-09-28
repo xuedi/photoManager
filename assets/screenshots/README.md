@@ -34,9 +34,16 @@ them.
 
 <p align="center"><img src="gallery.png" alt="The gallery: countries on the left, the photos in a grid"></p>
 
-Countries and their events on the left, or the tag tree on the other tab; the photos on the right,
-filtered by whatever the dashboard handed over, sorted by date or by name. Select some and they
-become the scope a tool works on.
+Countries and their events on the left, the tag tree or the people on the other tabs; the photos
+on the right, filtered by whatever the dashboard handed over, sorted by date or by name. Select
+some and they become the scope a tool works on.
+
+<p align="center"><img src="gallery-people.png" alt="The gallery narrowed to one person, one event and a missing field, each shown as a chip above the grid"></p>
+
+Every part of what narrows the grid - a place, a tag, a person, a missing field - is a chip above
+it, whichever tab is open, and each closes on its own; a dot on a tab says it narrows the grid.
+The people are whoever the photos name, with a face box or without, and every count on the left
+says what that entry would show together with everything else chosen.
 
 ## One photo
 

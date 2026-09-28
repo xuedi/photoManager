@@ -98,6 +98,7 @@ impl std::fmt::Debug for Watchers {
 pub struct Sidebars {
     pub places: Vec<browse::Place>,
     pub tags: TagTree,
+    pub people: Vec<browse::Person>,
 }
 
 impl Library {
@@ -267,17 +268,24 @@ impl Library {
         edits::proposal(cache, geo.as_ref(), scope)
     }
 
-    /// The countries, the events and the tags, with their counts.
+    /// The countries, the events, the tags and the people, with their counts.
     pub fn sidebars<F: FnOnce(Result<Sidebars, String>) + 'static>(&self, done: F) {
         self.read_off_thread(
             |cache| {
                 Ok(Sidebars {
                     places: browse::places(cache)?,
                     tags: TagTree::take(cache)?,
+                    people: browse::people(cache)?,
                 })
             },
             done,
         );
+    }
+
+    /// How many photos each sidebar entry would show with the other parts of the filter.
+    pub fn following<F: FnOnce(Result<browse::Following, String>) + 'static>(&self, filter: &Filter, done: F) {
+        let filter = filter.clone();
+        self.read_off_thread(move |cache| browse::following(cache, &filter), done);
     }
 
     pub fn version(&self) -> u64 {

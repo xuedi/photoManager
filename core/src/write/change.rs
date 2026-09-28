@@ -109,6 +109,8 @@ pub struct Faces {
     pub width: i64,
     pub height: i64,
     pub faces: Vec<Face>,
+    /// Persons without a box, named in the persons after the names of the boxes.
+    pub persons: Vec<String>,
 }
 
 /// One box, centre-based and normalised to the applied-to dimensions.
@@ -535,6 +537,11 @@ fn face_assigns(faces: Option<&Faces>) -> Result<Vec<Assign>, String> {
         regions.push(Value::Object(region));
         names.push(Value::from(name));
     }
+    for name in faces.persons.iter().map(|name| name.trim()) {
+        if !name.is_empty() && !names.contains(&Value::from(name)) {
+            names.push(Value::from(name));
+        }
+    }
 
     let mut applied = Map::new();
     applied.insert("W".to_string(), Value::from(faces.width));
@@ -870,20 +877,25 @@ mod tests {
             width: 640,
             height: 480,
             faces: vec![Face {
-                name: "Koch, Daniel".to_string(),
+                name: "Park, Lena".to_string(),
                 x: 0.5,
                 y: 0.4,
                 width: 0.2,
                 height: 0.3,
             }],
+            persons: vec!["Mia".to_string(), " Park, Lena ".to_string(), " ".to_string()],
         }))
         .unwrap();
         let text = arguments(&assigns[..1]).remove(1);
         assert!(text.contains("AppliedToDimensions={"), "{text}");
         assert!(text.contains("Unit=pixel"), "{text}");
-        assert!(text.contains("Name=Koch|, Daniel"), "a comma is escaped: {text}");
+        assert!(text.contains("Name=Park|, Lena"), "a comma is escaped: {text}");
         assert!(text.contains("Type=Face"), "{text}");
-        assert_eq!(by_tag(&assigns, PERSON_IN_IMAGE), Value::from(vec!["Koch, Daniel"]));
+        assert_eq!(
+            by_tag(&assigns, PERSON_IN_IMAGE),
+            Value::from(vec!["Park, Lena", "Mia"]),
+            "the boxes first, then who has none, each once"
+        );
     }
 
     #[test]
@@ -893,6 +905,7 @@ mod tests {
                 width: 640,
                 height: 480,
                 faces: vec![face],
+                persons: Vec::new(),
             }))
         };
         let good = Face {
@@ -916,7 +929,8 @@ mod tests {
             face_assigns(Some(&Faces {
                 width: 640,
                 height: 480,
-                faces: vec![]
+                faces: vec![],
+                persons: vec!["Mia".to_string()],
             }))
             .is_err()
         );
@@ -1017,6 +1031,7 @@ mod tests {
                 width: 0.2,
                 height: 0.3,
             }],
+            persons: Vec::new(),
         }))
         .unwrap();
         let read: Value = serde_json::from_str(

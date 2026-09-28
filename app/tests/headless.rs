@@ -614,7 +614,11 @@ fn gives_people_from_immich(ui: &Ui, library: &Path) {
         .filter(|fix| fix["finder"] == "people")
         .map(|fix| fix["title"].as_str().unwrap())
         .collect();
-    assert_eq!(people, ["Ben", "Kira"], "only the exact names are sure: {listed}");
+    assert_eq!(
+        people,
+        ["Ben", "Ann", "Kira", "Lena Park"],
+        "every named person, whatever their tag is called: {listed}"
+    );
 
     ui.run(&["act", "win.fixes-select-all", "'people'"], library);
     ui.run(&["act", "win.apply-fixes"], library);
@@ -631,7 +635,10 @@ fn gives_people_from_immich(ui: &Ui, library: &Path) {
         "written, the people are no fix any more: {applied}"
     );
     let untagged = library.join(fake::BEN_UNTAGGED);
-    assert!(tags_of(&untagged).contains(&"people/groupChina/Ben".to_string()));
+    assert!(
+        !tags_of(&untagged).iter().any(|tag| tag.starts_with("people")),
+        "a person is not a tag"
+    );
     let regions = |photo: &Path| {
         let out = Command::new("exiftool")
             .args(["-j", "-struct", "-XMP-mwg-rs:RegionInfo"])
@@ -642,9 +649,10 @@ fn gives_people_from_immich(ui: &Ui, library: &Path) {
         read[0]["RegionInfo"].clone()
     };
     assert_eq!(regions(&untagged)["RegionList"][0]["Name"], "Ben");
-    assert!(
-        regions(&turned).is_null(),
-        "Anna is no exact name, so her photo is not written"
+    assert_eq!(
+        regions(&turned)["RegionList"][0]["Name"],
+        "Ann",
+        "written under Immich's name, though her tag says Anna"
     );
     start_over(ui, library);
 }

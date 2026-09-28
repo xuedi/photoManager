@@ -52,6 +52,20 @@ impl Regions {
         (!self.faces.is_empty() || !self.persons.is_empty()).then_some(self)
     }
 
+    /// Every person it names, once each, in the order first named: a face region's name with its
+    /// box, then a name only the IPTC persons give, without one. A region without a name is nobody.
+    pub fn named(&self) -> Vec<(String, bool)> {
+        let mut named: Vec<(String, bool)> = Vec::new();
+        let boxed = self.faces.iter().map(|face| (face.name.trim(), true));
+        let unboxed = self.persons.iter().map(|name| (name.trim(), false));
+        for (name, boxed) in boxed.chain(unboxed) {
+            if !name.is_empty() && !named.iter().any(|(known, _)| known == name) {
+                named.push((name.to_string(), boxed));
+            }
+        }
+        named
+    }
+
     /// As one line of JSON, the way the cache keeps it.
     pub fn written(&self) -> String {
         serde_json::json!({

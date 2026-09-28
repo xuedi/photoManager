@@ -369,12 +369,13 @@ fn a_position_a_date_and_a_region_each_round_trip() {
             width: 640,
             height: 480,
             faces: vec![Face {
-                name: "Koch, Daniel".to_string(),
+                name: "Park, Lena".to_string(),
                 x: 0.5,
                 y: 0.4,
                 width: 0.2,
                 height: 0.3,
             }],
+            persons: Vec::new(),
         })),
         Field::Place(Some(Place {
             city: Some("Santiago".to_string()),
@@ -404,12 +405,12 @@ fn a_position_a_date_and_a_region_each_round_trip() {
     assert_eq!(fields.get("IPTC:TimeCreated"), Some(&Value::from("10:12:00+08:00")));
 
     let region = fields.get("XMP-mwg-rs:RegionInfo").expect("a region");
-    assert_eq!(region.pointer("/RegionList/0/Name"), Some(&Value::from("Koch, Daniel")));
+    assert_eq!(region.pointer("/RegionList/0/Name"), Some(&Value::from("Park, Lena")));
     assert_eq!(region.pointer("/RegionList/0/Area/X"), Some(&Value::from(0.5)));
     assert_eq!(region.pointer("/AppliedToDimensions/W"), Some(&Value::from(640)));
     assert_eq!(
         fields.get("XMP-iptcExt:PersonInImage"),
-        Some(&Value::from(vec!["Koch, Daniel"])),
+        Some(&Value::from(vec!["Park, Lena"])),
         "read with -struct, a list of one is still a list"
     );
 

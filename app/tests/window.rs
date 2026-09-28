@@ -704,22 +704,116 @@ fn browses_the_gallery(window: &Window, opened: &Rc<Library>) {
     assert_eq!(listed().len(), all);
 
     act("win.show-photos", "no-gps+loose");
-    assert_eq!(gallery.chips(), ["Loose files"]);
+    assert_eq!(gallery.chips(), ["without GPS", "Loose files"]);
     assert_eq!(listed(), ["China/IMG_3140.JPG"]);
-    let chip = descendants(gallery.upcast_ref())
-        .into_iter()
-        .filter_map(|widget| widget.downcast::<gtk::Button>().ok())
-        .find(|button| button.tooltip_text().as_deref() == Some("Show without this"))
-        .expect("a chip for the loose part");
-    chip.emit_clicked();
+    assert!(gallery.close_chip("Loose files"));
     settle(window);
     assert_eq!(filter(), "no-gps", "the chip took its part out and nothing else");
-    assert!(gallery.chips().is_empty());
+    assert_eq!(gallery.chips(), ["without GPS"]);
+    act("win.gallery-gap", "none");
+    assert!(gallery.chips().is_empty(), "no chips for the whole library");
+
+    browses_by_person(window);
 
     act("win.show-photos", "issue:not a photo");
     assert_eq!(gallery.page(), "empty", "the fixture has no file that is not a photo");
 
     selects_and_hands_on_a_scope(window, opened);
+}
+
+/// The People sidebar lists who the photos name and narrows to one of them; every part of the
+/// filter is a chip above the grid whichever sidebar is open, and each tab that narrows the grid
+/// carries a dot.
+fn browses_by_person(window: &Window) {
+    let gallery = window.gallery();
+    let act = |name: &str, target: &str| {
+        WidgetExt::activate_action(window, name, Some(&target.to_variant())).unwrap();
+        settle(window);
+    };
+    let filter = || window.shown().unwrap().0.to_string();
+
+    act("win.show-photos", "all");
+    gallery.browse_by("people");
+    settle(window);
+    assert_eq!(
+        gallery.people_listed(),
+        ["Anna", "Mia", "Tom"],
+        "a person without a box too"
+    );
+    gallery.search_people("to");
+    settle(window);
+    assert_eq!(gallery.people_listed(), ["Tom"], "the search narrows the list");
+    gallery.search_people("");
+    settle(window);
+
+    act("win.gallery-person", "Mia");
+    assert_eq!(filter(), "person:Mia");
+    until(|| !gallery.is_recounting(), "the sidebars counted again");
+    assert_eq!(
+        gallery.count_shown("places", "Germany"),
+        Some((0, true)),
+        "a country Mia is not in shows none, dimmed"
+    );
+    assert_eq!(gallery.count_shown("places", "Denmark"), Some((1, false)));
+    assert_eq!(
+        gallery.count_shown("people", "Tom"),
+        Some((1, false)),
+        "a person is counted without the person chosen"
+    );
+    assert_eq!(
+        window.gallery().listed(),
+        ["Denmark/2018-10-00 Wedding Trip to Copenhagen/DSCF0002.JPG"]
+    );
+    assert_eq!(gallery.dots(), ["people"]);
+    act("win.gallery-person", "Mia");
+    assert_eq!(filter(), "all", "the chosen person again widens back");
+    until(|| !gallery.is_recounting(), "the sidebars counted again");
+    assert_eq!(
+        gallery.count_shown("places", "Germany"),
+        Some((20, false)),
+        "with nothing chosen, the library's count"
+    );
+    for quick in ["person:Mia", "person:Tom"] {
+        WidgetExt::activate_action(window, "win.show-photos", Some(&quick.to_variant())).unwrap();
+    }
+    until(|| !gallery.is_recounting(), "the sidebars counted again");
+    assert_eq!(
+        gallery.count_shown("places", "Germany"),
+        Some((1, false)),
+        "only the newest recount is shown"
+    );
+    act("win.show-photos", "all");
+
+    act("win.gallery-place", "Germany/2019-07-13 Sommerfest");
+    act("win.gallery-tag", "people");
+    act("win.gallery-person", "Tom");
+    act("win.gallery-gap", "no-gps");
+    assert_eq!(filter(), "no-gps+tag:people+person:Tom@Germany/2019-07-13 Sommerfest");
+    assert_eq!(
+        gallery.chips(),
+        ["without GPS", "tag: people", "Tom", "2019-07-13 Sommerfest"],
+        "a chip for every part"
+    );
+    assert_eq!(gallery.dots(), ["places", "tags", "people"]);
+    assert!(gallery.close_chip("tag: people"));
+    settle(window);
+    assert_eq!(filter(), "no-gps+person:Tom@Germany/2019-07-13 Sommerfest");
+    assert_eq!(gallery.dots(), ["places", "people"], "the dots follow the parts");
+    assert!(gallery.close_chip("2019-07-13 Sommerfest"));
+    settle(window);
+    assert_eq!(filter(), "no-gps+person:Tom");
+    let clear = descendants(gallery.upcast_ref())
+        .into_iter()
+        .filter_map(|widget| widget.downcast::<gtk::Button>().ok())
+        .find(|button| button.label().as_deref() == Some("Clear All"))
+        .expect("Clear All");
+    clear.emit_clicked();
+    settle(window);
+    assert_eq!(filter(), "all");
+    assert!(gallery.chips().is_empty());
+    assert!(gallery.dots().is_empty());
+    gallery.browse_by("places");
+    settle(window);
 }
 
 /// Selecting counts; everything or nothing is the filter itself, a few are their paths.
@@ -887,7 +981,13 @@ fn reads_the_panel(window: &Window) {
     has(&texts, "Tag: people/family/Anna");
     has(&texts, "Tag: places/inGermany");
     has(&texts, "Person: Anna");
-    has(&texts, "Person: me");
+    has(&texts, "Person: Tom");
+    assert!(
+        !texts.iter().any(|text| text == "Person: me"),
+        "a people tag is a tag, not a person"
+    );
+    let texts = open("Denmark/2018-10-00 Wedding Trip to Copenhagen/DSCF0002.JPG");
+    has(&texts, "Person: Mia, no face box");
     has(&texts, "No coordinates");
     assert!(!page.shows_map(), "no coordinates, no map");
 

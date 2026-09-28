@@ -13,6 +13,7 @@ It lives in `$XDG_CACHE_HOME/org.beijingcode.PhotoManager/cache.db` (SQLite, wri
 |-------|-------|
 | `photo` | one row per JPEG: where it is, what the filesystem says (size, mtime, inode), its content id, what the folders say (country, city, event date and name, the event's folder, sub-folder), what the metadata says (dates, GPS and how the position was worked out, the city in the location text, camera, orientation, rating, size, whether its tag fields are tidy, the face regions and persons it names), and the raw metadata as JSON |
 | `tag` | one row per tag path per photo, from every tag field, plus its leaf |
+| `person` | one row per person a photo names, and whether a face box says where they are |
 | `issue` | one row per thing worth looking at, with its kind and a detail |
 | `ran` | when the scan and the thumbnail fill-in last ran and what they said, and when photos were last written or found new; what the dashboard's [upkeep bar](dashboard.md#the-upkeep-bar) reads |
 
@@ -52,8 +53,16 @@ A photo may say who is in it in two ways: MWG face regions, each a name and a bo
 the stored picture with the size it was measured against, and the IPTC persons. The scan keeps both
 as the file lists them, so a change set can tell whether a photo already says what a
 [people](suggestions.md#people) write would, and a second run finds nothing. The preview
-shows the names before and after, and when the names agree but a box, the size or the persons do
-not, it says so after the names.
+shows the names before and after, a person without a box marked as such, and when the names agree
+but a box, the size or the persons do not, it says so after the names.
+
+From the same fields the scan fills the `person` table: every name of a region with a box, and every
+name only the persons give, without one - kept apart so a person named by hand can later be told
+from one whose face was found. A region without a name is nobody. A person is not a tag: the
+`people` tags stay in the `tag` table and name no one here. A cache made before the table existed
+gets it the first time it is opened, taken from the regions its rows already hold, so no photo is
+read again. The table is what the gallery's People list, the `person:` filter and the dashboard's
+people gap count.
 
 ## What Immich knows
 
@@ -65,9 +74,8 @@ thrown away and read again at will, and a new one replaces the old only once it 
 that is stopped or fails keeps the one before. It has its own schema version, and one of another
 version is no snapshot at all.
 
-Which tag a person is, is worked out from it each time the suggestions are found: the one people
-tag with the person's name ([suggestions.md](suggestions.md#people)). Nothing about it is kept
-anywhere else.
+The People suggestions are worked out from it each time they are found
+([suggestions.md](suggestions.md#people)). Nothing about it is kept anywhere else.
 
 ```mermaid
 flowchart LR
