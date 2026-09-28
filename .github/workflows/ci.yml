@@ -27,7 +27,7 @@ jobs:
           # Arch puts exiftool in vendor_perl, which a non-login shell does not have on its PATH.
           echo /usr/bin/vendor_perl >> "$GITHUB_PATH"
 
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v7
 
       - uses: Swatinem/rust-cache@v2
 
