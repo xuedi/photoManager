@@ -11,18 +11,14 @@ use std::collections::{BTreeMap, BTreeSet, HashMap};
 
 use unicode_normalization::UnicodeNormalization;
 
-use crate::browse;
 use crate::cache::{self, Cache};
 use crate::changeset::{self, Wanted};
 use crate::filter::Filter;
 use crate::immich::{self, Asset, Face, Person, Snapshot, boxes};
 use crate::metadata::Regions;
 use crate::scope::Scope;
-use crate::tags;
 use crate::write::{self, Change, Faces, Field};
 
-/// The root every person's tag is under, in either spelling.
-const PEOPLE: &str = "people";
 /// How far the shape of the picture Immich measured on may be from the file's.
 const SHAPE: f64 = 0.02;
 /// How much of the smaller of two boxes the other must cover for both to be on one face.
@@ -80,42 +76,6 @@ impl Known {
 /// Lower case and one spelling of every letter, so `Anna` and `anna` are one name.
 fn fold(name: &str) -> String {
     name.trim().nfc().collect::<String>().to_lowercase()
-}
-
-fn leaf(path: &str) -> &str {
-    path.rsplit('/').next().unwrap_or(path)
-}
-
-fn is_people(path: &str) -> bool {
-    path.split('/')
-        .next()
-        .is_some_and(|root| root.eq_ignore_ascii_case(PEOPLE))
-}
-
-fn words(name: &str) -> Vec<&str> {
-    let mut words: Vec<&str> = name.split_whitespace().collect();
-    words.sort_unstable();
-    words
-}
-
-/// How near a tag's name is to a person's, if near at all: the same words in another order
-/// (family name first or last), a name that starts the other, the same first name, or a letter
-/// or two apart.
-fn nearness(name: &str, tag: &str) -> Option<f64> {
-    let (name, tag) = (fold(name), fold(leaf(tag)));
-    if words(&name).len() > 1 && words(&name) == words(&tag) {
-        return Some(0.9);
-    }
-    let shorter = name.chars().count().min(tag.chars().count());
-    if shorter >= 3 && (tag.starts_with(&name) || name.starts_with(&tag)) {
-        return Some(0.6);
-    }
-    let first = |text: &str| text.split_whitespace().next().map(String::from);
-    if first(&name).is_some_and(|word| word.chars().count() >= 3) && first(&name) == first(&tag) {
-        return Some(0.55);
-    }
-    let allowed = if shorter < 8 { 1 } else { 2 };
-    (shorter >= 4 && browse::distance(&name, &tag) <= allowed).then_some(0.5)
 }
 
 /// A person Immich names in the library's photos, and what writing them would come to.
@@ -354,9 +314,9 @@ fn merged(
     }
 }
 
-/// The photos among these in which Immich names someone the file does not: no face region and no
-/// people tag of that name, or of one near it. By photo, the names. `None` when nothing was
-/// fetched from Immich, so nothing is known either way.
+/// The photos among these in which Immich names someone the file does not: no face region and
+/// no person of that name. A `people` tag names nobody. By photo, the names. `None` when nothing
+/// was fetched from Immich, so nothing is known either way.
 pub fn untold(cache: &Cache, rel_paths: &[String]) -> Result<Option<BTreeMap<String, Vec<String>>>, String> {
     let Some(known) = Known::load(cache)? else {
         return Ok(None);
@@ -367,28 +327,15 @@ pub fn untold(cache: &Cache, rel_paths: &[String]) -> Result<Option<BTreeMap<Str
         let Some(asset) = known.assets.get(rel_path) else {
             continue;
         };
-        let said = stated.get(rel_path).map(|stated| &stated.said);
-        let mut names: Vec<String> = said
-            .map(|said| {
-                tags::deepest(&said.tags)
-                    .into_iter()
-                    .filter(|tag| is_people(tag))
-                    .map(|tag| leaf(&tag).to_string())
-                    .collect()
-            })
+        let named: BTreeSet<String> = stated
+            .get(rel_path)
+            .and_then(|stated| stated.said.regions.as_ref())
+            .map(|regions| regions.named().into_iter().map(|(name, _)| fold(&name)).collect())
             .unwrap_or_default();
-        if let Some(regions) = said.and_then(|said| said.regions.as_ref()) {
-            names.extend(regions.faces.iter().map(|face| face.name.clone()));
-            names.extend(regions.persons.iter().cloned());
-        }
         let mut missing: Vec<String> = known
             .named(asset)
             .map(|(_, person)| person.name.trim().to_string())
-            .filter(|name| {
-                !names
-                    .iter()
-                    .any(|said| fold(said) == fold(name) || nearness(name, said).is_some())
-            })
+            .filter(|name| !named.contains(&fold(name)))
             .collect();
         missing.sort();
         missing.dedup();

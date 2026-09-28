@@ -157,15 +157,12 @@ pub enum Answer {
     },
     /// Its photos are left as they are by this tool.
     Leave,
-    /// This person is this tag.
-    Tag(String),
     /// Into this folder of the library: an event's new place, or the event a loose photo joins.
     Folder(String),
 }
 
 const LEAVE: &str = "leave";
 const PIN: &str = "pin";
-const TAG: &str = "tag";
 const FOLDER: &str = "folder";
 
 /// Where an answer puts its photos.
@@ -202,13 +199,6 @@ impl Answer {
     fn of(value: &Value) -> Result<Answer, String> {
         match value {
             Value::String(word) if word == LEAVE => Ok(Answer::Leave),
-            Value::Object(fields) if fields.contains_key(TAG) => {
-                let path = fields
-                    .get(TAG)
-                    .and_then(Value::as_str)
-                    .ok_or_else(|| format!("{value} is not a tag"))?;
-                Ok(Answer::Tag(crate::tags::path(path)?))
-            }
             Value::Object(fields) if fields.contains_key(FOLDER) => {
                 let path = fields
                     .get(FOLDER)
@@ -246,7 +236,6 @@ impl Answer {
         };
         match self {
             Answer::Leave => Value::from(LEAVE),
-            Answer::Tag(path) => one(TAG, path),
             Answer::Folder(path) => one(FOLDER, path),
             Answer::Place(place) => place.written(),
             Answer::Pin { lat, lon, near } => {
@@ -258,11 +247,10 @@ impl Answer {
         }
     }
 
-    /// `Beijing, Beijing, China`, a point near it, a tag, a folder, or that it is left alone.
+    /// `Beijing, Beijing, China`, a point near it, a folder, or that it is left alone.
     pub fn tells(&self) -> String {
         match self {
             Answer::Leave => "Left alone".to_string(),
-            Answer::Tag(path) => format!("Tagged {path}"),
             Answer::Folder(path) => format!("Into {path}"),
             Answer::Place(place) => place.tells(),
             Answer::Pin { lat, lon, near } => format!("A point near {} ({lat:.5}, {lon:.5})", near.tells()),
@@ -273,7 +261,7 @@ impl Answer {
     pub fn names(&self) -> String {
         match self {
             Answer::Leave => "nothing".to_string(),
-            Answer::Tag(_) | Answer::Folder(_) => self.tells(),
+            Answer::Folder(_) => self.tells(),
             Answer::Place(place) => place.name.clone(),
             Answer::Pin { near, .. } => format!("a point near {}", near.name),
         }
@@ -282,7 +270,7 @@ impl Answer {
     /// Where its photos go, if anywhere.
     pub fn spot(&self) -> Option<Spot<'_>> {
         match self {
-            Answer::Leave | Answer::Tag(_) | Answer::Folder(_) => None,
+            Answer::Leave | Answer::Folder(_) => None,
             Answer::Place(place) => Some(Spot {
                 lat: place.lat,
                 lon: place.lon,
@@ -530,7 +518,6 @@ mod answer_tests {
     fn every_answer_round_trips_through_text() {
         let answers = [
             Answer::Leave,
-            Answer::Tag("people/family/Anna".to_string()),
             Answer::Folder("Germany/Hamburg/2019-07-13 Sommerfest".to_string()),
         ];
         let mut all = Answers::default();
@@ -544,12 +531,11 @@ mod answer_tests {
             all.set(&index.to_string(), Some(answer.clone()));
         }
         assert_eq!(Answers::read(&all.written()), Ok(all));
-        assert_eq!(answers[1].tells(), "Tagged people/family/Anna");
+        assert_eq!(answers[1].tells(), "Into Germany/Hamburg/2019-07-13 Sommerfest");
     }
 
     #[test]
     fn a_broken_answer_says_why() {
-        assert!(Answer::read(r#"{"tag": "people//Anna"}"#).is_err());
         assert!(Answer::read(r#"{"folder": "Germany/nowhere"}"#).is_err());
         assert!(Answer::read(r#"{"pin": [91, 0], "near": {}}"#).is_err());
     }

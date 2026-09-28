@@ -159,7 +159,8 @@ carries. A city is spelled the way the library already spells it, so folders and
   event without a year are not: Move Event moves them by hand.
 - **The people gate.** An event whose photos Immich names people in that the files do not say is
   held back until they are written ([People](#people)); its fix says it waits, and ticking the
-  people too lets it go in the same apply. A move that is refused for good - its folder is there
+  people too lets it go in the same apply. A file says a person with a face region or in the
+  persons of that name, in any case; a `people` tag says nobody. A move that is refused for good - its folder is there
   already, two events would go to one - is no fix.
 - **One pass**: the moves are never written together with a change to a photo, and each moves an
   event with its sub-folders by one rename ([writing.md](writing.md#moving-a-folder)).
