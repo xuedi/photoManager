@@ -169,7 +169,7 @@ impl Rgba {
 
     fn of_rgb(pixels: &[u8], width: u32, height: u32) -> Rgba {
         let mut rgba = Vec::with_capacity(pixels.len() / 3 * 4);
-        for pixel in pixels.chunks_exact(3) {
+        for pixel in pixels.as_chunks::<3>().0 {
             rgba.extend_from_slice(pixel);
             rgba.push(255);
         }
