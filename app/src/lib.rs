@@ -16,6 +16,7 @@ pub mod secrets;
 pub mod suggestions;
 pub mod thumbnails;
 pub mod tools;
+pub mod upkeep;
 pub mod window;
 
 use gtk::gio;

@@ -100,7 +100,9 @@ fn the_app_can_be_clicked_through_headless() {
         assert_eq!(state(&ui, lib)["view"], view, "clicking {tab} shows {view}");
     }
 
-    ui.run(&["click", "Scan the Library", "--role", "button"], lib);
+    assert_eq!(upkeep(&state(&ui, lib), "Scan"), "never run");
+    // A popover does not open in a headless session, so the bar's jobs are run by their actions.
+    ui.run(&["act", "win.scan"], lib);
     let scanned = scanned(&ui, lib);
     let photos = photomanager_core::fixtures::photo_count() as u64;
     assert_eq!(scanned["photos"].as_u64(), Some(photos), "the scan found every photo");
@@ -115,6 +117,9 @@ fn the_app_can_be_clicked_through_headless() {
         Some(photos),
         "every photo got a thumbnail while it was scanned"
     );
+    let bar = settled_bar(&ui, lib, "Scan", "fine");
+    assert_eq!(upkeep(&bar, "Thumbnails"), "fine");
+    assert_eq!(upkeep(&bar, "Places"), "never run");
 
     let survey = surveyed(&ui, lib);
     assert_eq!(survey["coverage"]["no-gps"]["missing"].as_u64(), Some(photos - 22));
@@ -143,9 +148,10 @@ fn the_app_can_be_clicked_through_headless() {
     steps_through_one_photo_at_a_time(&ui, lib);
     ui.run(&["act", "win.show-view", "'dashboard'"], lib);
 
-    ui.run(&["click", "Get Place Data", "--role", "button"], lib);
+    ui.run(&["act", "win.get-places"], lib);
     let places = settled(&ui, lib, "places");
     assert_eq!(places["places"].as_u64(), Some(151), "the excerpt was imported");
+    settled_bar(&ui, lib, "Places", "fine");
 
     previews_and_applies(&ui, lib);
     edits_one_photo(&ui, lib);
@@ -570,7 +576,7 @@ fn gives_people_from_immich(ui: &Ui, library: &Path) {
     ui.run(&["act", "win.immich-key", &format!("'{}'", fake::KEY)], library);
 
     ui.run(&["act", "win.show-view", "'dashboard'"], library);
-    ui.run(&["click", "Get People from Immich", "--role", "button"], library);
+    ui.run(&["act", "win.get-people"], library);
     let mut fetched = Value::Null;
     for _ in 0..60 {
         fetched = state(ui, library);
@@ -968,4 +974,27 @@ fn state(ui: &Ui, library: &Path) -> Value {
     ui.run(&["act", "app.dump-state", &format!("'{}'", file.display())], library);
     ui.wait_for_file(&file);
     serde_json::from_slice(&std::fs::read(&file).unwrap()).expect("state as json")
+}
+
+/// A job's state on the dashboard's bar, in a word.
+fn upkeep(state: &Value, job: &str) -> String {
+    state["upkeep"]
+        .as_array()
+        .and_then(|jobs| jobs.iter().find(|each| each["job"] == job))
+        .and_then(|each| each["state"].as_str())
+        .unwrap_or_default()
+        .to_string()
+}
+
+/// Waits until the bar shows a job in a state; the bar is read off the main thread.
+fn settled_bar(ui: &Ui, library: &Path, job: &str, wanted: &str) -> Value {
+    let mut last = Value::Null;
+    for _ in 0..40 {
+        last = state(ui, library);
+        if upkeep(&last, job) == wanted {
+            return last;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(250));
+    }
+    panic!("{job} never became {wanted}: {}", last["upkeep"]);
 }

@@ -22,6 +22,7 @@ pub mod survey;
 pub mod tags;
 pub mod thumbs;
 pub mod tools;
+pub mod upkeep;
 pub mod write;
 
 #[cfg(feature = "fixtures")]

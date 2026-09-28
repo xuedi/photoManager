@@ -38,6 +38,8 @@ mod imp {
         pub suggestions: TemplateChild<Suggestions>,
         #[template_child]
         pub suggestions_page: TemplateChild<adw::ViewStackPage>,
+        #[template_child]
+        pub narrow: TemplateChild<adw::Breakpoint>,
         pub library: std::cell::RefCell<Option<Rc<Library>>>,
     }
 
@@ -65,6 +67,10 @@ mod imp {
             self.parent_constructed();
             let window = self.obj();
             window.setup_actions();
+            let dashboard = self.dashboard.get();
+            self.narrow.connect_apply(move |_| dashboard.set_narrow(true));
+            let dashboard = self.dashboard.get();
+            self.narrow.connect_unapply(move |_| dashboard.set_narrow(false));
             let weak = window.downgrade();
             self.suggestions.connect_listed(move |count| {
                 if let Some(window) = weak.upgrade() {
@@ -347,6 +353,9 @@ impl Window {
         let scan = gtk::gio::ActionEntry::builder("scan")
             .activate(|window: &Window, _, _| window.imp().dashboard.scan(Mode::Reconcile))
             .build();
+        let rescan = gtk::gio::ActionEntry::builder("rescan")
+            .activate(|window: &Window, _, _| window.imp().dashboard.scan(Mode::Reread))
+            .build();
         let fill = gtk::gio::ActionEntry::builder("fill-thumbnails")
             .activate(|window: &Window, _, _| window.imp().dashboard.fill_thumbnails())
             .build();
@@ -434,6 +443,7 @@ impl Window {
             apply_fixes,
             cancel_fixes,
             scan,
+            rescan,
             fill,
             places,
             people,

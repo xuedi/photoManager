@@ -231,6 +231,11 @@ fn state(window: &Window, paths: &Paths, library: Option<&Library>) -> String {
             "fetched_at": at,
         })),
         "dashboard_toast": dashboard.said(),
+        "upkeep": dashboard.upkeep_shown().into_iter().map(|(job, state, caption)| serde_json::json!({
+            "job": job,
+            "state": state,
+            "caption": caption,
+        })).collect::<Vec<_>>(),
         "scanning": library.map(|library| library.is_scanning()).unwrap_or(false),
     })
     .to_string()

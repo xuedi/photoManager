@@ -51,6 +51,16 @@ pub fn seconds(at: DateTime) -> i64 {
         .unwrap_or_default()
 }
 
+/// A UTC stamp in the one format as the computer's own time, for showing when something ran.
+/// Left as it is when it does not read.
+pub fn local(utc: &str) -> String {
+    parse(utc)
+        .ok()
+        .and_then(|at| TimeZone::UTC.to_timestamp(at).ok())
+        .map(|stamp| format(stamp.to_zoned(TimeZone::system()).datetime()))
+        .unwrap_or_else(|| utc.to_string())
+}
+
 /// The local time that many seconds stand for.
 pub fn from_seconds(seconds: i64) -> Option<DateTime> {
     let stamp = jiff::Timestamp::from_second(seconds).ok()?;

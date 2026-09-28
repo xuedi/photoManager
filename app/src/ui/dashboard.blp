@@ -22,85 +22,33 @@ template $PmDashboard: Adw.Bin {
               orientation: vertical;
               spacing: 12;
 
-              Adw.WrapBox {
-                child-spacing: 12;
-                line-spacing: 12;
-                halign: center;
+              Box bar {
+                homogeneous: true;
 
-                Button scan_button {
-                  label: "Scan the Library";
-                  action-name: "win.scan";
+                styles [
+                  "linked",
+                ]
+              }
 
-                  styles [
-                    "suggested-action",
-                    "pill",
-                  ]
+              Box busy {
+                spacing: 12;
+                visible: false;
 
-                  accessibility {
-                    label: "Scan the Library";
-                  }
-                }
-
-                Button fill_button {
-                  label: "Make Missing Thumbnails";
-                  visible: false;
-                  action-name: "win.fill-thumbnails";
-
-                  styles [
-                    "pill",
-                  ]
-
-                  accessibility {
-                    label: "Make Missing Thumbnails";
-                  }
-                }
-
-                Button places_button {
-                  label: "Get Place Data";
-                  action-name: "win.get-places";
-
-                  styles [
-                    "pill",
-                  ]
-
-                  accessibility {
-                    label: "Get Place Data";
-                  }
-                }
-
-                Button people_button {
-                  label: "Get People from Immich";
-                  action-name: "win.get-people";
-
-                  styles [
-                    "pill",
-                  ]
-
-                  accessibility {
-                    label: "Get People from Immich";
-                  }
+                ProgressBar progress {
+                  show-text: true;
+                  hexpand: true;
+                  valign: center;
                 }
 
                 Button cancel_button {
                   label: "Cancel";
-                  visible: false;
                   action-name: "win.cancel-scan";
-
-                  styles [
-                    "pill",
-                  ]
+                  valign: center;
 
                   accessibility {
                     label: "Cancel";
                   }
                 }
-              }
-
-              ProgressBar progress {
-                visible: false;
-                show-text: true;
-                width-request: 300;
-                halign: center;
               }
             }
           };
@@ -191,10 +139,6 @@ template $PmDashboard: Adw.Bin {
               Adw.PreferencesGroup tidy {
                 title: "Tidy Up";
                 description: "Things that are untidy rather than missing. Each is fixed by a tool.";
-              }
-
-              Adw.PreferencesGroup data {
-                title: "Behind the Scenes";
               }
             };
           };

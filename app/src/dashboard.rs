@@ -1,4 +1,4 @@
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
 use std::rc::Rc;
 
 use adw::prelude::*;
@@ -9,8 +9,10 @@ use photomanager_core::filter::{Filter, Gap};
 use photomanager_core::remedy::Remedy;
 use photomanager_core::scan::Mode;
 use photomanager_core::survey::{Measure, Place, Survey};
+use photomanager_core::upkeep::{self, Facts, Job, Status};
 
 use crate::library::{Event, Library};
+use crate::upkeep::{Now, Segment};
 
 const SHOW_PHOTOS: &str = "win.show-photos";
 
@@ -31,15 +33,9 @@ mod imp {
         #[template_child]
         pub controls: TemplateChild<gtk::Box>,
         #[template_child]
-        pub scan_button: TemplateChild<gtk::Button>,
+        pub bar: TemplateChild<gtk::Box>,
         #[template_child]
-        pub fill_button: TemplateChild<gtk::Button>,
-        #[template_child]
-        pub places_button: TemplateChild<gtk::Button>,
-        #[template_child]
-        pub people_button: TemplateChild<gtk::Button>,
-        #[template_child]
-        pub cancel_button: TemplateChild<gtk::Button>,
+        pub busy: TemplateChild<gtk::Box>,
         #[template_child]
         pub progress: TemplateChild<gtk::ProgressBar>,
         #[template_child]
@@ -53,8 +49,6 @@ mod imp {
         #[template_child]
         pub tidy: TemplateChild<adw::PreferencesGroup>,
         #[template_child]
-        pub data: TemplateChild<adw::PreferencesGroup>,
-        #[template_child]
         pub suggested: TemplateChild<adw::PreferencesGroup>,
         #[template_child]
         pub suggested_row: TemplateChild<adw::ActionRow>,
@@ -64,6 +58,13 @@ mod imp {
         pub rows: RefCell<Vec<(adw::PreferencesGroup, gtk::Widget)>>,
         pub place_rows: RefCell<Vec<gtk::Widget>>,
         pub said: RefCell<String>,
+        pub segments: RefCell<Vec<Segment>>,
+        pub statuses: RefCell<Vec<Status>>,
+        /// Which upkeep is the newest asked for, so an older one that arrives late is dropped.
+        pub upkeeps: Cell<u64>,
+        pub running: Cell<Option<Job>>,
+        /// The job that failed last in this session, and why.
+        pub failed: RefCell<Option<(Job, String)>>,
     }
 
     #[glib::object_subclass]
@@ -88,6 +89,15 @@ mod imp {
             self.field.set_model(Some(&gtk::StringList::new(&titles)));
             let dashboard = self.obj().clone();
             self.field.connect_selected_notify(move |_| dashboard.show_places());
+
+            for job in Job::ALL {
+                let segment = Segment::new(job);
+                self.bar.append(segment.widget());
+                self.segments.borrow_mut().push(segment);
+            }
+            self.obj().show_bar();
+            // Something may have changed in the library while the dashboard was not looked at.
+            self.obj().connect_map(|dashboard| dashboard.show_upkeep());
         }
     }
 
@@ -109,7 +119,6 @@ impl Default for Dashboard {
 
 impl Dashboard {
     pub fn set_library(&self, library: Option<Rc<Library>>) {
-        self.imp().scan_button.set_sensitive(library.is_some());
         *self.imp().library.borrow_mut() = library;
         self.refresh();
     }
@@ -121,9 +130,7 @@ impl Dashboard {
         if library.is_scanning() {
             return;
         }
-        self.running(true);
-        self.imp().progress.set_fraction(0.0);
-        self.imp().progress.set_text(Some("Looking for photos"));
+        self.start(Job::Scan, "Looking for photos");
 
         let dashboard = self.clone();
         library.scan(mode, move |event| dashboard.report(event));
@@ -136,9 +143,7 @@ impl Dashboard {
         if library.is_scanning() {
             return;
         }
-        self.running(true);
-        self.imp().progress.set_fraction(0.0);
-        self.imp().progress.set_text(Some("Looking for thumbnails"));
+        self.start(Job::Thumbnails, "Looking for thumbnails");
 
         let dashboard = self.clone();
         library.fill_thumbnails(move |event| dashboard.report(event));
@@ -152,9 +157,7 @@ impl Dashboard {
         if library.is_scanning() {
             return;
         }
-        self.running(true);
-        self.imp().progress.set_fraction(0.0);
-        self.imp().progress.set_text(Some("Asking GeoNames"));
+        self.start(Job::Places, "Asking GeoNames");
 
         let dashboard = self.clone();
         library.get_places(move |event| dashboard.report(event));
@@ -173,9 +176,7 @@ impl Dashboard {
             self.ask_for_preferences("Set where Immich is and its API key first");
             return;
         }
-        self.running(true);
-        self.imp().progress.set_fraction(0.0);
-        self.imp().progress.set_text(Some("Asking Immich"));
+        self.start(Job::People, "Asking Immich");
 
         let dashboard = self.clone();
         gtk::glib::spawn_future_local(async move {
@@ -185,13 +186,10 @@ impl Dashboard {
                     library.get_people(key, move |event| reporter.report(event));
                 }
                 Ok(None) => {
-                    dashboard.running(false);
+                    dashboard.stop();
                     dashboard.ask_for_preferences("There is no Immich API key yet");
                 }
-                Err(why) => {
-                    dashboard.running(false);
-                    dashboard.report(Event::Failed(why));
-                }
+                Err(why) => dashboard.report(Event::Failed(why)),
             }
         });
     }
@@ -273,7 +271,7 @@ impl Dashboard {
                 progress.set_text(Some(&format!("{done} of {total}")));
             }
             Event::Finished(summary) => {
-                self.running(false);
+                self.stop();
                 self.refresh();
                 tracing::info!(
                     photos = summary.photos,
@@ -284,8 +282,8 @@ impl Dashboard {
                 );
             }
             Event::Filled(done) => {
-                self.running(false);
-                self.show_data();
+                self.stop();
+                self.show_upkeep();
                 tracing::info!(
                     made = done.made,
                     missing = done.missing,
@@ -297,8 +295,8 @@ impl Dashboard {
             Event::Note(line) => progress.set_text(Some(&line)),
             Event::Previewed(_) | Event::Applied(_) | Event::Fixed(_) => {}
             Event::Places(imported) => {
-                self.running(false);
-                self.show_data();
+                self.stop();
+                self.show_upkeep();
                 tracing::info!(
                     places = imported.places,
                     names = imported.names,
@@ -308,33 +306,123 @@ impl Dashboard {
                 );
             }
             Event::People(fetched) => {
-                self.running(false);
-                self.show_data();
+                self.stop();
+                self.show_upkeep();
                 self.say_toast(adw::Toast::new(&format!(
                     "{} named persons in {} photos, {} faces",
                     fetched.named, fetched.with_named, fetched.faces
                 )));
             }
             Event::Failed(why) => {
-                self.running(false);
+                let job = self.imp().running.get();
+                self.stop();
+                if let Some(job) = job {
+                    *self.imp().failed.borrow_mut() = Some((job, why.clone()));
+                }
                 self.refresh();
-                self.imp().progress.set_visible(true);
-                self.imp().progress.set_fraction(0.0);
-                self.imp().progress.set_text(Some(&format!("Did not work: {why}")));
+                self.say_toast(adw::Toast::new(&format!("Did not work: {why}")));
                 tracing::error!(why, "the last thing asked for failed");
             }
         }
     }
 
-    fn running(&self, busy: bool) {
-        self.imp().scan_button.set_visible(!busy);
-        self.imp().cancel_button.set_visible(busy);
-        self.imp().progress.set_visible(busy);
-        self.imp().places_button.set_visible(!busy);
-        self.imp().people_button.set_visible(!busy);
-        if busy {
-            self.imp().fill_button.set_visible(false);
+    fn start(&self, job: Job, text: &str) {
+        let imp = self.imp();
+        imp.running.set(Some(job));
+        if imp.failed.borrow().as_ref().is_some_and(|(failed, _)| *failed == job) {
+            *imp.failed.borrow_mut() = None;
         }
+        imp.progress.set_fraction(0.0);
+        imp.progress.set_text(Some(text));
+        imp.busy.set_visible(true);
+        self.show_bar();
+    }
+
+    fn stop(&self) {
+        self.imp().running.set(None);
+        self.imp().busy.set_visible(false);
+        self.show_bar();
+    }
+
+    /// Asks when each job last ran; the bar follows when the answer is in.
+    fn show_upkeep(&self) {
+        let imp = self.imp();
+        let asked = imp.upkeeps.get() + 1;
+        imp.upkeeps.set(asked);
+        let Some(library) = imp.library.borrow().clone() else {
+            imp.statuses.borrow_mut().clear();
+            self.show_bar();
+            return;
+        };
+        let dashboard = self.downgrade();
+        library.upkeep(move |found| {
+            let Some(dashboard) = dashboard.upgrade() else {
+                return;
+            };
+            if dashboard.imp().upkeeps.get() != asked {
+                return;
+            }
+            match found {
+                Ok(statuses) => *dashboard.imp().statuses.borrow_mut() = statuses,
+                Err(why) => tracing::error!(why, "the upkeep could not be read"),
+            }
+            dashboard.show_bar();
+        });
+    }
+
+    fn show_bar(&self) {
+        let imp = self.imp();
+        let running = imp.running.get();
+        let failed = imp.failed.borrow();
+        let statuses = imp.statuses.borrow();
+        let nothing = Facts {
+            now: photomanager_core::clock::now(),
+            ..Facts::default()
+        };
+        let has_library = imp.library.borrow().is_some();
+        for segment in imp.segments.borrow().iter() {
+            let status = statuses
+                .iter()
+                .find(|status| status.job == segment.job)
+                .cloned()
+                .unwrap_or_else(|| upkeep::status(segment.job, &nothing));
+            let now = match (running, failed.as_ref()) {
+                (Some(job), _) if job == segment.job => Now::Running,
+                (Some(_), _) => Now::Waiting,
+                _ if !has_library => Now::Waiting,
+                (None, Some((job, why))) if *job == segment.job => Now::Failed(why),
+                (None, _) => Now::Idle,
+            };
+            segment.show(&status, now);
+        }
+    }
+
+    /// Lays the bar out as a column on a narrow window.
+    pub fn set_narrow(&self, narrow: bool) {
+        let bar = &self.imp().bar;
+        match narrow {
+            true => {
+                bar.set_orientation(gtk::Orientation::Vertical);
+                bar.add_css_class("vertical");
+            }
+            false => {
+                bar.set_orientation(gtk::Orientation::Horizontal);
+                bar.remove_css_class("vertical");
+            }
+        }
+    }
+
+    /// Each job of the bar: its name, its state in a word and its caption, as shown.
+    pub fn upkeep_shown(&self) -> Vec<(&'static str, String, String)> {
+        self.imp()
+            .segments
+            .borrow()
+            .iter()
+            .map(|segment| {
+                let (word, caption) = segment.shown();
+                (segment.job.title(), word, caption)
+            })
+            .collect()
     }
 
     /// Shows what is known right away and asks for a new survey, which fills the page when it
@@ -342,10 +430,11 @@ impl Dashboard {
     fn refresh(&self) {
         let Some(library) = self.imp().library.borrow().clone() else {
             self.show_page(false);
+            self.show_upkeep();
             return;
         };
         self.show_page(library.counts().photos > 0);
-        self.show_data();
+        self.show_upkeep();
 
         let dashboard = self.clone();
         library.resurvey(move |taken| match taken {
@@ -528,40 +617,6 @@ impl Dashboard {
                 row.add_suffix(&fix);
             }
             clickable(&row, finding.count, &finding.filter);
-            self.keep(&group, row.upcast());
-        }
-    }
-
-    /// What is not about the photos but about what the application keeps next to them.
-    fn show_data(&self) {
-        let imp = self.imp();
-        let group = imp.data.get();
-        self.clear(&group);
-        let Some(library) = imp.library.borrow().clone() else {
-            return;
-        };
-        let counts = library.counts();
-        imp.fill_button
-            .set_visible(!library.is_scanning() && counts.photos > 0 && counts.thumbnails < counts.photos);
-
-        let places = library
-            .dump_date()
-            .filter(|_| counts.places > 0)
-            .map(|date| format!("from the GeoNames dumps of {date}"))
-            .unwrap_or_else(|| "not fetched yet".to_string());
-        let (persons, people) = match library.people_known() {
-            Some((named, at)) => (named as i64, format!("named persons, fetched from Immich on {at}")),
-            None => (0, "not fetched from Immich yet".to_string()),
-        };
-        for (title, value, subtitle) in [
-            ("Thumbnails", counts.thumbnails, "made while scanning".to_string()),
-            ("Places", counts.places, places),
-            ("People", persons, people),
-        ] {
-            let row = adw::ActionRow::builder().title(title).subtitle(subtitle).build();
-            let label = gtk::Label::builder().label(value.to_string()).build();
-            label.add_css_class("dim-label");
-            row.add_suffix(&label);
             self.keep(&group, row.upcast());
         }
     }

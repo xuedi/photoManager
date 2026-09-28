@@ -27,6 +27,7 @@ use photomanager_core::settings::{self, Settings};
 use photomanager_core::survey::Survey;
 use photomanager_core::thumbs::{Size, Thumbs};
 use photomanager_core::tools::Question;
+use photomanager_core::upkeep::{self, Facts, Status};
 use photomanager_core::write::{Engine, Summary as Applied};
 
 #[derive(Debug)]
@@ -519,9 +520,49 @@ impl Library {
 
     /// How many persons the last snapshot names, and when it was fetched.
     pub fn people_known(&self) -> Option<(usize, String)> {
-        let snapshot = Snapshot::open(&self.paths.immich_db()).ok().flatten()?;
-        let named = snapshot.people().ok()?.iter().filter(|person| person.named()).count();
-        Some((named, snapshot.about("fetched-at").ok().flatten().unwrap_or_default()))
+        people_in(&self.paths.immich_db())
+    }
+
+    /// When each upkeep job last ran and whether it is worth running again, worked out off the
+    /// main thread: it looks at every folder of the library to see what changed since the scan.
+    pub fn upkeep<F: FnOnce(Result<Vec<Status>, String>) + 'static>(&self, done: F) {
+        let geo_db = self.paths.geo_db();
+        let immich_db = self.paths.immich_db();
+        let library = self.paths.library().to_path_buf();
+        let thumbs = self.thumbs.clone();
+        self.read_off_thread(
+            move |cache| {
+                let mut facts = Facts::read(cache)?;
+                facts.thumbnails = thumbs.count(Size::Small) as i64;
+                if let Some(geo) = Geo::read_only(&geo_db).ok().flatten() {
+                    facts.places = geo.counts().map(|counts| counts.places).unwrap_or_default();
+                    facts.dump_date = geo.dump_date();
+                    facts.imported_at = geo.imported_at();
+                }
+                facts.people = people_in(&immich_db);
+                let started = std::time::Instant::now();
+                facts.changed = facts
+                    .scan
+                    .as_ref()
+                    .and_then(upkeep::scan_begun)
+                    .and_then(|begun| upkeep::changed_since(&library, &begun));
+                tracing::debug!(
+                    seconds = started.elapsed().as_secs_f64(),
+                    "the folders were looked over"
+                );
+                Ok(upkeep::statuses(&facts))
+            },
+            done,
+        );
+    }
+
+    /// Keeps that a job ran, in the cache, while the cache is here.
+    fn note_ran(&self, job: &str, what: &str) {
+        if let Some(cache) = self.cache.borrow().as_ref()
+            && let Err(error) = cache.note_ran(job, what)
+        {
+            tracing::error!(%error, job, "the run could not be kept");
+        }
     }
 
     /// Whether the address and the key work, asked off the main thread. Nothing is kept.
@@ -791,6 +832,11 @@ impl Library {
                     Message::Fixed(outcome, cache) => {
                         *this.cache.borrow_mut() = Some(cache);
                         this.working.set(false);
+                        if let Ok(passes) = &outcome
+                            && passes.iter().any(|pass| pass.summary.written > 0)
+                        {
+                            this.note_ran(upkeep::WRITTEN, "");
+                        }
                         match outcome {
                             Ok(passes) => Event::Fixed(passes),
                             Err(why) => Event::Failed(why),
@@ -799,6 +845,9 @@ impl Library {
                     Message::Applied(outcome, cache) => {
                         *this.cache.borrow_mut() = Some(cache);
                         this.working.set(false);
+                        if outcome.as_ref().is_ok_and(|summary| summary.written > 0) {
+                            this.note_ran(upkeep::WRITTEN, "");
+                        }
                         match outcome {
                             Ok(summary) => Event::Applied(summary),
                             Err(why) => Event::Failed(why),
@@ -943,6 +992,7 @@ impl Library {
                     Message::Done(done, total) => Event::Done(done, total),
                     Message::Filled(done) => {
                         this.scanning.set(false);
+                        this.note_ran(upkeep::THUMBNAILS, &upkeep::filled(&done));
                         this.moved_on();
                         Event::Filled(done)
                     }
@@ -959,6 +1009,12 @@ impl Library {
         self.scanning.set(false);
         self.moved_on();
     }
+}
+
+fn people_in(file: &Path) -> Option<(usize, String)> {
+    let snapshot = Snapshot::open(file).ok().flatten()?;
+    let named = snapshot.people().ok()?.iter().filter(|person| person.named()).count();
+    Some((named, snapshot.about("fetched-at").ok().flatten().unwrap_or_default()))
 }
 
 /// What a write pass is asked to do.

@@ -4,6 +4,53 @@ The first thing the application shows: what the library holds, which fields its 
 missing, where those gaps sit, and what is untidy. Every number that can be clicked shows exactly
 the photos it counts.
 
+## The upkeep bar
+
+Across the top sits one bar with the four jobs that keep what the application knows next to the
+photos in step: **Scan**, **Thumbnails**, **Places** and **People**. Each part shows the job's
+state as an icon and, under its name, when it last ran or what is missing. Clicking a part opens
+what the last run did, why it may be worth running again, and the button that runs it (Scan also
+offers reading every photo again). The parts only show state; nothing runs until that button is
+pressed, and no job ever runs on its own.
+
+| State | When |
+|-------|------|
+| never run | nothing is known of a run |
+| fine | the last run holds |
+| worth running | see below |
+| failed | the last run in this session did not work; the reason is in its popover |
+| running | this job runs; the others wait, and a progress bar with Cancel sits under the bar |
+
+A job is worth running again when:
+
+| Job | Worth running when |
+|-----|--------------------|
+| Scan | the last scan was stopped; photos were written since; or a folder of the library changed after the scan began |
+| Thumbnails | some photos have none |
+| Places | the imported place data is more than a year old |
+| People | the snapshot is more than 30 days old, or a scan found new photos after it was fetched |
+
+Whether a folder changed is told from the folders alone: adding, removing or renaming a file
+changes its folder's modification time, and a file written by ExifTool is replaced rather than
+changed in place, so that shows too. No file is opened. It is looked at, off the main thread,
+whenever the dashboard is shown and after every job. The times are kept in the
+[cache](cache.md), the place data and the Immich snapshot, and shown in the computer's own time.
+
+```mermaid
+flowchart LR
+    cache[(cache: ran)] --> facts
+    geo[(place data)] --> facts
+    snapshot[(Immich snapshot)] --> facts
+    folders[folder times] --> facts
+    facts --> state[a state per job]
+    state --> bar[the bar]
+    bar -- click --> popover[last run, reason, run button]
+    popover -- pressed --> job[the job]
+    job --> facts
+```
+
+On a narrow window the bar becomes a column.
+
 ## The survey
 
 The page is filled from one **survey** of the [cache](cache.md), taken after every scan. Applying

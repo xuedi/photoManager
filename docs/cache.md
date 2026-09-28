@@ -14,6 +14,7 @@ It lives in `$XDG_CACHE_HOME/org.beijingcode.PhotoManager/cache.db` (SQLite, wri
 | `photo` | one row per JPEG: where it is, what the filesystem says (size, mtime, inode), its content id, what the folders say (country, city, event date and name, the event's folder, sub-folder), what the metadata says (dates, GPS and how the position was worked out, the city in the location text, camera, orientation, rating, size, whether its tag fields are tidy, the face regions and persons it names), and the raw metadata as JSON |
 | `tag` | one row per tag path per photo, from every tag field, plus its leaf |
 | `issue` | one row per thing worth looking at, with its kind and a detail |
+| `ran` | when the scan and the thumbnail fill-in last ran and what they said, and when photos were last written or found new; what the dashboard's [upkeep bar](dashboard.md#the-upkeep-bar) reads |
 
 The raw JSON is there so a field we have not modelled yet is not lost between scans. It also
 answers whether a photo says anything at all about its place in words, in any part and either
@@ -123,11 +124,13 @@ and recognised by its content id.
 There are two modes plus the rebuild:
 
 - **Scan** looks at what changed and reads only that.
+- **Read every photo again** reads every photo, changed or not, into the cache as it is.
 - **Rebuild** deletes the database and reads everything again. It asks first, and it never
   touches a photo.
 - A scan can be cancelled; what was written stays, and the next scan continues from there.
 
-Nothing scans on its own. A scan happens because someone pressed the button.
+Nothing scans on its own. A scan happens because someone pressed the button. Rebuilding empties
+`ran` with everything else, so a rebuilt cache says it was never scanned, which is true.
 
 A photo the [write engine](writing.md) has changed has its cache row forgotten there and then, so
 the next scan reads the file again rather than trusting a row that is now stale. A folder the engine

@@ -19,6 +19,10 @@ const CHUNK: usize = 500;
 /// so the placements can be read again when the layout changes without a rescan.
 const PLACED: &str = "CREATE TABLE IF NOT EXISTS placed (layout TEXT NOT NULL)";
 
+/// When each upkeep job last ran and what it said, added the same way. Thrown away with the cache,
+/// so a rebuilt cache was never scanned, which is true.
+const RAN: &str = "CREATE TABLE IF NOT EXISTS ran (job TEXT PRIMARY KEY, at TEXT NOT NULL, what TEXT NOT NULL)";
+
 /// Bumped when the reading of a path changes, so every row is placed again once.
 const PLACEMENT_VERSION: &str = "2";
 
@@ -204,6 +208,13 @@ pub struct Cache {
 
 pub type Result<T> = rusqlite::Result<T>;
 
+/// A job's last run: when it ended, in UTC, and what it said about itself.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct Ran {
+    pub at: String,
+    pub what: String,
+}
+
 impl Cache {
     /// Opens the cache, replacing it when it is from another schema or unreadable.
     pub fn open(file: &Path) -> Result<Cache> {
@@ -233,6 +244,7 @@ impl Cache {
         }
         connection.query_row("SELECT count(*) FROM photo", [], |row| row.get::<_, i64>(0))?;
         connection.execute_batch(PLACED)?;
+        connection.execute_batch(RAN)?;
         Ok(Some(Cache::with(connection, file)?))
     }
 
@@ -261,6 +273,7 @@ impl Cache {
         prepare(&connection)?;
         connection.execute_batch(SCHEMA)?;
         connection.execute_batch(PLACED)?;
+        connection.execute_batch(RAN)?;
         connection.pragma_update(None, "user_version", SCHEMA_VERSION)?;
         Cache::with(connection, file)
     }
@@ -337,6 +350,37 @@ impl Cache {
 
     pub fn file(&self) -> &Path {
         &self.file
+    }
+
+    /// Keeps that a job ran now.
+    pub fn note_ran(&self, job: &str, what: &str) -> Result<()> {
+        self.note_ran_at(job, &crate::clock::now(), what)
+    }
+
+    pub fn note_ran_at(&self, job: &str, at: &str, what: &str) -> Result<()> {
+        self.connection.execute(
+            "INSERT OR REPLACE INTO ran (job, at, what) VALUES (?1, ?2, ?3)",
+            params![job, at, what],
+        )?;
+        Ok(())
+    }
+
+    /// When a job last ran. `None` too for a read-only look at a cache that predates the table.
+    pub fn ran(&self, job: &str) -> Result<Option<Ran>> {
+        let found = self
+            .connection
+            .query_row("SELECT at, what FROM ran WHERE job = ?1", params![job], |row| {
+                Ok(Ran {
+                    at: row.get(0)?,
+                    what: row.get(1)?,
+                })
+            });
+        match found {
+            Ok(ran) => Ok(Some(ran)),
+            Err(rusqlite::Error::QueryReturnedNoRows) => Ok(None),
+            Err(rusqlite::Error::SqliteFailure(_, _)) => Ok(None),
+            Err(error) => Err(error),
+        }
     }
 
     pub fn photo_count(&self) -> Result<i64> {
@@ -1222,6 +1266,25 @@ mod tests {
         put_one(&mut cache, "a.jpg");
         let cache = cache.rebuild().unwrap();
         assert_eq!(cache.photo_count().unwrap(), 0);
+    }
+
+    #[test]
+    fn a_run_is_kept_and_a_rebuild_forgets_it() {
+        let file = temp("ran");
+        let cache = Cache::open(&file).unwrap();
+        assert_eq!(cache.ran("scan").unwrap(), None);
+        cache.note_ran_at("scan", "2026-09-28 10:00:00", "first").unwrap();
+        cache.note_ran_at("scan", "2026-09-28 11:00:00", "second").unwrap();
+        let ran = cache.ran("scan").unwrap().unwrap();
+        assert_eq!((ran.at.as_str(), ran.what.as_str()), ("2026-09-28 11:00:00", "second"));
+        drop(cache);
+
+        let cache = Cache::open(&file).unwrap();
+        assert!(cache.ran("scan").unwrap().is_some(), "it outlives a restart");
+        let looked = Cache::read_only(&file).unwrap().unwrap();
+        assert!(looked.ran("scan").unwrap().is_some(), "a read-only look sees it");
+        let cache = cache.rebuild().unwrap();
+        assert_eq!(cache.ran("scan").unwrap(), None, "a rebuilt cache was never scanned");
     }
 
     #[test]

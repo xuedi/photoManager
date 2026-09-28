@@ -122,6 +122,7 @@ pub fn run(
     cancel: &AtomicBool,
 ) -> crate::cache::Result<Summary> {
     let started = Instant::now();
+    let begun = crate::clock::now();
     let (photos, strays) = walk(library);
     progress(Progress::Counted(photos.len()));
 
@@ -173,6 +174,10 @@ pub fn run(
     summary.seconds = started.elapsed().as_secs();
     summary.photos = cache.photo_count()? as usize;
     summary.issues = cache.issue_count()? as usize;
+    cache.note_ran(crate::upkeep::SCAN, &crate::upkeep::scanned(&summary, &begun))?;
+    if summary.added > 0 {
+        cache.note_ran(crate::upkeep::ADDED, "")?;
+    }
     Ok(summary)
 }
 
@@ -607,6 +612,24 @@ mod tests {
         let summary = setup.scan(Mode::Reconcile);
         assert_eq!((summary.read, summary.changed), (1, 1));
         assert_eq!(summary.unchanged, crate::fixtures::photo_count() - 1);
+    }
+
+    #[test]
+    fn a_scan_keeps_that_it_ran_and_that_it_found_new_photos() {
+        let mut setup = setup("ran");
+        setup.scan(Mode::Reconcile);
+        let first = setup.cache.ran(crate::upkeep::SCAN).unwrap().expect("the scan is kept");
+        assert!(first.what.contains("\"cancelled\":false"));
+        assert!(
+            setup.cache.ran(crate::upkeep::ADDED).unwrap().is_some(),
+            "the photos were new"
+        );
+
+        let long_ago = "2000-01-01 00:00:00";
+        setup.cache.note_ran_at(crate::upkeep::ADDED, long_ago, "").unwrap();
+        setup.scan(Mode::Reconcile);
+        let again = setup.cache.ran(crate::upkeep::ADDED).unwrap().unwrap();
+        assert_eq!(again.at, long_ago, "nothing new the second time");
     }
 
     #[test]
