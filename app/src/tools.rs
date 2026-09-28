@@ -15,6 +15,7 @@ use photomanager_core::filter::Filter;
 use photomanager_core::scope::Scope;
 
 use crate::library::{Event, Library};
+use crate::neighbour::NeighbourPage;
 use crate::preview::Preview;
 
 mod imp {
@@ -37,6 +38,8 @@ mod imp {
         pub empty: TemplateChild<adw::StatusPage>,
         #[template_child]
         pub preview: TemplateChild<Preview>,
+        #[template_child]
+        pub neighbour: TemplateChild<NeighbourPage>,
         pub library: RefCell<Option<Rc<Library>>>,
         /// What the tools work on. The whole library until something else is chosen.
         pub scope: RefCell<Option<Scope>>,
@@ -55,6 +58,7 @@ mod imp {
 
         fn class_init(klass: &mut Self::Class) {
             Preview::ensure_type();
+            NeighbourPage::ensure_type();
             klass.bind_template();
         }
 
@@ -96,6 +100,7 @@ impl Default for Tools {
 impl Tools {
     pub fn set_library(&self, library: Option<Rc<Library>>) {
         self.imp().preview.set_library(library.clone());
+        self.imp().neighbour.set_library(library.clone());
         if let Some(library) = &library {
             let tools = self.downgrade();
             library.connect_changed(move || {
@@ -110,6 +115,29 @@ impl Tools {
 
     pub fn preview(&self) -> Preview {
         self.imp().preview.clone()
+    }
+
+    pub fn neighbour(&self) -> NeighbourPage {
+        self.imp().neighbour.clone()
+    }
+
+    /// The timeline of an event, which becomes the scope, for Position from a Neighbour.
+    pub fn open_neighbour(&self, event: &str) {
+        self.set_scope(Scope::Filter(Filter::all().within(event)));
+        self.imp().neighbour.open(event);
+        let nav = &self.imp().nav;
+        if nav.visible_page_tag().as_deref() != Some("neighbour") {
+            nav.pop_to_tag("tools");
+            nav.push_by_tag("neighbour");
+        }
+    }
+
+    /// The timeline of the scope's one event, or why there is none.
+    pub fn open_neighbour_of_scope(&self, library: &Library) {
+        match library.event_of(&self.scope()) {
+            Ok(event) => self.open_neighbour(&event),
+            Err(why) => self.say(&format!("{}: {why}", Edit::PositionFromNeighbour.title())),
+        }
     }
 
     pub fn scope(&self) -> Scope {
@@ -232,10 +260,20 @@ impl Tools {
         tracing::info!(title = set.title, photos = set.rows.len(), "change set previewed");
         self.imp().preview.show(set);
         let nav = &self.imp().nav;
-        if nav.visible_page_tag().as_deref() != Some("preview") {
-            nav.pop_to_tag("tools");
-            nav.push_by_tag("preview");
+        match nav.visible_page_tag().as_deref() {
+            Some("preview") => {}
+            // Back from the preview is the timeline again, with its groups.
+            Some("neighbour") => nav.push_by_tag("preview"),
+            _ => {
+                nav.pop_to_tag("tools");
+                nav.push_by_tag("preview");
+            }
         }
+    }
+
+    /// Back to a page of the stack, as its back button goes.
+    pub fn back_to(&self, tag: &str) {
+        self.imp().nav.pop_to_tag(tag);
     }
 
     pub fn showing(&self) -> String {

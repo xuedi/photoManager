@@ -22,6 +22,7 @@ shared, so an edit never writes and never draws anything itself.
 | Rename Tag | a tag and its new name | the tag and everything below it under the new name |
 | Tidy Tags | what becomes of the generated tags | every tag field the same |
 | Move Event | the folder of the scope's one event | its event folder moved there |
+| Position from a Neighbour | a measured photo of one event, the photos taken where it was, how far off | the measured photo's position, marked as borrowed |
 
 Each asks its value in a form of its own, checked before the preview, and the form says what is
 wrong with it. Nothing is remembered: the next time the form is empty again.
@@ -158,3 +159,53 @@ folder, never a byte of a photo ([writing.md](writing.md#moving-a-folder)).
   again, faces included, so the people go into the files first
   ([suggestions.md](suggestions.md#people)).
 - **One pass**: a move is never written together with a change to a photo.
+
+## Position from a Neighbour
+
+An event whose photos stand on a town centre a tag or the event gave them often holds a photo or
+two that measured where they were: a friend's phone, a camera that had a fix for a while. Its
+position is closer to the truth than any centre, so the photos taken at the same spot borrow it.
+Which photos those are is for the eye to say, not for a rule: clocks of two cameras disagree, and
+a phone without a fix indoors took its photos in the same room as the one with a fix.
+
+- **The event as a timeline.** The tool takes the scope's one event, or the one the dashboard or
+  the gallery hands over, its sub-folders included. Each camera is a lane - make and model, the
+  photos without one an unknown camera - in the order of their first photo, and the photos sit
+  along one time axis by their date, stacked where they crowd. A measured position is framed
+  green with a pin, a derived one is dashed with its mark, a photo without one is plain. The
+  photos without a date wait in a strip of their own, in name order. The axis zooms from a
+  minute to days per hundred pixels.
+- **Clocks for the eye.** A lane can be moved along the axis by minutes, so the photos of one
+  moment line up across cameras. That is all it does: the dates are Shift Dates', and the move is
+  forgotten when the page closes.
+- **Pick and give.** A click on a measured photo makes it the source; its position is shown on a
+  map only when asked. The photos taken where it was are selected by click, Shift for a run, or a
+  band dragged across the lanes, and **Give Its Position** makes them a pending group with how far
+  off the position may be: the same spot (50 m), the same street (200 m) or the same area (1 km).
+  A group is drawn on the timeline in a colour of its own, and another measured photo gives the
+  next one. A photo in two groups belongs to the last. A group can be taken back until the
+  preview is applied.
+- **Never over a measurement.** A photo that measured its own position cannot be selected, and the
+  change set refuses it on its own, as it refuses a source that did not measure where it was and
+  a photo outside the event. A derived position, a neighbour's included, may be replaced.
+- **What a photo gets**: the source's position, marked in the file as from a neighbour with the
+  reach as how far off it may be ([writing.md](writing.md#the-canonical-field-set)), and the city,
+  region, country and code of that position from the place data. The source's name is not
+  written, since a file name changes; the preview says it per photo - `from DSCF0102.JPG, 200 m`.
+  A photo that already borrowed the same position has nothing to do.
+
+```mermaid
+flowchart TD
+    event[one event] --> timeline[a lane per camera, the undated apart]
+    timeline -- a measured photo --> source[the source]
+    timeline -- click, Shift, a band --> selected[the selection]
+    source --> give[Give Its Position, with how far off]
+    selected --> give
+    give --> groups[pending groups, the last wins]
+    groups -- take back --> groups
+    groups --> preview[one change set, the source per photo]
+    preview -- apply --> engine[write engine]
+```
+
+The dashboard lists the events where this helps: a photo measured its position and others did
+not ([dashboard.md](dashboard.md#what-each-field-means)).

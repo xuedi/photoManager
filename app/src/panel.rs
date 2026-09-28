@@ -13,6 +13,7 @@ use gtk::glib;
 
 use photomanager_core::details::{Details, position};
 use photomanager_core::geo::reverse::At;
+use photomanager_core::tools::neighbour;
 
 /// The setting that shows the map without asking every time.
 pub const ALWAYS_MAP: &str = "photo-always-map";
@@ -217,8 +218,21 @@ impl Panel {
         match details.gps {
             Some((lat, lon)) => {
                 self.row(&group, "Coordinates", &position(lat, lon));
-                if let Some(from) = details.derived_from() {
-                    self.row(&group, "Derived", &format!("From the {from}, not measured"));
+                match (details.derived_from(), details.positioning_error()) {
+                    (Some("neighbour"), Some(error)) => {
+                        self.row(
+                            &group,
+                            "Derived",
+                            &format!("From a neighbour, {}", neighbour::metres(error)),
+                        );
+                    }
+                    (Some("neighbour"), None) => {
+                        self.row(&group, "Derived", "From a neighbour, not measured");
+                    }
+                    (Some(from), _) => {
+                        self.row(&group, "Derived", &format!("From the {from}, not measured"));
+                    }
+                    (None, _) => {}
                 }
                 match (look.nearest, look.has_places) {
                     (Some(at), _) => {

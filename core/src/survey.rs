@@ -7,6 +7,7 @@ use crate::browse::TagTree;
 use crate::cache::{Cache, Result};
 use crate::filter::{Filter, Gap, Kind};
 use crate::scan::IssueKind;
+use crate::tools::neighbour::{self, Neighboured};
 
 /// How many photos a gap can be asked about, and how many of those have it.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
@@ -92,6 +93,8 @@ pub struct Survey {
     pub coverage: Coverage,
     pub countries: Vec<Place>,
     pub tidy: Vec<Finding>,
+    /// The events where a photo measured its position and others did not.
+    pub neighbours: Vec<Neighboured>,
 }
 
 impl Survey {
@@ -122,6 +125,7 @@ impl Survey {
             coverage,
             countries,
             tidy: tidy(cache)?,
+            neighbours: neighbour::events(cache)?,
         })
     }
 
@@ -348,17 +352,17 @@ mod fixture_tests {
         let all = crate::fixtures::photo_count() as i64;
 
         assert_eq!(survey.photos, all);
-        assert_eq!(survey.events, 14);
+        assert_eq!(survey.events, 15);
         assert!(survey.bytes > 0);
         assert_eq!(survey.first.as_deref(), Some("2006-08-21"));
         assert_eq!(survey.last.as_deref(), Some("2019-07-13"));
         assert_eq!(
             survey.cameras[0],
-            (None, all - 19),
+            (None, all - 24),
             "most fixture photos name no camera"
         );
-        assert_eq!(survey.camera_count(), 5);
-        assert_eq!(survey.file_types, [("JPG".to_string(), 34), ("jpg".to_string(), 5)]);
+        assert_eq!(survey.camera_count(), 6);
+        assert_eq!(survey.file_types, [("JPG".to_string(), 37), ("jpg".to_string(), 7)]);
 
         let coverage: BTreeMap<&str, Measure> = survey
             .coverage
@@ -369,12 +373,12 @@ mod fixture_tests {
             coverage["no-gps"],
             Measure {
                 of: all,
-                missing: all - 22
+                missing: all - 26
             }
         );
-        assert_eq!(coverage["no-date"], Measure { of: all, missing: 4 });
-        assert_eq!(coverage["date-off-folder"], Measure { of: 31, missing: 8 });
-        assert_eq!(coverage["no-tag"], Measure { of: all, missing: 20 });
+        assert_eq!(coverage["no-date"], Measure { of: all, missing: 5 });
+        assert_eq!(coverage["date-off-folder"], Measure { of: 35, missing: 8 });
+        assert_eq!(coverage["no-tag"], Measure { of: all, missing: 23 });
         assert_eq!(
             coverage["no-people"],
             Measure {
@@ -388,6 +392,25 @@ mod fixture_tests {
                 of: all,
                 missing: all - 1
             }
+        );
+    }
+
+    #[test]
+    fn counts_the_events_where_a_neighbour_knows_the_position() {
+        let cache = scanned("survey-neighbours");
+        let survey = Survey::take(&cache).unwrap();
+        let events: Vec<(&str, usize)> = survey
+            .neighbours
+            .iter()
+            .map(|event| (event.event.as_str(), event.measured))
+            .collect();
+        assert_eq!(
+            events,
+            [
+                ("Germany/2016-06-00 Harbour Walk", 3),
+                ("Germany/2018-05-12 Canal Tour", 2),
+                ("Germany/2019-07-13 Sommerfest", 1),
+            ]
         );
     }
 
@@ -424,8 +447,8 @@ mod fixture_tests {
                 ("mixed/discusting and mixed/disgusting", 3),
                 ("places/inGreece/Atens and places/inGreece/athens", 3),
                 ("Loose files", 1),
-                ("In event sub-folders", 2),
-                ("Not named by their date", 35),
+                ("In event sub-folders", 3),
+                ("Not named by their date", 39),
             ]
         );
     }

@@ -27,6 +27,7 @@ use photomanager_core::settings::{self, Settings};
 use photomanager_core::survey::Survey;
 use photomanager_core::thumbs::{Size, Thumbs};
 use photomanager_core::tools::Question;
+use photomanager_core::tools::neighbour::{self, Timeline};
 use photomanager_core::upkeep::{self, Facts, Status};
 use photomanager_core::write::{Engine, Summary as Applied};
 
@@ -251,6 +252,19 @@ impl Library {
     pub fn scope_count<F: FnOnce(Result<usize, String>) + 'static>(&self, scope: &Scope, done: F) {
         let scope = scope.clone();
         self.read_off_thread(move |cache| Ok(scope.paths(cache)?.len()), done);
+    }
+
+    /// An event as its timeline shows it, read off the main thread.
+    pub fn timeline<F: FnOnce(Result<Timeline, String>) + 'static>(&self, event: &str, done: F) {
+        let event = event.to_string();
+        self.read_off_thread(move |cache| neighbour::timeline(cache, &event), done);
+    }
+
+    /// The one event of the scope.
+    pub fn event_of(&self, scope: &Scope) -> Result<String, String> {
+        let cache = self.cache.borrow();
+        let cache = cache.as_ref().ok_or("the cache is busy")?;
+        edits::event_of(cache, scope)
     }
 
     /// The cameras of the scope, for Shift Dates.

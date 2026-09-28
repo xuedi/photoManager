@@ -75,6 +75,11 @@ way a person asks:
 | File | the path, size, content id, when the file last changed, its issues |
 | All Fields | every EXIF, IPTC and XMP field the scan read, filterable by name or value, selectable to copy |
 
+A position worked out rather than measured says so under the coordinates and how: from the places
+tag, the event, set by hand. One borrowed from a photo beside it says how far off it may be -
+"From a neighbour, 200 m" - since that is what the person chose when they gave it
+([tools.md](tools.md#position-from-a-neighbour)).
+
 Nothing in the panel opens the file. It is as fresh as the last scan and says so. The nearest
 place comes from the local [place data](places.md), with no network. Under the breakpoint the
 panel folds over the picture.

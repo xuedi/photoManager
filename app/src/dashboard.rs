@@ -529,7 +529,21 @@ impl Dashboard {
             }
             activates(&row, measure.missing, &Filter::missing(*gap));
             self.keep(&group, row.upcast());
+            if *gap == Gap::Gps && !survey.neighbours.is_empty() {
+                self.keep(&group, neighbours_row(survey).upcast());
+            }
         }
+    }
+
+    /// The line of the events where a neighbour knows the position, and how many there are.
+    pub fn neighbours_line(&self) -> Option<(String, Vec<String>)> {
+        let survey = self.imp().survey.borrow().clone()?;
+        (!survey.neighbours.is_empty()).then(|| {
+            (
+                NEIGHBOURS.to_string(),
+                survey.neighbours.iter().map(|event| event.event.clone()).collect(),
+            )
+        })
     }
 
     /// The countries, ordered by what they miss of the chosen field, their events inside.
@@ -635,6 +649,41 @@ impl Dashboard {
             true
         });
     }
+}
+
+const NEIGHBOURS: &str = "Events where a neighbour knows the position";
+
+/// The events where a photo measured its position and others did not, each opening Position
+/// from a Neighbour on it.
+fn neighbours_row(survey: &Survey) -> adw::ExpanderRow {
+    let events = &survey.neighbours;
+    let row = adw::ExpanderRow::builder()
+        .title(NEIGHBOURS)
+        .subtitle(match events.len() {
+            1 => "1 event with a photo that measured where it was".to_string(),
+            count => format!("{count} events with a photo that measured where it was"),
+        })
+        .build();
+    let count = gtk::Label::builder().label(events.len().to_string()).build();
+    count.add_css_class("dim-label");
+    row.add_suffix(&count);
+    for event in events {
+        let name = event.event.rsplit('/').next().unwrap_or(&event.event);
+        let inner = adw::ActionRow::builder()
+            .title(glib::markup_escape_text(name))
+            .subtitle(format!(
+                "{} measured, {} derived, {} without",
+                event.measured, event.derived, event.none
+            ))
+            .activatable(true)
+            .action_name("win.neighbour-event")
+            .action_target(&event.event.to_variant())
+            .tooltip_text("Open Position from a Neighbour on This Event")
+            .build();
+        inner.add_suffix(&gtk::Image::from_icon_name("go-next-symbolic"));
+        row.add_row(&inner);
+    }
+    row
 }
 
 /// A button that opens where these photos are fixed, if there are any and the application fixes

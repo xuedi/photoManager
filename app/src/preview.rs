@@ -213,6 +213,17 @@ impl Preview {
         self.imp().set.borrow().as_ref().map(ChangeSet::counts)
     }
 
+    /// Each row's photo and its change, the way the table says it.
+    pub fn told(&self) -> Vec<(String, String)> {
+        self.imp()
+            .set
+            .borrow()
+            .iter()
+            .flat_map(|set| &set.rows)
+            .map(|row| (row.rel_path.clone(), row.tells()))
+            .collect()
+    }
+
     /// Whether the rows are folders to move rather than photos to write.
     fn moves(&self) -> bool {
         self.imp().set.borrow().as_ref().is_some_and(ChangeSet::moves)

@@ -60,7 +60,9 @@ photo the user wanted changed.
 ## Two levels of detail
 
 A row says the change the way a person thinks about it - `location: none -> 39.90420, 116.40740` -
-because nobody reads ten IPTC and XMP tags per photo across thousands of rows.
+because nobody reads ten IPTC and XMP tags per photo across thousands of rows. Where the change
+alone does not say where its value came from, the row says it too: a position borrowed from a
+photo beside it ends in `from DSCF0102.JPG, 200 m`.
 
 Asking about one row runs a **dry run** of that photo: the engine's own code path up to, and not
 including, the copy it writes. It costs one ExifTool read and returns every tag that write would set with

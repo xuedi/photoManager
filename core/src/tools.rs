@@ -24,6 +24,7 @@ use crate::write::{Change, Field, Gps};
 pub mod folders;
 pub mod gps_from_event;
 pub mod gps_from_places;
+pub mod neighbour;
 pub mod offsets;
 pub mod people;
 pub mod tag_vocabulary;

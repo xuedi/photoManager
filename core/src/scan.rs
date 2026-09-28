@@ -574,7 +574,7 @@ mod tests {
 
         let issues = setup.issues();
         let kind = |name: &str| issues.iter().find(|(k, _)| k == name).map(|(_, n)| *n).unwrap_or(0);
-        assert_eq!(kind("no date"), 4, "four fixture photos carry no date");
+        assert_eq!(kind("no date"), 5, "five fixture photos carry no date");
         assert_eq!(kind("off the layout"), 1, "the loose file in China/");
         assert_eq!(kind("sidecar"), 0);
 

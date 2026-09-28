@@ -8,6 +8,7 @@ pub mod forms;
 pub mod gallery;
 pub mod layout_editor;
 pub mod library;
+pub mod neighbour;
 pub mod panel;
 pub mod photo;
 pub mod preferences;

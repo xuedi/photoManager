@@ -79,6 +79,11 @@ connection to the cache, so it can run while the cache itself is busy with somet
 A day either side still agrees because photos taken after midnight, or with the camera still on
 the time zone of home, are not wrong.
 
+Under GPS, a line counts the **events where a neighbour knows the position**: a photo in them
+measured where it was, and others have a derived position or none. It counts events rather than
+photos, so it opens a list instead of the gallery; each event in it opens
+[Position from a Neighbour](tools.md#position-from-a-neighbour) on that event.
+
 ## Tidy up
 
 - the photos still in the `mixed` bucket, and how many tags it holds,

@@ -4,6 +4,7 @@ use std::process::Command;
 fn main() {
     println!("cargo:rerun-if-changed=src/ui");
     println!("cargo:rerun-if-changed=src/photomanager.gresource.xml");
+    println!("cargo:rerun-if-changed=src/style.css");
 
     let out = PathBuf::from(std::env::var("OUT_DIR").unwrap()).join("resources");
     std::fs::create_dir_all(&out).expect("create the resource directory");
@@ -11,6 +12,7 @@ fn main() {
 
     let manifest = out.join("photomanager.gresource.xml");
     std::fs::copy("src/photomanager.gresource.xml", &manifest).expect("copy the resource manifest");
+    std::fs::copy("src/style.css", out.join("style.css")).expect("copy the style sheet");
     glib_build_tools::compile_resources(&[&out], manifest.to_str().unwrap(), "photomanager.gresource");
 }
 

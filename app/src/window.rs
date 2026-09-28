@@ -333,6 +333,15 @@ impl Window {
                 }
             })
             .build();
+        let neighbour_event = gtk::gio::ActionEntry::builder("neighbour-event")
+            .parameter_type(Some(glib::VariantTy::STRING))
+            .activate(|window: &Window, _, parameter| {
+                if let Some(event) = parameter.and_then(|value| value.str()) {
+                    window.show_view("tools");
+                    window.imp().tools.open_neighbour(event);
+                }
+            })
+            .build();
         let tick_fix = gtk::gio::ActionEntry::builder("tick-fix")
             .parameter_type(Some(glib::VariantTy::new("(sb)").expect("a text and a truth")))
             .activate(
@@ -446,6 +455,7 @@ impl Window {
             use_as_scope,
             tools_scope,
             run_edit,
+            neighbour_event,
             tick_fix,
             select_fixes("fixes-select-all", true),
             select_fixes("fixes-select-none", false),

@@ -161,6 +161,7 @@ fn scans_into_its_cache() {
     previews_what_a_tool_would_change(&window, &opened);
     lists_the_tools_for_a_scope(&window, &opened, &library);
     fills_in_the_forms_of_the_edits(&window, &opened);
+    gives_positions_from_a_neighbour(&window, &opened, &library);
     chooses_a_folder_layout(&opened);
 }
 
@@ -439,6 +440,7 @@ fn lists_the_tools_for_a_scope(window: &Window, opened: &Rc<Library>, library: &
         "Rename Tag",
         "Tidy Tags",
         "Move Event",
+        "Position from a Neighbour",
     ] {
         assert!(listed.iter().any(|title| title == edit), "{edit} is not in {listed:?}");
     }
@@ -571,6 +573,135 @@ fn fills_in_the_forms_of_the_edits(window: &Window, opened: &Rc<Library>) {
     window.show_view("dashboard");
 }
 
+/// The dashboard lists the events where a photo measured its position and others did not, and
+/// opens the timeline of one: a lane per camera, the undated apart. A lane moved for the eye
+/// writes nothing, a measured photo is never selected, each group names its source in the
+/// preview, a group taken back is gone from it, and the apply writes exactly the targets.
+fn gives_positions_from_a_neighbour(window: &Window, opened: &Rc<Library>, library: &std::path::Path) {
+    const EVENT: &str = "Germany/2018-05-12 Canal Tour";
+    const PHONE: &str = "Germany/2018-05-12 Canal Tour/PXL_0001.jpg";
+    const EVENING: &str = "Germany/2018-05-12 Canal Tour/Evening/PXL_0002.jpg";
+    const CENTRE: &str = "Germany/2018-05-12 Canal Tour/DSCF0201.JPG";
+    const LATER: &str = "Germany/2018-05-12 Canal Tour/DSCF0202.JPG";
+    const UNDATED: &str = "Germany/2018-05-12 Canal Tour/DSCF0203.JPG";
+    let tools = window.tools();
+    let page = tools.neighbour();
+    let preview = window.preview();
+    let act = |name: &str, target: &str| WidgetExt::activate_action(&page, name, Some(&target.to_variant())).unwrap();
+    let plain = |name: &str| WidgetExt::activate_action(&page, name, None).unwrap();
+    let bytes = |rel_path: &str| std::fs::read(library.join(rel_path)).unwrap();
+
+    window.show_view("dashboard");
+    until(
+        || window.dashboard().neighbours_line().is_some(),
+        "the dashboard lists the events",
+    );
+    let (line, events) = window.dashboard().neighbours_line().unwrap();
+    assert_eq!(line, "Events where a neighbour knows the position");
+    assert_eq!(
+        events,
+        [
+            "Germany/2016-06-00 Harbour Walk",
+            EVENT,
+            "Germany/2019-07-13 Sommerfest"
+        ]
+    );
+
+    WidgetExt::activate_action(window, "win.neighbour-event", Some(&EVENT.to_variant())).unwrap();
+    assert_eq!(window.visible_view(), "tools");
+    assert_eq!(tools.showing(), "neighbour");
+    assert_eq!(window.scope(), Scope::Filter(Filter::all().within(EVENT)));
+    until(|| page.is_loaded(), "the timeline was read");
+    assert_eq!(
+        page.lanes(),
+        [("Google Pixel 3".to_string(), 2), ("FUJIFILM X100S".to_string(), 2)]
+    );
+    assert_eq!(page.undated(), [UNDATED]);
+
+    let before = bytes(CENTRE);
+    let x = page.x_of(CENTRE).unwrap();
+    act("neighbour.shift", "1:60");
+    assert!(page.x_of(CENTRE).unwrap() > x, "the lane moved along the axis");
+    assert_eq!(bytes(CENTRE), before, "a lane moved for the eye writes nothing");
+    act("neighbour.shift", "1:0");
+    assert_eq!(page.x_of(CENTRE), Some(x));
+
+    act("neighbour.select", EVENING);
+    assert!(page.selected().is_empty(), "a measured photo is never a target");
+    act("neighbour.select-many", &format!("{EVENING}\n{CENTRE}"));
+    assert_eq!(page.selected(), [CENTRE]);
+    plain("neighbour.give");
+    assert!(page.groups().is_empty(), "no source yet");
+    act("neighbour.source", PHONE);
+    assert_eq!(page.source().as_deref(), Some(PHONE));
+    act("neighbour.select", UNDATED);
+    plain("neighbour.give");
+    act("neighbour.source", EVENING);
+    act("neighbour.select", LATER);
+    act("neighbour.reach", "area");
+    plain("neighbour.give");
+    assert_eq!(page.groups().len(), 2);
+    assert!(page.selected().is_empty(), "the selection became a group");
+
+    let previewed = |title: &str| {
+        plain("neighbour.preview");
+        until(
+            || !opened.is_busy() && preview.title().as_deref() == Some(title) && tools.showing() == "preview",
+            "the groups were previewed",
+        );
+        preview.told()
+    };
+    let told = previewed("Positions from a neighbour in 2018-05-12 Canal Tour");
+    let of = |told: &[(String, String)], rel_path: &str| {
+        told.iter()
+            .find(|(path, _)| path == rel_path)
+            .map(|(_, change)| change.clone())
+            .unwrap_or_default()
+    };
+    assert_eq!(told.len(), 3);
+    assert!(of(&told, CENTRE).ends_with("from PXL_0001.jpg, 200 m"), "{told:?}");
+    assert!(of(&told, LATER).ends_with("from PXL_0002.jpg, 1 km"), "{told:?}");
+
+    tools.back_to("neighbour");
+    assert_eq!(tools.showing(), "neighbour", "back from the preview is the timeline");
+    WidgetExt::activate_action(&page, "neighbour.take-back", Some(&1i32.to_variant())).unwrap();
+    assert_eq!(page.groups().len(), 1);
+    plain("neighbour.preview");
+    until(
+        || !opened.is_busy() && tools.showing() == "preview" && preview.told().len() == 2,
+        "the group taken back is gone from the preview",
+    );
+    let told = preview.told();
+    assert!(of(&told, LATER).is_empty());
+
+    let evening = bytes(EVENING);
+    opened.acknowledge(None);
+    WidgetExt::activate_action(window, "win.apply-change-set", None).unwrap();
+    until(
+        || preview.applied().is_some() && !opened.is_busy(),
+        "the groups were written",
+    );
+    assert_eq!(preview.applied().unwrap().written, 2);
+    assert_eq!(bytes(EVENING), evening, "a measured photo is untouched");
+    let read = std::process::Command::new("exiftool")
+        .args([
+            "-s3",
+            "-n",
+            "-GPSLatitude",
+            "-GPSProcessingMethod",
+            "-GPSHPositioningError",
+        ])
+        .arg(library.join(CENTRE))
+        .output()
+        .unwrap();
+    let read = String::from_utf8_lossy(&read.stdout);
+    assert_eq!(
+        read.lines().collect::<Vec<&str>>(),
+        ["53.5485", "photoManager: neighbour", "200"]
+    );
+    window.show_view("dashboard");
+}
+
 /// The dashboard shows the survey, and a number shows its photos when it is clicked.
 fn surveys_what_is_missing(window: &Window, opened: &Rc<Library>) {
     let context = gtk::glib::MainContext::default();
@@ -616,12 +747,12 @@ fn surveys_what_is_missing(window: &Window, opened: &Rc<Library>) {
     assert_eq!(filter.to_string(), "no-gps");
     assert_eq!(
         count,
-        Some(survey.photos - 22),
+        Some(survey.photos - 26),
         "the number clicked is the number shown"
     );
 
     WidgetExt::activate_action(window, "win.show-photos", Some(&"no-gps@Germany".to_variant())).unwrap();
-    assert_eq!(window.shown().unwrap().1, Some(4));
+    assert_eq!(window.shown().unwrap().1, Some(5));
     WidgetExt::activate_action(window, "win.show-photos", Some(&"nonsense".to_variant())).unwrap();
     assert_eq!(
         window.shown().unwrap().0.to_string(),
@@ -644,8 +775,8 @@ fn browses_the_gallery(window: &Window, opened: &Rc<Library>) {
 
     act("win.show-photos", "no-gps@Germany");
     assert_eq!(gallery.page(), "grid");
-    assert_eq!(listed().len(), 4, "the grid holds exactly the photos counted");
-    assert_eq!(window.shown().unwrap().1, Some(4));
+    assert_eq!(listed().len(), 5, "the grid holds exactly the photos counted");
+    assert_eq!(window.shown().unwrap().1, Some(5));
 
     act("win.show-photos", "all");
     act("win.gallery-place", "Germany/2019-07-13 Sommerfest");
@@ -687,7 +818,7 @@ fn browses_the_gallery(window: &Window, opened: &Rc<Library>) {
         window.shown().unwrap().0,
         "the dropdown and the dashboard set the same part"
     );
-    assert_eq!(listed().len(), all - 22);
+    assert_eq!(listed().len(), all - 26);
     act("win.gallery-gap", "none");
     assert_eq!(filter(), "all");
     assert_eq!(gap.selected(), 0, "the dropdown follows the filter");
@@ -770,7 +901,7 @@ fn browses_by_person(window: &Window) {
     until(|| !gallery.is_recounting(), "the sidebars counted again");
     assert_eq!(
         gallery.count_shown("places", "Germany"),
-        Some((20, false)),
+        Some((25, false)),
         "with nothing chosen, the library's count"
     );
     for quick in ["person:Mia", "person:Tom"] {

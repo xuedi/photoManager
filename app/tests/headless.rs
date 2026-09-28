@@ -106,7 +106,7 @@ fn the_app_can_be_clicked_through_headless() {
     let scanned = scanned(&ui, lib);
     let photos = photomanager_core::fixtures::photo_count() as u64;
     assert_eq!(scanned["photos"].as_u64(), Some(photos), "the scan found every photo");
-    assert_eq!(scanned["events"].as_u64(), Some(14));
+    assert_eq!(scanned["events"].as_u64(), Some(15));
     assert!(
         scanned["issues"].as_u64().unwrap() > 0,
         "the stand-in library has issues to report"
@@ -122,8 +122,8 @@ fn the_app_can_be_clicked_through_headless() {
     assert_eq!(upkeep(&bar, "Places"), "never run");
 
     let survey = surveyed(&ui, lib);
-    assert_eq!(survey["coverage"]["no-gps"]["missing"].as_u64(), Some(photos - 22));
-    assert_eq!(survey["coverage"]["no-date"]["missing"].as_u64(), Some(4));
+    assert_eq!(survey["coverage"]["no-gps"]["missing"].as_u64(), Some(photos - 26));
+    assert_eq!(survey["coverage"]["no-date"]["missing"].as_u64(), Some(5));
     assert!(
         survey["tidy"]
             .as_array()
@@ -139,11 +139,11 @@ fn the_app_can_be_clicked_through_headless() {
     assert_eq!(shown["gallery"]["filter"], "no-date");
     assert_eq!(
         shown["gallery"]["count"].as_u64(),
-        Some(4),
+        Some(5),
         "with exactly the photos it counted"
     );
-    let gallery = pictured(&ui, lib, 4);
-    assert_eq!(gallery["listed"].as_u64(), Some(4), "the grid holds them");
+    let gallery = pictured(&ui, lib, 5);
+    assert_eq!(gallery["listed"].as_u64(), Some(5), "the grid holds them");
     assert_eq!(gallery["page"], "grid");
     steps_through_one_photo_at_a_time(&ui, lib);
     ui.run(&["act", "win.show-view", "'dashboard'"], lib);
@@ -344,9 +344,9 @@ fn read_back(photo: &Path) -> (String, String, String) {
 /// exactly those photos. Previewed only: nothing is applied.
 fn a_scope_is_what_the_demo_works_on(ui: &Ui, library: &Path) {
     ui.run(&["act", "win.show-photos", "'no-gps@Germany'"], library);
-    pictured(ui, library, 4);
+    pictured(ui, library, 5);
     ui.run(&["act", "win.gallery-select-all"], library);
-    assert_eq!(state(ui, library)["gallery"]["selected"].as_u64(), Some(4));
+    assert_eq!(state(ui, library)["gallery"]["selected"].as_u64(), Some(5));
     ui.run(&["click", "Use as Scope", "--role", "button"], library);
     let state_now = state(ui, library);
     assert_eq!(
@@ -354,16 +354,16 @@ fn a_scope_is_what_the_demo_works_on(ui: &Ui, library: &Path) {
         "the whole filter, not its paths"
     );
     assert!(
-        state_now["gallery"]["toast"].as_str().unwrap().contains("(4)"),
+        state_now["gallery"]["toast"].as_str().unwrap().contains("(5)"),
         "the toast says what the scope is: {}",
         state_now["gallery"]["toast"]
     );
 
-    counted(ui, library, 4);
+    counted(ui, library, 5);
     ui.run(&["act", "win.run-edit", "'demo-rating:3'"], library);
     for _ in 0..60 {
         let state = state(ui, library);
-        if state["preview"]["photos"].as_u64() == Some(4) && state["preview"]["change"].as_u64() == Some(4) {
+        if state["preview"]["photos"].as_u64() == Some(5) && state["preview"]["change"].as_u64() == Some(5) {
             return;
         }
         std::thread::sleep(std::time::Duration::from_millis(500));

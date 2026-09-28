@@ -190,6 +190,19 @@ pub struct Tagged {
     pub event_name: Option<String>,
 }
 
+/// A photo as the timeline of its event needs it: when, which camera, and what its position is.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct Timed {
+    pub rel_path: String,
+    pub content_id: Option<String>,
+    pub orientation: Option<i64>,
+    pub taken_at: Option<String>,
+    pub camera_make: Option<String>,
+    pub camera_model: Option<String>,
+    pub gps: Option<(f64, f64)>,
+    pub gps_method: Option<String>,
+}
+
 /// An event folder as its path names it.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct Folder {
@@ -662,6 +675,46 @@ impl Cache {
             }
         }
         Ok(found)
+    }
+
+    /// Every photo of an event folder and its sub-folders, in path order.
+    pub fn timed_in(&self, event_dir: &str) -> Result<Vec<Timed>> {
+        let mut statement = self.connection.prepare(
+            "SELECT rel_path, content_id, orientation, taken_at, camera_make, camera_model, gps_lat, gps_lon,
+                gps_method
+             FROM photo WHERE event_dir = ?1 ORDER BY rel_path",
+        )?;
+        let text = |value: Option<String>| {
+            value
+                .map(|text| text.trim().to_string())
+                .filter(|text| !text.is_empty())
+        };
+        let rows = statement.query_map(params![event_dir], |row| {
+            let lat: Option<f64> = row.get(6)?;
+            let lon: Option<f64> = row.get(7)?;
+            Ok(Timed {
+                rel_path: row.get(0)?,
+                content_id: row.get(1)?,
+                orientation: row.get(2)?,
+                taken_at: row.get(3)?,
+                camera_make: text(row.get(4)?),
+                camera_model: text(row.get(5)?),
+                gps: lat.zip(lon),
+                gps_method: row.get(8)?,
+            })
+        })?;
+        rows.collect()
+    }
+
+    /// The event folder of every photo in one, whether it has a position, and how that was
+    /// worked out when the photo says.
+    pub fn event_positions(&self) -> Result<Vec<(String, bool, Option<String>)>> {
+        let mut statement = self.connection.prepare(
+            "SELECT event_dir, gps_lat IS NOT NULL AND gps_lon IS NOT NULL, gps_method FROM photo
+             WHERE event_dir IS NOT NULL ORDER BY event_dir",
+        )?;
+        let rows = statement.query_map([], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)))?;
+        rows.collect()
     }
 
     /// The date side of these photos, in path order.

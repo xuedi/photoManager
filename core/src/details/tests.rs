@@ -335,6 +335,7 @@ mod on_the_fixture {
         let derived = Details::of(&cache, OFF).unwrap().unwrap();
         assert_eq!(derived.gps_method.as_deref(), Some("photoManager: places tag"));
         assert_eq!(derived.derived_from(), Some("places tag"));
+        assert_eq!(derived.positioning_error(), Some(5000.0));
 
         let measured = Details::of(&cache, LOCATED).unwrap().unwrap();
         assert!(measured.gps.is_some());

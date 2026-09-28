@@ -124,6 +124,10 @@ shortcuts and tests all use:
 | `win.use-as-scope` | make what the gallery shows or has selected the scope of the tools |
 | `win.tools-scope` | set the scope: `all`, a country or event folder, or `picked` for the gallery's |
 | `win.run-edit` | an edit by its key: its form, or with `key:value`, its change set for the scope in the preview straight away |
+| `win.neighbour-event` | the timeline of Position from a Neighbour on an event, which becomes the scope |
+| `neighbour.source`, `neighbour.select`, `neighbour.select-run`, `neighbour.select-many`, `neighbour.select-none` | on that page: the measured photo to borrow from, and the photos that borrow it |
+| `neighbour.reach`, `neighbour.give`, `neighbour.take-back`, `neighbour.preview` | how far off, the selection made a pending group, a group taken back, all groups previewed |
+| `neighbour.shift`, `neighbour.zoom`, `neighbour.show-map` | a lane moved for the eye, the axis zoomed, the source on a map |
 | `win.tick-fix` | tick one suggestion by its key, or take the tick away |
 | `win.fixes-select-all`, `win.fixes-select-none` | tick every suggestion of a finder, or of `all`, or none |
 | `win.apply-fixes` | write the ticked suggestions, finder by finder, after the first-write confirmation |

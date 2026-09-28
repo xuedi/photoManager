@@ -80,6 +80,7 @@ pub(crate) const PLACE_FIELDS: [[&str; 2]; 5] = [
 ];
 
 const ALTITUDE: &str = "Exif.GPSInfo.GPSAltitude";
+const POSITIONING_ERROR: &str = "Exif.GPSInfo.GPSHPositioningError";
 const ALTITUDE_REF: &str = "Exif.GPSInfo.GPSAltitudeRef";
 
 impl Details {
@@ -155,6 +156,11 @@ impl Details {
     pub fn derived_from(&self) -> Option<&str> {
         let method = self.gps_method.as_deref()?;
         is_derived(method).then(|| method.trim().trim_start_matches(DERIVED_BY.trim()).trim())
+    }
+
+    /// How far off the position may be, in metres, when the photo says.
+    pub fn positioning_error(&self) -> Option<f64> {
+        rational(lookup(&self.raw, POSITIONING_ERROR)?.trim_end_matches('m'))
     }
 
     /// The tags below `places`, in either spelling of the root.
@@ -418,16 +424,20 @@ fn place(raw: &[(String, String)]) -> Place {
 
 /// exiv2 hands a rational over as `1234/10`.
 fn altitude(raw: &[(String, String)]) -> Option<f64> {
-    let text = lookup(raw, ALTITUDE)?;
-    let metres = match text.split_once('/') {
-        Some((top, bottom)) => {
-            let bottom: f64 = bottom.trim().parse().ok()?;
-            (bottom != 0.0).then_some(top.trim().parse::<f64>().ok()? / bottom)?
-        }
-        None => text.trim_end_matches('m').trim().parse().ok()?,
-    };
+    let metres = rational(lookup(raw, ALTITUDE)?.trim_end_matches('m'))?;
     let below = lookup(raw, ALTITUDE_REF) == Some("1");
     Some(if below { -metres } else { metres })
+}
+
+/// `200/1`, `200` or `12.5`.
+fn rational(text: &str) -> Option<f64> {
+    match text.split_once('/') {
+        Some((top, bottom)) => {
+            let bottom: f64 = bottom.trim().parse().ok()?;
+            (bottom != 0.0).then_some(top.trim().parse::<f64>().ok()? / bottom)
+        }
+        None => text.trim().parse().ok(),
+    }
 }
 
 fn tidy_text(text: &Option<String>) -> Option<String> {

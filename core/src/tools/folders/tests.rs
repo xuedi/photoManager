@@ -98,7 +98,7 @@ fn one_question_per_event_not_in_a_city_and_per_loose_photo() {
         "an event in a city folder is not asked about"
     );
     assert!(keys.contains(&LOOSE));
-    assert_eq!(keys.len(), 14, "{keys:?}");
+    assert_eq!(keys.len(), 15, "{keys:?}");
     assert_eq!(question(&questions, RAIL).photos, 3);
     assert_eq!(question(&questions, RAIL).title, RAIL, "the whole path before");
 
@@ -110,7 +110,7 @@ fn one_question_per_event_not_in_a_city_and_per_loose_photo() {
             None,
         )
         .unwrap();
-    assert_eq!(germany.len(), 5, "the scope narrows the events");
+    assert_eq!(germany.len(), 6, "the scope narrows the events");
     assert_eq!(
         tool()
             .built(&library.cache, None, &whole(), None)
@@ -454,7 +454,7 @@ fn by_year_and_country_the_date_and_the_folders_are_sure() {
     let questions = asked(&library, None);
     assert_eq!(
         questions.len(),
-        14,
+        15,
         "every event is off the layout, the loose photo is in no folder of it"
     );
     assert_eq!(
@@ -473,7 +473,7 @@ fn by_year_and_country_the_date_and_the_folders_are_sure() {
 
     assert_eq!(
         questions.iter().filter(|question| question.sure().is_some()).count(),
-        13,
+        14,
         "sure where they go"
     );
 }
@@ -550,13 +550,13 @@ fn levels_in_the_wrong_order_are_found_by_what_the_photos_say() {
     let geo = geo();
     let off =
         |text: &str, library: &Library| events_off(&library.cache, Some(&geo), &Layout::read(text).unwrap()).unwrap();
-    assert_eq!(off("country/city?", &library), (0, 14));
+    assert_eq!(off("country/city?", &library), (0, 15));
     assert_eq!(
         off("city?/country", &library),
-        (1, 14),
+        (1, 15),
         "Germany/Hamburg reads as a city Germany in a country Hamburg, which is no country"
     );
-    assert_eq!(off("year/country", &library), (14, 14));
+    assert_eq!(off("year/country", &library), (15, 15));
 
     laid_out(&mut library, "city?/country");
     let questions = asked(&library, None);

@@ -12,6 +12,7 @@ use crate::dates::{self, Shift};
 use crate::geo::Geo;
 use crate::scope::Scope;
 use crate::tags::{self, Rule, Rules};
+use crate::tools::neighbour::{self, Neighbours};
 use crate::tools::offsets::Offsets;
 use crate::tools::tag_vocabulary::{self, Generated};
 use crate::tools::{Answer, Question, Tool, folders, time_zones};
@@ -35,6 +36,7 @@ pub enum Edit {
     RenameTag,
     TidyTags,
     MoveEvent,
+    PositionFromNeighbour,
     /// A rating over the whole scope, so the way from an edit to a photo can be driven.
     /// Development builds only.
     #[cfg(feature = "demo")]
@@ -52,6 +54,7 @@ pub const ALL: &[Edit] = &[
     Edit::RenameTag,
     Edit::TidyTags,
     Edit::MoveEvent,
+    Edit::PositionFromNeighbour,
     #[cfg(feature = "demo")]
     Edit::Rating,
 ];
@@ -73,6 +76,8 @@ pub enum Value {
     },
     Generated(Generated),
     Folder(String),
+    /// The photos of one event and the measured photo each borrows its position from.
+    Neighbours(Neighbours),
     Rating(i64),
 }
 
@@ -93,6 +98,7 @@ impl Edit {
             Edit::RenameTag => "rename-tag",
             Edit::TidyTags => "tidy-tags",
             Edit::MoveEvent => "move-event",
+            Edit::PositionFromNeighbour => "position-from-a-neighbour",
             #[cfg(feature = "demo")]
             Edit::Rating => "demo-rating",
         }
@@ -109,6 +115,7 @@ impl Edit {
             Edit::RenameTag => "Rename Tag",
             Edit::TidyTags => "Tidy Tags",
             Edit::MoveEvent => "Move Event",
+            Edit::PositionFromNeighbour => "Position from a Neighbour",
             #[cfg(feature = "demo")]
             Edit::Rating => "Demo Rating",
         }
@@ -128,13 +135,15 @@ impl Edit {
             Edit::RenameTag => "Renames, moves or merges a tag and everything below it",
             Edit::TidyTags => "Writes every tag field the same, the generated tags made, dropped or kept",
             Edit::MoveEvent => "Moves one event into another folder",
+            Edit::PositionFromNeighbour => "Gives photos of one event the position a photo taken beside them measured",
             #[cfg(feature = "demo")]
             Edit::Rating => "Sets one rating on every photo",
         }
     }
 
     /// A value as the `win.run-edit` action writes it: a place as an answer, a shift as a JSON
-    /// object of cameras, a rename as `from -> to`, the rest as plain text.
+    /// object of cameras, the neighbours as a JSON object of an event and its groups, a rename as
+    /// `from -> to`, the rest as plain text.
     pub fn read(self, text: &str) -> Result<Value, String> {
         let text = text.trim();
         match self {
@@ -176,6 +185,7 @@ impl Edit {
                 .map(Value::Generated)
                 .ok_or_else(|| format!("{text} is not derived, dropped or kept")),
             Edit::MoveEvent => Ok(Value::Folder(folders::event_folder(text)?)),
+            Edit::PositionFromNeighbour => Ok(Value::Neighbours(Neighbours::read(text)?)),
             #[cfg(feature = "demo")]
             Edit::Rating => match text.parse::<i64>() {
                 Ok(stars) if (0..=5).contains(&stars) => Ok(Value::Rating(stars)),
@@ -237,6 +247,13 @@ impl Edit {
                     folders::moves(cache, &[(event, folder.clone())]).map_err(failed)?,
                 )
             }
+            (Edit::PositionFromNeighbour, Value::Neighbours(neighbours)) => (
+                format!(
+                    "Positions from a neighbour in {}",
+                    neighbours.event.rsplit('/').next().unwrap_or(&neighbours.event)
+                ),
+                neighbour::wanted(cache, geo, neighbours)?,
+            ),
             #[cfg(feature = "demo")]
             (Edit::Rating, Value::Rating(stars)) => (
                 format!("Set a rating of {stars}"),

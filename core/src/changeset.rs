@@ -34,6 +34,8 @@ pub struct Wanted {
     /// A folder or a photo to take elsewhere instead of anything to write: `rel_path` is where it
     /// is now.
     pub moved: Option<Move>,
+    /// Where the value came from, when the change alone does not say: `from DSCF0102.JPG`.
+    pub note: Option<String>,
 }
 
 impl Wanted {
@@ -43,6 +45,14 @@ impl Wanted {
             change,
             refused: None,
             moved: None,
+            note: None,
+        }
+    }
+
+    pub fn with_note(self, note: impl Into<String>) -> Wanted {
+        Wanted {
+            note: Some(note.into()),
+            ..self
         }
     }
 
@@ -52,6 +62,7 @@ impl Wanted {
             change: Change::default(),
             refused: Some(why.into()),
             moved: None,
+            note: None,
         }
     }
 
@@ -62,6 +73,7 @@ impl Wanted {
             change: Change::default(),
             refused,
             moved: Some(moved),
+            note: None,
         }
     }
 }
@@ -131,6 +143,8 @@ pub struct Row {
     pub verdict: Verdict,
     /// Where it goes and what goes with it, for a row that moves a folder or a photo.
     pub moved: Option<Move>,
+    /// Where the value came from, when the change alone does not say.
+    pub note: Option<String>,
     selected: bool,
 }
 
@@ -151,7 +165,7 @@ impl Row {
                 count => format!("to {}, {count} photos", moved.to),
             };
         }
-        match self.differences.is_empty() {
+        let told = match self.differences.is_empty() {
             true => "nothing".to_string(),
             false => self
                 .differences
@@ -159,6 +173,10 @@ impl Row {
                 .map(Difference::tells)
                 .collect::<Vec<String>>()
                 .join("; "),
+        };
+        match &self.note {
+            Some(note) => format!("{told}; {note}"),
+            None => told,
         }
     }
 }
@@ -360,6 +378,7 @@ fn row(wanted: &Wanted, known: Option<&Stated>) -> Row {
         change: wanted.change.clone(),
         differences,
         moved: None,
+        note: wanted.note.clone(),
         selected: verdict == Verdict::Change,
         verdict,
     }
@@ -383,6 +402,7 @@ fn moving_row(wanted: &Wanted, moved: &Move) -> Row {
             after: moved.to.clone(),
         }],
         moved: Some(moved.clone()),
+        note: None,
         selected: verdict == Verdict::Change,
         verdict,
     }

@@ -781,7 +781,7 @@ pub(crate) mod tests {
 
         let by_date = filter("all").photos(&cache, Order::Date).unwrap();
         let dated = by_date.iter().take_while(|one| one.taken_at.is_some()).count();
-        assert_eq!(dated, by_date.len() - 4, "the four undated photos come last");
+        assert_eq!(dated, by_date.len() - 5, "the five undated photos come last");
         assert!(by_date[dated..].iter().all(|one| one.taken_at.is_none()));
         let dates: Vec<&String> = by_date[..dated]
             .iter()
@@ -806,8 +806,8 @@ pub(crate) mod tests {
         let all = crate::fixtures::photo_count() as i64;
 
         assert_eq!(count("all"), all);
-        assert_eq!(count("no-gps"), all - 22, "twenty-two photos carry GPS");
-        assert_eq!(count("no-date"), 4);
+        assert_eq!(count("no-gps"), all - 26, "twenty-six photos carry GPS");
+        assert_eq!(count("no-date"), 5);
         assert_eq!(
             filter("date-off-folder").paths(&cache).unwrap(),
             [
@@ -822,14 +822,14 @@ pub(crate) mod tests {
             ],
             "a folder a month off, a camera years off, scans a year off"
         );
-        assert_eq!(count("no-tag"), 20);
+        assert_eq!(count("no-tag"), 23);
         assert_eq!(count("no-location"), all - 1, "one photo names its city");
-        assert_eq!(count("no-gps@Germany"), 4);
+        assert_eq!(count("no-gps@Germany"), 5);
         assert_eq!(count("no-gps@Germany/2019-07-13 Sommerfest"), 2);
         assert_eq!(count("no-gps@Germ"), 0, "a folder is a whole name, not a prefix");
         assert_eq!(count("tag:mixed/Funny"), 1, "tags are compared as they are spelled");
         assert_eq!(count("tag:mixed"), 4);
-        assert_eq!(count("sub-folder"), 2);
+        assert_eq!(count("sub-folder"), 3);
         assert_eq!(count("loose"), 1);
         assert_eq!(count("loose@China"), 1);
         assert_eq!(count("off-layout"), 0);

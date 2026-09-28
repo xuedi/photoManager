@@ -15,7 +15,9 @@
 //! their folder and in a month folder. One photo carries the small picture cameras embed, the rest
 //! do not. The one turned by its orientation is
 //! stored wider than tall, so the right way up it stands taller than wide. One photo carries the
-//! face boxes an older program drew, and one names a person without a box.
+//! face boxes an older program drew, and one names a person without a box. One event mixes a
+//! phone that measured where it was, in the event folder and in a sub-folder, with a camera whose
+//! photos stand on the centre a places tag gave, or on nothing at all.
 //!
 //! Only for tests and for looking at the application without touching real photos.
 
@@ -30,7 +32,7 @@ const OLDER_REGIONS: &str = "-XMP-mwg-rs:RegionInfo={AppliedToDimensions={W=16,H
     {Area={X=0.5,Y=0.85,W=0.1,H=0.1,Unit=normalized},Name=Tom,Type=Face}]}";
 
 /// One distinct image per photo, so every photo has its own content id.
-const IMAGES: [&[u8]; 39] = [
+const IMAGES: [&[u8]; 44] = [
     include_bytes!("p01.jpg"),
     include_bytes!("p02.jpg"),
     include_bytes!("p03.jpg"),
@@ -70,6 +72,11 @@ const IMAGES: [&[u8]; 39] = [
     include_bytes!("p37.jpg"),
     include_bytes!("p38.jpg"),
     include_bytes!("p39.jpg"),
+    include_bytes!("p40.jpg"),
+    include_bytes!("p41.jpg"),
+    include_bytes!("p42.jpg"),
+    include_bytes!("p43.jpg"),
+    include_bytes!("p44.jpg"),
 ];
 
 struct Photo {
@@ -466,6 +473,64 @@ const PHOTOS: &[Photo] = &[
             "-GPSLongitude=9.9930",
             "-GPSLongitudeRef=E",
             "-TagsList=topics/food",
+        ],
+    },
+    Photo {
+        path: "Germany/2018-05-12 Canal Tour/PXL_0001.jpg",
+        metadata: &[
+            "-DateTimeOriginal=2018:05:12 14:02:00",
+            "-Make=Google",
+            "-Model=Pixel 3",
+            "-GPSLatitude=53.5485",
+            "-GPSLatitudeRef=N",
+            "-GPSLongitude=9.9780",
+            "-GPSLongitudeRef=E",
+        ],
+    },
+    Photo {
+        path: "Germany/2018-05-12 Canal Tour/DSCF0201.JPG",
+        metadata: &[
+            "-DateTimeOriginal=2018:05:12 14:03:10",
+            "-Make=FUJIFILM",
+            "-Model=X100S",
+            "-GPSLatitude=53.5511",
+            "-GPSLatitudeRef=N",
+            "-GPSLongitude=9.9937",
+            "-GPSLongitudeRef=E",
+            "-GPSProcessingMethod=photoManager: places tag",
+            "-GPSHPositioningError=5000",
+            "-TagsList=places/inGermany/Hamburg",
+        ],
+    },
+    Photo {
+        path: "Germany/2018-05-12 Canal Tour/DSCF0202.JPG",
+        metadata: &[
+            "-DateTimeOriginal=2018:05:12 14:40:00",
+            "-Make=FUJIFILM",
+            "-Model=X100S",
+            "-GPSLatitude=53.5511",
+            "-GPSLatitudeRef=N",
+            "-GPSLongitude=9.9937",
+            "-GPSLongitudeRef=E",
+            "-GPSProcessingMethod=photoManager: places tag",
+            "-GPSHPositioningError=5000",
+            "-TagsList=places/inGermany/Hamburg",
+        ],
+    },
+    Photo {
+        path: "Germany/2018-05-12 Canal Tour/DSCF0203.JPG",
+        metadata: &["-Make=FUJIFILM", "-Model=X100S"],
+    },
+    Photo {
+        path: "Germany/2018-05-12 Canal Tour/Evening/PXL_0002.jpg",
+        metadata: &[
+            "-DateTimeOriginal=2018:05:12 19:00:00",
+            "-Make=Google",
+            "-Model=Pixel 3",
+            "-GPSLatitude=53.5430",
+            "-GPSLatitudeRef=N",
+            "-GPSLongitude=9.9690",
+            "-GPSLongitudeRef=E",
         ],
     },
 ];

@@ -94,6 +94,7 @@ pub fn present(tools: &Tools, library: &Rc<Library>, edit: Edit, scope: &Scope) 
             dialog(tools, edit, &[group.upcast_ref()], make, None);
         }
         Edit::MoveEvent => folder(tools, library, edit, scope),
+        Edit::PositionFromNeighbour => tools.open_neighbour_of_scope(library),
         #[cfg(feature = "devtools")]
         Edit::Rating => {
             let entry = adw::EntryRow::builder().title("Rating").text("3").build();

@@ -220,6 +220,7 @@ mod tests {
     const WEDDING: &str = "Germany/Hamburg/2014-08-00 Wedding";
     const COPENHAGEN: &str = "Denmark/2018-10-00 Wedding Trip to Copenhagen";
     const SOMMERFEST: &str = "Germany/2019-07-13 Sommerfest";
+    const CANAL: &str = "Germany/2018-05-12 Canal Tour";
     const SOUTHTOUR: &str = "China/2008-01-00 Holiday SOUTHTOUR";
     const BARE: &str = "Germany/2016-06-00 Harbour Walk/DSC_0104.JPG";
 
@@ -295,13 +296,14 @@ mod tests {
                 (RAIL, 1),
                 (COPENHAGEN, 1),
                 (HARBOUR, 1),
+                (CANAL, 1),
                 (SOMMERFEST, 1),
                 (WEDDING, 1),
             ],
             "the loose file, the located photos and the city-tagged ones are not asked about"
         );
         assert_eq!(question(&questions, HARBOUR).title, "2016-06-00 Harbour Walk");
-        assert_eq!(waiting(&cache, None), 6);
+        assert_eq!(waiting(&cache, None), 7);
         assert_eq!(tool().built(&cache, None, &whole(), None).unwrap().counts().change, 0);
         assert!(
             tool()
@@ -320,7 +322,7 @@ mod tests {
                 None,
             )
             .unwrap();
-        assert_eq!(germany.len(), 3, "the scope narrows the events");
+        assert_eq!(germany.len(), 4, "the scope narrows the events");
     }
 
     #[test]
@@ -395,7 +397,7 @@ mod tests {
         let settings = confirm_sure(&questions, None);
         let answers = Answers::read(&settings).unwrap();
         let confirmed: Vec<&str> = answers.0.keys().map(String::as_str).collect();
-        assert_eq!(confirmed, [HARBOUR]);
+        assert_eq!(confirmed, [HARBOUR, CANAL], "where the rest of each is");
         let Some(Answer::Place(place)) = answers.get(HARBOUR) else {
             panic!("not a place: {settings}");
         };
@@ -449,7 +451,7 @@ mod tests {
                 assert_eq!(words.country_code.as_deref(), Some("DK"));
             }
         }
-        assert_eq!(waiting(&cache, Some(&settings)), 4);
+        assert_eq!(waiting(&cache, Some(&settings)), 5);
     }
 
     #[test]

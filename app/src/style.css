@@ -1,0 +1,64 @@
+/* Position from a Neighbour: what a photo's position is, and which group it is in. */
+.neighbour-tile {
+  padding: 0;
+  min-width: 0;
+  min-height: 0;
+  border-radius: 6px;
+  outline: 2px solid transparent;
+  outline-offset: -2px;
+}
+
+.neighbour-tile picture {
+  border-radius: 6px;
+}
+
+.neighbour-tile.measured {
+  outline: 3px solid var(--success-color);
+}
+
+.neighbour-tile.derived {
+  outline: 2px dashed var(--window-fg-color);
+}
+
+.neighbour-tile.picked {
+  outline: 3px solid var(--accent-bg-color);
+  outline-offset: 1px;
+}
+
+.neighbour-tile.picked picture {
+  opacity: 0.55;
+}
+
+.neighbour-tile.source {
+  outline: 4px solid var(--success-color);
+  outline-offset: 2px;
+}
+
+.neighbour-mark {
+  color: white;
+  -gtk-icon-shadow: 0 0 2px black;
+}
+
+.neighbour-lane {
+  border-bottom: 1px solid alpha(currentColor, 0.1);
+}
+
+.neighbour-band {
+  background: alpha(var(--accent-bg-color), 0.2);
+  border: 1px solid var(--accent-bg-color);
+}
+
+.neighbour-dot {
+  border-radius: 6px;
+}
+
+.neighbour-tile.neighbour-group-0 { box-shadow: 0 0 0 5px var(--purple-3); }
+.neighbour-tile.neighbour-group-1 { box-shadow: 0 0 0 5px var(--orange-3); }
+.neighbour-tile.neighbour-group-2 { box-shadow: 0 0 0 5px var(--yellow-3); }
+.neighbour-tile.neighbour-group-3 { box-shadow: 0 0 0 5px var(--red-3); }
+.neighbour-tile.neighbour-group-4 { box-shadow: 0 0 0 5px var(--brown-3); }
+.neighbour-dot.neighbour-group-0 { background: var(--purple-3); }
+.neighbour-dot.neighbour-group-1 { background: var(--orange-3); }
+.neighbour-dot.neighbour-group-2 { background: var(--yellow-3); }
+.neighbour-dot.neighbour-group-3 { background: var(--red-3); }
+.neighbour-dot.neighbour-group-4 { background: var(--brown-3); }
