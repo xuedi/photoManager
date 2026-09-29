@@ -16,6 +16,7 @@ use crate::tools::neighbour::{self, Neighbours};
 use crate::tools::offsets::Offsets;
 use crate::tools::tag_vocabulary::{self, Generated};
 use crate::tools::{Answer, Question, Tool, folders, time_zones};
+use crate::tools::{people_from_tags, place_words};
 use crate::write::change::is_derived;
 use crate::write::{Change, Field, Gps, Taken};
 
@@ -28,12 +29,14 @@ pub const METHOD: &str = "photoManager: set by hand";
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Edit {
     SetPlace,
+    PlacesTagToSublocation,
     ShiftDates,
     SetDate,
     SetTimeZone,
     AddTag,
     RemoveTag,
     RenameTag,
+    TagToPerson,
     TidyTags,
     MoveEvent,
     PositionFromNeighbour,
@@ -46,12 +49,14 @@ pub enum Edit {
 /// Every edit, in the order they are listed.
 pub const ALL: &[Edit] = &[
     Edit::SetPlace,
+    Edit::PlacesTagToSublocation,
     Edit::ShiftDates,
     Edit::SetDate,
     Edit::SetTimeZone,
     Edit::AddTag,
     Edit::RemoveTag,
     Edit::RenameTag,
+    Edit::TagToPerson,
     Edit::TidyTags,
     Edit::MoveEvent,
     Edit::PositionFromNeighbour,
@@ -75,6 +80,11 @@ pub enum Value {
         to: String,
     },
     Generated(Generated),
+    /// The photos of a tag and the name they are given: a person, or a sublocation.
+    Named {
+        tag: String,
+        name: String,
+    },
     Folder(String),
     /// The photos of one event and the measured photo each borrows its position from.
     Neighbours(Neighbours),
@@ -90,12 +100,14 @@ impl Edit {
     pub fn key(self) -> &'static str {
         match self {
             Edit::SetPlace => "set-place",
+            Edit::PlacesTagToSublocation => "places-tag-to-sublocation",
             Edit::ShiftDates => "shift-dates",
             Edit::SetDate => "set-date",
             Edit::SetTimeZone => "set-time-zone",
             Edit::AddTag => "add-tag",
             Edit::RemoveTag => "remove-tag",
             Edit::RenameTag => "rename-tag",
+            Edit::TagToPerson => "tag-to-person",
             Edit::TidyTags => "tidy-tags",
             Edit::MoveEvent => "move-event",
             Edit::PositionFromNeighbour => "position-from-a-neighbour",
@@ -107,12 +119,14 @@ impl Edit {
     pub fn title(self) -> &'static str {
         match self {
             Edit::SetPlace => "Set Place",
+            Edit::PlacesTagToSublocation => "Places Tag to Sublocation",
             Edit::ShiftDates => "Shift Dates",
             Edit::SetDate => "Set Date",
             Edit::SetTimeZone => "Set Time Zone",
             Edit::AddTag => "Add Tag",
             Edit::RemoveTag => "Remove Tag",
             Edit::RenameTag => "Rename Tag",
+            Edit::TagToPerson => "Tag to Person",
             Edit::TidyTags => "Tidy Tags",
             Edit::MoveEvent => "Move Event",
             Edit::PositionFromNeighbour => "Position from a Neighbour",
@@ -125,6 +139,7 @@ impl Edit {
     pub fn does(self) -> &'static str {
         match self {
             Edit::SetPlace => "Gives the photos without a position of their own a place or a point on the map",
+            Edit::PlacesTagToSublocation => "Keeps a place finer than the town, such as a district, as the sublocation",
             Edit::ShiftDates => "Moves the dates of a camera whose clock was off",
             Edit::SetDate => "Gives the photos one date, a second more for each after the first",
             Edit::SetTimeZone => {
@@ -133,6 +148,7 @@ impl Edit {
             Edit::AddTag => "Adds a tag to every photo",
             Edit::RemoveTag => "Takes a tag and everything below it off every photo",
             Edit::RenameTag => "Renames, moves or merges a tag and everything below it",
+            Edit::TagToPerson => "Names a person in every photo of a people tag, without a face box",
             Edit::TidyTags => "Writes every tag field the same, the generated tags made, dropped or kept",
             Edit::MoveEvent => "Moves one event into another folder",
             Edit::PositionFromNeighbour => "Gives photos of one event the position a photo taken beside them measured",
@@ -142,8 +158,8 @@ impl Edit {
     }
 
     /// A value as the `win.run-edit` action writes it: a place as an answer, a shift as a JSON
-    /// object of cameras, the neighbours as a JSON object of an event and its groups, a rename as
-    /// `from -> to`, the rest as plain text.
+    /// object of cameras, the neighbours as a JSON object of an event and its groups, a rename, a
+    /// person or a sublocation of a tag as `tag -> name`, the rest as plain text.
     pub fn read(self, text: &str) -> Result<Value, String> {
         let text = text.trim();
         match self {
@@ -180,6 +196,31 @@ impl Edit {
                     from: rule.from().to_string(),
                     to: tags::path(to)?,
                 })
+            }
+            Edit::TagToPerson | Edit::PlacesTagToSublocation => {
+                let (tag, name) = text
+                    .split_once("->")
+                    .ok_or_else(|| format!("{text} does not say which tag and which name"))?;
+                let tag = tags::path(tag)?;
+                let name = name.trim();
+                if name.is_empty() {
+                    return Err(match self {
+                        Edit::TagToPerson => "type the person's name".to_string(),
+                        _ => "type the name of the place".to_string(),
+                    });
+                }
+                match self {
+                    Edit::TagToPerson if !people_from_tags::is_people(&tag) => {
+                        Err(format!("{tag} is not a tag below people"))
+                    }
+                    Edit::PlacesTagToSublocation if !place_words::is_below_a_country(&tag) => {
+                        Err(format!("{tag} is not a place below a country's places tag"))
+                    }
+                    _ => Ok(Value::Named {
+                        tag,
+                        name: name.to_string(),
+                    }),
+                }
             }
             Edit::TidyTags => Generated::named(text)
                 .map(Value::Generated)
@@ -235,6 +276,20 @@ impl Edit {
             (Edit::RenameTag, Value::Rename { from, to }) => (
                 format!("Rename {from} to {to}"),
                 tag_vocabulary::renamed(cache, scope, &Rules(vec![Rule::rename(from, to)?]), false).map_err(failed)?,
+            ),
+            (Edit::TagToPerson, Value::Named { tag, name }) => {
+                if people_from_tags::is_group(cache, tag).map_err(failed)? {
+                    return Err(format!("{tag} has tags below it: a group, not a person"));
+                }
+                let named = BTreeMap::from([(tag.clone(), name.clone())]);
+                (
+                    format!("Name {name} in the photos tagged {tag}"),
+                    people_from_tags::wanted(cache, &named, scope).map_err(failed)?,
+                )
+            }
+            (Edit::PlacesTagToSublocation, Value::Named { tag, name }) => (
+                format!("Keep {name} as the sublocation of {tag}"),
+                place_words::sublocation(cache, scope, tag, name).map_err(failed)?,
             ),
             (Edit::TidyTags, Value::Generated(generated)) => (
                 "Tidy the tags".to_string(),
@@ -533,7 +588,11 @@ mod tests {
         let set = Edit::RenameTag
             .change_set(&renamed, &library.cache, None, &whole)
             .unwrap();
-        assert_eq!(set.counts().change, 2, "only the photos that carry it");
+        assert_eq!(
+            set.counts().change,
+            3,
+            "only the photos that carry it: the two it was added to and the one tagged before"
+        );
         library.apply(&set);
         library.rescan();
         assert!(tags_of(&library, PICKED[0]).contains(&"people/friends/Anna".to_string()));
@@ -542,7 +601,7 @@ mod tests {
         let set = Edit::RemoveTag
             .change_set(&removed, &library.cache, None, &whole)
             .unwrap();
-        assert_eq!(set.counts().change, 2);
+        assert_eq!(set.counts().change, 3);
         library.apply(&set);
         library.rescan();
         assert!(
@@ -550,6 +609,83 @@ mod tests {
             "{:?}",
             tags_of(&library, PICKED[0])
         );
+    }
+
+    #[test]
+    fn a_people_tag_names_its_person_in_exactly_the_photos_that_do_not_yet() {
+        let mut library = Library::new("edit-tag-to-person");
+        const TAGGED: &str = "Germany/2019-07-13 Sommerfest/IMAG0001.jpg";
+        let value = Edit::TagToPerson.read(" people/me -> Sam ").unwrap();
+        assert_eq!(
+            value,
+            Value::Named {
+                tag: "people/me".to_string(),
+                name: "Sam".to_string()
+            }
+        );
+        assert!(Edit::TagToPerson.read("places/inChina -> Sam").is_err());
+        assert!(Edit::TagToPerson.read("people/me -> ").is_err());
+        let group = Edit::TagToPerson.read("people/family -> Sam").unwrap();
+        assert!(
+            Edit::TagToPerson
+                .change_set(&group, &library.cache, None, &Scope::Filter(Filter::all()))
+                .is_err(),
+            "a group is not a person"
+        );
+
+        let elsewhere = Scope::Filter(Filter::all().within("Denmark"));
+        let set = Edit::TagToPerson
+            .change_set(&value, &library.cache, None, &elsewhere)
+            .unwrap();
+        assert!(set.rows.is_empty(), "the scope narrows it");
+
+        let whole = Scope::Filter(Filter::all());
+        let set = Edit::TagToPerson
+            .change_set(&value, &library.cache, None, &whole)
+            .unwrap();
+        assert_eq!(set.title, "Name Sam in the photos tagged people/me");
+        let rows: Vec<&str> = set.rows.iter().map(|row| row.rel_path.as_str()).collect();
+        assert_eq!(rows, [TAGGED]);
+        assert_eq!(set.rows[0].tells(), "people: Anna, Tom -> Anna, Tom, Sam (no box)");
+
+        let before = library.cache.stated(&[TAGGED.to_string()]).unwrap()[TAGGED]
+            .said
+            .clone();
+        assert_eq!(library.apply(&set).written, 1);
+        library.rescan();
+        let after = library.cache.stated(&[TAGGED.to_string()]).unwrap()[TAGGED]
+            .said
+            .clone();
+        let faces = |said: &crate::cache::Said| said.regions.as_ref().unwrap().faces.clone();
+        assert_eq!(faces(&after), faces(&before), "the boxes are kept");
+        assert_eq!(after.tags, before.tags, "the tag stays");
+        let people: Vec<String> = crate::browse::people(&library.cache)
+            .unwrap()
+            .into_iter()
+            .map(|person| person.name)
+            .collect();
+        assert!(people.contains(&"Sam".to_string()), "{people:?}");
+        let again = Edit::TagToPerson
+            .change_set(&value, &library.cache, None, &whole)
+            .unwrap();
+        assert!(again.rows.is_empty());
+    }
+
+    #[test]
+    fn a_sublocation_is_read_below_a_country_only() {
+        assert_eq!(
+            Edit::PlacesTagToSublocation.read("places/inGermany/Harbourside -> Harbour Side"),
+            Ok(Value::Named {
+                tag: "places/inGermany/Harbourside".to_string(),
+                name: "Harbour Side".to_string()
+            })
+        );
+        assert!(
+            Edit::PlacesTagToSublocation
+                .read("places/inGermany -> Harbour Side")
+                .is_err()
+        );
+        assert!(Edit::PlacesTagToSublocation.read("people/me -> Harbour Side").is_err());
     }
 
     #[test]

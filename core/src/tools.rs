@@ -27,6 +27,8 @@ pub mod gps_from_places;
 pub mod neighbour;
 pub mod offsets;
 pub mod people;
+pub mod people_from_tags;
+pub mod place_words;
 pub mod tag_vocabulary;
 #[cfg(all(test, feature = "fixtures"))]
 pub(crate) mod testing;

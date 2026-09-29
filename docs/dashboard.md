@@ -84,6 +84,19 @@ measured where it was, and others have a derived position or none. It counts eve
 photos, so it opens a list instead of the gallery; each event in it opens
 [Position from a Neighbour](tools.md#position-from-a-neighbour) on that event.
 
+Under GPS too, **what is left for GPS** splits the photos without a position by what places them,
+each part opening its fix, and the parts add up to the gap:
+
+| Part | Holds | Fix opens |
+|------|-------|-----------|
+| a sure fix waits | photos Places from Tags or Places from Events places | the fixes |
+| a tag the person answers | a places tag names a town the place data is not sure of | Set Place, scoped |
+| the event decides | no town tag, in an event folder | Set Place, scoped |
+| nothing to go on | no town tag, in no event | Set Place, scoped |
+
+The split comes from the place check, which runs after every scan; while the check is older than
+the photos it would not add up, and it is not shown.
+
 ## Tidy up
 
 - the photos still in the `mixed` bucket, and how many tags it holds,
@@ -96,7 +109,12 @@ photos, so it opens a list instead of the gallery; each event in it opens
 - photos not named by their date: a photo with a date whose file name is not one of the names
   the [File Names](suggestions.md#file-names) fix gives that date. It counts exactly the photos
   that fix would rename,
-- sidecars, files that are not photos, unreadable files and duplicate content, from the issues.
+- sidecars, files that are not photos, unreadable files and duplicate content, from the issues,
+- photos whose **places tag and position disagree**: the tag names a town more than 25 km - a
+  town's width - from where the photo stands, or a country-only tag names another country than the
+  one it stands in. A tag the place data is not sure of says nothing either way. This has to be
+  empty before the places tags can go; its photos are shown, and the person decides which of the
+  two is wrong.
 
 These say what is untidy; how to fix it is the step after. While the Suggestions tab has any
 fixes, a line at the top of the dashboard says how many and opens it
@@ -119,6 +137,7 @@ those photos are fixed. What is fixed where is decided from the row's filter alo
 | loose files, sub-folders, off the layout | the Folders fixes |
 | not named by their date | the File Names fixes |
 | sidecars, not photos, unreadable, duplicate content | nothing: only a person can decide what goes |
+| places tag and position disagree | nothing: only a person can say which is wrong |
 
 A gap of one country or one event keeps its folder: Fix on the photos without GPS of one event
 opens Set Place on that event's photos without GPS, and nothing else. A group of fixes is opened

@@ -74,8 +74,22 @@ impl Known {
 }
 
 /// Lower case and one spelling of every letter, so `Anna` and `anna` are one name.
-fn fold(name: &str) -> String {
+pub(crate) fn fold(name: &str) -> String {
     name.trim().nfc().collect::<String>().to_lowercase()
+}
+
+/// The names of Immich's named persons that are not hidden, as the snapshot has them. Empty when
+/// nothing was fetched.
+pub fn immich_names(cache: &Cache) -> Result<Vec<String>, String> {
+    let Some(known) = Known::load(cache)? else {
+        return Ok(Vec::new());
+    };
+    Ok(known
+        .people
+        .values()
+        .filter(|person| person.named())
+        .map(|person| person.name.trim().to_string())
+        .collect())
 }
 
 /// A person Immich names in the library's photos, and what writing them would come to.

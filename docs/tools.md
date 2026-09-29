@@ -62,6 +62,21 @@ photo whose camera knew where it was is refused, and says so.
   be - a place's centre 5 000 m, a pin 1 000 m ([writing.md](writing.md#the-canonical-field-set))
   - and the city, region, country and country code in words. A pin is written at its point.
 
+## Places Tag to Sublocation
+
+A places tag can name something finer than a town: a district, a village the place data does not
+have, a venue. Its place is kept in IPTC `Sublocation` (`XMP-iptcCore:Location` and
+`IPTC:Sub-location`), spelled as the person types it, so it outlives the places tag.
+
+- **The tags on offer** are those whose photos with a position stand in a town of another name;
+  a tag that names its town, in any spelling the place data knows, is not asked about, and
+  neither is one that names a town elsewhere, which is a tag and a position that
+  [disagree](dashboard.md#tidy-up). Choosing one fills in its last level to be
+  corrected.
+- **What a photo gets**: every photo of the scope carrying the tag gets the sublocation, and every
+  other place word it has is written again as it was.
+- A tag that is no place at all becomes a topic with Rename Tag instead.
+
 ## The offset of a date
 
 A date without an offset is a time on a clock nobody knows. Every date tool writes the offset
@@ -134,6 +149,14 @@ writers left.
   `places/in<Country>/<City>` and `events/<year> <name>` from them, each replacing the whole
   branch of its root, so they can never disagree with it; they can also be **dropped**, or **left
   as they are**. A tidy photo that would say the same is left out.
+
+- **Tag to Person** gives the photos of a people tag a person, in `PersonInImage`, without a
+  face box - for the tags [People from Tags](suggestions.md#people-from-tags) is not sure of: a
+  person under another name, or one no face recognition knows. The person is chosen from the
+  People list with its search, or typed; a name typed is a person of the library from then on.
+  A photo that names the person already is left, a box is never touched, the tag stays, and a tag
+  with tags below it is refused as a group. Typing a person the way Immich spells them lets a face
+  Immich finds later join the name.
 
 The tag forms list the tree with a search, so a tag is chosen rather than remembered.
 

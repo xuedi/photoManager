@@ -211,13 +211,24 @@ impl ChangeSet {
             .map(|one| one.rel_path.clone())
             .collect();
         let known = cache.stated(&paths)?;
+        let placed: Vec<String> = wanted
+            .iter()
+            .filter(|one| one.change.fields.iter().any(|field| matches!(field, Field::Place(_))))
+            .map(|one| one.rel_path.clone())
+            .collect();
+        let words = cache.place_words(&placed)?;
+        let unsaid = write::Place::default();
         Ok(ChangeSet {
             title: title.to_string(),
             rows: wanted
                 .iter()
                 .map(|one| match &one.moved {
                     Some(moved) => moving_row(one, moved),
-                    None => row(one, known.get(&one.rel_path)),
+                    None => row(
+                        one,
+                        known.get(&one.rel_path),
+                        words.get(&one.rel_path).unwrap_or(&unsaid),
+                    ),
                 })
                 .collect(),
         })
@@ -368,8 +379,9 @@ pub fn apply(
     engine.write(cache, &set.title, &targets, progress, cancel)
 }
 
-fn row(wanted: &Wanted, known: Option<&Stated>) -> Row {
-    let differences = differences(&wanted.change, known.map(|known| &known.said));
+/// `words` is the place the photo states in words, part by part.
+fn row(wanted: &Wanted, known: Option<&Stated>, words: &write::Place) -> Row {
+    let differences = differences(&wanted.change, known.map(|known| (&known.said, words)));
     let verdict = verdict(wanted, known, &differences);
     Row {
         rel_path: wanted.rel_path.clone(),
@@ -464,11 +476,12 @@ fn verdict(wanted: &Wanted, known: Option<&Stated>, differences: &[Difference]) 
     }
 }
 
-fn differences(change: &Change, said: Option<&Said>) -> Vec<Difference> {
-    change.fields.iter().map(|field| difference(field, said)).collect()
+fn differences(change: &Change, known: Option<(&Said, &write::Place)>) -> Vec<Difference> {
+    change.fields.iter().map(|field| difference(field, known)).collect()
 }
 
-fn difference(field: &Field, said: Option<&Said>) -> Difference {
+fn difference(field: &Field, known: Option<(&Said, &write::Place)>) -> Difference {
+    let said = known.map(|(said, _)| said);
     match field {
         Field::Rating(rating) => Difference {
             what: "rating",
@@ -504,26 +517,8 @@ fn difference(field: &Field, said: Option<&Said>) -> Difference {
         },
         Field::Place(place) => Difference {
             what: "place",
-            before: None,
-            after: match place {
-                None => NONE.to_string(),
-                Some(place) => {
-                    let parts: Vec<&str> = [
-                        place.location.as_deref(),
-                        place.city.as_deref(),
-                        place.state.as_deref(),
-                        place.country.as_deref(),
-                    ]
-                    .into_iter()
-                    .flatten()
-                    .filter(|part| !part.trim().is_empty())
-                    .collect();
-                    match parts.is_empty() {
-                        true => NONE.to_string(),
-                        false => parts.join(", "),
-                    }
-                }
-            },
+            before: known.map(|(_, words)| shown_place(Some(words))),
+            after: shown_place(place.as_ref()),
         },
         Field::Faces(faces) => {
             let after = faces
@@ -533,6 +528,20 @@ fn difference(field: &Field, said: Option<&Said>) -> Difference {
                 what: "people",
                 before: said.map(|said| shown_regions(said.regions.as_ref(), faces.as_ref(), &after)),
                 after,
+            }
+        }
+        Field::Persons(names) => {
+            let faces: &[change::Face] = said
+                .and_then(|said| said.regions.as_ref())
+                .map_or(&[], |regions| regions.faces.as_slice());
+            Difference {
+                what: "people",
+                before: said.map(|said| {
+                    said.regions.as_ref().map_or(NONE.to_string(), |regions| {
+                        shown_people(&regions.faces, &regions.persons)
+                    })
+                }),
+                after: shown_people(faces, names),
             }
         }
         Field::DropLabel => Difference {
@@ -614,6 +623,35 @@ fn same_boxes(one: &[change::Face], other: &[change::Face]) -> bool {
                 && near(one.width, other.width)
                 && near(one.height, other.height)
         })
+}
+
+/// The place in words, the most precise part first, and the country code when there is one.
+fn shown_place(place: Option<&write::Place>) -> String {
+    let Some(place) = place else {
+        return NONE.to_string();
+    };
+    let parts: Vec<&str> = [
+        place.location.as_deref(),
+        place.city.as_deref(),
+        place.state.as_deref(),
+        place.country.as_deref(),
+    ]
+    .into_iter()
+    .flatten()
+    .map(str::trim)
+    .filter(|part| !part.is_empty())
+    .collect();
+    let code = place
+        .country_code
+        .as_deref()
+        .map(str::trim)
+        .filter(|code| !code.is_empty());
+    match (parts.is_empty(), code) {
+        (true, None) => NONE.to_string(),
+        (true, Some(code)) => format!("({code})"),
+        (false, None) => parts.join(", "),
+        (false, Some(code)) => format!("{} ({code})", parts.join(", ")),
+    }
 }
 
 fn shown_rating(rating: Option<i64>) -> String {

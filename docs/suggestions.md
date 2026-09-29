@@ -121,6 +121,22 @@ never written.
   changes only metadata keeps every face on the same person. Immich's own face import is to stay
   off, or every person would be there twice.
 
+## People from Tags
+
+A `people` tag is often the only record that someone is in a photo: Immich found no face - a back
+of a head, a face too small - or never learned the person. This finder gives the photos of such a
+tag the person, in `PersonInImage`, without a box ([writing.md](writing.md#the-canonical-field-set)).
+One fix per tag.
+
+- **Sure** is a tag whose last level is, but for case, the name of one person the library knows:
+  a person some photo names, with a box or without, or a named person of the Immich snapshot. Two
+  known persons whose names differ only in case are not sure, and every other name, however near,
+  is given by hand with [Tag to Person](tools.md#the-tags). Nothing is matched loosely.
+- **A group** - a people tag with tags below it - is never a person.
+- **What a photo gets.** The name, added to every name it has. A photo that names the person
+  already, in any case, is left out. The tag stays: taking the tags away is a step of its own,
+  once they say nothing the fields do not.
+
 ## Places from Tags
 
 Photos without a position whose places tag names a town get that town's coordinates: one fix per
@@ -146,6 +162,18 @@ places tag that names a town. One fix per event.
   from the place data; a neighbourhood counts as its town. **Sure** is every located photo in the
   same town, and at least three of them. An event's name is never sure, however exact.
 - **What a photo gets** is what the places tag gives, with this finder's mark in the file.
+
+## Place Words from GPS
+
+A photo with a position and no place in words at all - most often a camera or a phone that
+measured it - gets the town, the state, the country and its code from the offline reverse lookup
+([places.md](places.md)): the same words the tools write with a position they derive. One fix per
+country, the towns it holds named.
+
+- **Never over words.** A photo with any place word, in any part and either spelling, is left, as
+  writing the words takes away every part not set.
+- **A position with no town near** in the place data is left, and so is everything when there is
+  no place data.
 
 ## Folders
 

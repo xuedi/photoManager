@@ -9,6 +9,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use photomanager_core::browse::{self, TagTree};
 use photomanager_core::cache::Cache;
 use photomanager_core::changeset::{self, ChangeSet, Wanted};
+use photomanager_core::checks;
 use photomanager_core::details::Details;
 use photomanager_core::edits::{self, Camera, Edit, Value};
 use photomanager_core::filter::{Filter, Listed, Order};
@@ -28,6 +29,7 @@ use photomanager_core::survey::Survey;
 use photomanager_core::thumbs::{Size, Thumbs};
 use photomanager_core::tools::Question;
 use photomanager_core::tools::neighbour::{self, Timeline};
+use photomanager_core::tools::place_words::{self, Finer};
 use photomanager_core::upkeep::{self, Facts, Status};
 use photomanager_core::write::{Engine, Summary as Applied};
 
@@ -243,6 +245,22 @@ impl Library {
                     "suggestions found"
                 );
                 Ok(found)
+            },
+            done,
+        );
+    }
+
+    /// The places tags whose located photos stand in a town of another name, found off the main
+    /// thread.
+    pub fn finer_places<F: FnOnce(Result<Vec<Finer>, String>) + 'static>(&self, done: F) {
+        let geo_db = self.paths.geo_db();
+        self.read_off_thread(
+            move |cache| {
+                let geo = Geo::read_only(&geo_db).ok().flatten();
+                Ok(place_words::finer(cache, geo.as_ref()).unwrap_or_else(|why| {
+                    tracing::warn!(why, "the finer places could not be found");
+                    Vec::new()
+                }))
             },
             done,
         );
@@ -925,6 +943,7 @@ impl Library {
         let thumbs = self.thumbs.clone();
         let cancel = self.cancel.clone();
         let progress = sender.clone();
+        let geo_db = self.paths.geo_db();
 
         std::thread::spawn(move || {
             let outcome = scan::run(
@@ -941,6 +960,12 @@ impl Library {
                 },
                 &cancel,
             );
+            if outcome.as_ref().is_ok_and(|summary| !summary.cancelled) {
+                let geo = Geo::read_only(&geo_db).ok().flatten();
+                if let Err(why) = checks::run(&mut cache, geo.as_ref()) {
+                    tracing::warn!(why, "the places could not be checked");
+                }
+            }
             let _ = sender.send_blocking(match outcome {
                 Ok(summary) => Message::Finished(summary, cache),
                 Err(error) => Message::Failed(error.to_string(), cache),

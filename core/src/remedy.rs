@@ -1,6 +1,7 @@
 //! Where a finding of the dashboard is fixed: a group of fixes on the Suggestions tab, or a tool
 //! scoped to exactly the photos the finding counts. A finding the application cannot fix has none.
 
+use crate::checks::Check;
 use crate::edits::Edit;
 use crate::filter::{Filter, Gap, Kind};
 use crate::fixes::{self, Finder};
@@ -38,6 +39,9 @@ impl Remedy {
             Kind::SubFolder | Kind::Loose | Kind::OffLayout => fixes("folders"),
             Kind::OffName => fixes("file-names"),
             Kind::Issue(_) => None,
+            Kind::Checked(Check::GpsSure) => fixes("places-from-tags"),
+            Kind::Checked(Check::GpsAsks | Check::GpsEvent | Check::GpsNothing) => tool(Edit::SetPlace),
+            Kind::Checked(Check::PlaceDisagrees) => None,
         }
     }
 
@@ -96,6 +100,13 @@ mod tests {
             assert_eq!(finder(written), "folders", "{written}");
         }
         assert_eq!(finder("off-name"), "file-names");
+        assert_eq!(finder("check:gps-sure"), "places-from-tags");
+        assert_eq!(tool("check:gps-event"), (Edit::SetPlace, "check:gps-event".to_string()));
+        assert_eq!(
+            remedy("check:place-disagrees"),
+            None,
+            "the person looks which of the two is wrong"
+        );
     }
 
     #[test]

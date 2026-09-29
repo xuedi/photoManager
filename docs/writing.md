@@ -101,6 +101,7 @@ visited as few times as possible, and it is never left half written.
 | date | `EXIF:DateTimeOriginal` and `CreateDate` with `OffsetTimeOriginal`/`Digitized`/`OffsetTime`, `XMP-xmp:CreateDate`, `XMP-photoshop:DateCreated`, `IPTC:DateCreated`/`TimeCreated`; takes away `XMP-exif:DateTimeOriginal` and `DateTimeDigitized` |
 | rating | `XMP-xmp:Rating`, and nowhere else |
 | faces | `XMP-mwg-rs:RegionInfo` (type Face, a name, a box centred and as a fraction of the stored picture, the stored size in pixels as `AppliedToDimensions`) and `XMP-iptcExt:PersonInImage`, both replaced as a whole |
+| persons | `XMP-iptcExt:PersonInImage` alone, the photo's whole list: every box's name, every name it had, and the new ones; the region list is not touched |
 | leftovers | takes away `XMP-xmp:Label` and `XMP-mediapro:CatalogSets`, where older writers left keywords; [every tag write](tools.md#the-tags) takes both away |
 
 All five tag fields say the same thing, because different readers each read a different one, and
@@ -118,6 +119,12 @@ it, and the EXIF-shaped XMP dates some old writers left behind, often in UTC wor
 computer, are taken away. Without an offset `IPTC:TimeCreated` is left out, because ExifTool would
 fill in the computer's own zone. `XMP-xmp:Label` is
 never written, only cleared, because in this library it was misused as a keyword.
+
+A person without a box - a back of a head, a face too small, someone no face recognition knows -
+is a name in `PersonInImage` and nothing else: no box is made up for them. Such a write carries the
+whole list, so it is refused when the file, read just before, names anyone the list leaves out; a
+person is only ever added. The list is settled in any order, and a box keeps its name and its
+place byte for byte.
 
 The modification time is deliberately **not** preserved. Nextcloud and Immich both notice a changed
 file only by its mtime, so a write nothing notices would be worse than no write at all. For the

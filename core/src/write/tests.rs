@@ -6,6 +6,7 @@ use std::os::unix::fs::PermissionsExt;
 use std::sync::atomic::{AtomicBool, Ordering};
 
 use super::*;
+use crate::metadata::Reader;
 
 const RATED: &str = "Denmark/2018-10-00 Wedding Trip to Copenhagen/DSCF0001.JPG";
 const BARE: &str = "Denmark/2018-10-00 Wedding Trip to Copenhagen/DSCF0002.JPG";
@@ -348,6 +349,56 @@ fn a_date_without_an_offset_is_written_without_a_zone_made_up() {
         fields.get("IPTC:TimeCreated"),
         None,
         "IPTC's time needs a zone, and this photo has none to give"
+    );
+}
+
+#[test]
+fn a_person_without_a_box_leaves_the_boxes_as_they_were() {
+    let mut setup = Setup::new("persons");
+    let boxed = Change::of([Field::Faces(Some(Faces {
+        width: 640,
+        height: 480,
+        faces: vec![Face {
+            name: "Ben".to_string(),
+            x: 0.5,
+            y: 0.4,
+            width: 0.2,
+            height: 0.3,
+        }],
+        persons: Vec::new(),
+    }))]);
+    assert_eq!(setup.write(BARE, boxed), Outcome::Written);
+    let regions = setup.field(BARE, "XMP-mwg-rs:RegionInfo").expect("a region");
+
+    let persons = |names: &[&str]| Change::of([Field::Persons(names.iter().map(|name| name.to_string()).collect())]);
+    assert_eq!(setup.write(BARE, persons(&["Ben", "Mia"])), Outcome::Written);
+    assert_eq!(
+        setup.field(BARE, "XMP-mwg-rs:RegionInfo"),
+        Some(regions),
+        "the box is as it was"
+    );
+    assert_eq!(
+        setup.field(BARE, "XMP-iptcExt:PersonInImage"),
+        Some(Value::from(vec!["Ben", "Mia"]))
+    );
+    assert_eq!(
+        setup.write(BARE, persons(&["Mia", "Ben"])),
+        Outcome::Skipped,
+        "the same persons in another order"
+    );
+    assert!(
+        matches!(setup.write(BARE, persons(&["Mia", "Anna"])), Outcome::Refused(why) if why.contains("Ben")),
+        "a name the photo has is never left out"
+    );
+
+    let path = setup.path(BARE);
+    let read = crate::metadata::Exiv2
+        .read(&path, &std::fs::read(&path).unwrap())
+        .unwrap();
+    assert_eq!(
+        read.regions.unwrap().named(),
+        [("Ben".to_string(), true), ("Mia".to_string(), false)],
+        "the scan reads her as a person without a box"
     );
 }
 

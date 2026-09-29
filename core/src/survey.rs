@@ -5,6 +5,7 @@ use std::collections::BTreeMap;
 
 use crate::browse::TagTree;
 use crate::cache::{Cache, Result};
+use crate::checks::Check;
 use crate::filter::{Filter, Gap, Kind};
 use crate::scan::IssueKind;
 use crate::tools::neighbour::{self, Neighboured};
@@ -95,6 +96,9 @@ pub struct Survey {
     pub tidy: Vec<Finding>,
     /// The events where a photo measured its position and others did not.
     pub neighbours: Vec<Neighboured>,
+    /// What is left to do for the photos without GPS, part by part: empty when the place check
+    /// is older than the last scan and the parts would not add up to the gap.
+    pub gps_left: Vec<(Check, i64)>,
 }
 
 impl Survey {
@@ -114,6 +118,7 @@ impl Survey {
             .collect::<Result<Vec<_>>>()?;
 
         let (coverage, countries) = gaps(cache)?;
+        let gps_left = gps_left(cache, &coverage)?;
         Ok(Survey {
             photos,
             events: cache.event_count()?,
@@ -126,6 +131,7 @@ impl Survey {
             countries,
             tidy: tidy(cache)?,
             neighbours: neighbour::events(cache)?,
+            gps_left,
         })
     }
 
@@ -148,6 +154,11 @@ impl Survey {
             }
         }
         numbers.extend(self.tidy.iter().map(|finding| (finding.count, finding.filter.clone())));
+        numbers.extend(
+            self.gps_left
+                .iter()
+                .map(|(check, count)| (*count, Filter::of(Kind::Checked(*check)))),
+        );
         numbers
     }
 }
@@ -224,6 +235,24 @@ fn gaps(cache: &Cache) -> Result<(Coverage, Vec<Place>)> {
     Ok((coverage, countries))
 }
 
+/// The parts of what is left for GPS, when they add up to the gap as it is now.
+fn gps_left(cache: &Cache, coverage: &Coverage) -> Result<Vec<(Check, i64)>> {
+    let gap = coverage
+        .iter()
+        .find(|(gap, _)| *gap == Gap::Gps)
+        .map(|(_, measure)| measure.missing)
+        .unwrap_or_default();
+    let mut parts = Vec::new();
+    for check in Check::GPS {
+        parts.push((check, Filter::of(Kind::Checked(check)).count(cache)?));
+    }
+    let sum: i64 = parts.iter().map(|(_, count)| count).sum();
+    Ok(match gap > 0 && sum == gap {
+        true => parts,
+        false => Vec::new(),
+    })
+}
+
 fn file_types(paths: &[String]) -> Vec<(String, i64)> {
     let mut counted: BTreeMap<String, i64> = BTreeMap::new();
     for path in paths {
@@ -298,6 +327,11 @@ fn tidy(cache: &Cache) -> Result<Vec<Finding>> {
         "Not named by their date".to_string(),
         "photos whose file name is not the date they were taken".to_string(),
         Filter::of(Kind::OffName),
+    )?;
+    add(
+        Check::PlaceDisagrees.title().to_string(),
+        Check::PlaceDisagrees.detail().to_string(),
+        Filter::of(Kind::Checked(Check::PlaceDisagrees)),
     )?;
     for (kind, title, detail) in [
         (IssueKind::Sidecar, "Sidecars", "XMP files next to the photos"),
@@ -378,7 +412,7 @@ mod fixture_tests {
         );
         assert_eq!(coverage["no-date"], Measure { of: all, missing: 5 });
         assert_eq!(coverage["date-off-folder"], Measure { of: 35, missing: 8 });
-        assert_eq!(coverage["no-tag"], Measure { of: all, missing: 23 });
+        assert_eq!(coverage["no-tag"], Measure { of: all, missing: 21 });
         assert_eq!(
             coverage["no-people"],
             Measure {
@@ -393,6 +427,30 @@ mod fixture_tests {
                 missing: all - 1
             }
         );
+    }
+
+    #[test]
+    fn the_place_check_is_a_finding_and_what_is_left_for_gps_adds_up() {
+        let mut library = crate::tools::testing::Library::new("survey-checked");
+        let stale = Survey::take(&library.cache).unwrap();
+        assert!(
+            stale.gps_left.is_empty(),
+            "no check yet, so no parts that would not add up"
+        );
+        crate::checks::run(&mut library.cache, Some(&crate::tools::testing::geo())).unwrap();
+        let survey = Survey::take(&library.cache).unwrap();
+        let disagree = survey
+            .tidy
+            .iter()
+            .find(|finding| finding.title == Check::PlaceDisagrees.title())
+            .expect("the finding");
+        assert_eq!(disagree.count, 1);
+        let gap = survey.coverage.iter().find(|(gap, _)| *gap == Gap::Gps).unwrap().1;
+        assert_eq!(survey.gps_left.len(), 4);
+        assert_eq!(survey.gps_left.iter().map(|(_, count)| count).sum::<i64>(), gap.missing);
+        for (number, filter) in survey.numbers() {
+            assert_eq!(filter.paths(&library.cache).unwrap().len() as i64, number, "{filter}");
+        }
     }
 
     #[test]

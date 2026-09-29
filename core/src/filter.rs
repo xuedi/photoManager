@@ -8,6 +8,7 @@
 use rusqlite::params_from_iter;
 
 use crate::cache::{Cache, Result};
+use crate::checks::Check;
 use crate::layout::Fit;
 use crate::scan::IssueKind;
 
@@ -123,6 +124,8 @@ pub enum Kind {
     /// name carries no date.
     OffLayout,
     Issue(IssueKind),
+    /// What the place check found.
+    Checked(Check),
 }
 
 impl Kind {
@@ -137,6 +140,7 @@ impl Kind {
             Kind::Loose => 5,
             Kind::OffLayout => 6,
             Kind::Issue(_) => 7,
+            Kind::Checked(_) => 8,
         }
     }
 
@@ -156,6 +160,7 @@ impl Kind {
             Kind::Loose => "Loose files".to_string(),
             Kind::OffLayout => "Files off the layout".to_string(),
             Kind::Issue(kind) => format!("Files with the issue {}", kind.as_str()),
+            Kind::Checked(check) => format!("Photos {}", check.phrase()),
         }
     }
 
@@ -170,6 +175,7 @@ impl Kind {
             Kind::Loose => "loose".to_string(),
             Kind::OffLayout => "off the layout".to_string(),
             Kind::Issue(kind) => format!("with the issue {}", kind.as_str()),
+            Kind::Checked(check) => check.phrase().to_string(),
         }
     }
 
@@ -194,6 +200,8 @@ impl Kind {
                         return Err("an empty name".to_string());
                     }
                     Kind::Person(names)
+                } else if let Some(key) = text.strip_prefix("check:") {
+                    Kind::Checked(Check::named(key).ok_or("no such check")?)
                 } else if let Some(name) = text.strip_prefix("issue:") {
                     match IssueKind::named(name) {
                         Some(IssueKind::OffLayout) => return Err("ask for loose or off-layout".to_string()),
@@ -246,6 +254,10 @@ impl Kind {
             Kind::Issue(kind) => {
                 params.push(kind.as_str().to_string());
                 issue(format!("kind = ?{}", params.len()))
+            }
+            Kind::Checked(check) => {
+                params.push(check.key().to_string());
+                format!("p.id IN (SELECT photo_id FROM checked WHERE kind = ?{})", params.len())
             }
         }
     }
@@ -539,6 +551,7 @@ impl std::fmt::Display for Filter {
                 Kind::Loose => write!(f, "loose")?,
                 Kind::OffLayout => write!(f, "off-layout")?,
                 Kind::Issue(kind) => write!(f, "issue:{}", kind.as_str())?,
+                Kind::Checked(check) => write!(f, "check:{}", check.key())?,
             }
         }
         if let Some(folder) = &self.within {
@@ -822,7 +835,7 @@ pub(crate) mod tests {
             ],
             "a folder a month off, a camera years off, scans a year off"
         );
-        assert_eq!(count("no-tag"), 23);
+        assert_eq!(count("no-tag"), 21);
         assert_eq!(count("no-location"), all - 1, "one photo names its city");
         assert_eq!(count("no-gps@Germany"), 5);
         assert_eq!(count("no-gps@Germany/2019-07-13 Sommerfest"), 2);

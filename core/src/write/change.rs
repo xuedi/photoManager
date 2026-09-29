@@ -133,6 +133,9 @@ pub enum Field {
     Place(Option<Place>),
     Taken(Option<Taken>),
     Faces(Option<Faces>),
+    /// The whole list of persons the photo names, a name without a box as well as each box's.
+    /// The face regions stay as they are, and a name the photo had is never left out.
+    Persons(Vec<String>),
     /// Old Shotwell leaked a keyword into the label field; this takes it back out.
     DropLabel,
     /// An iView leftover nothing in this library reads.
@@ -170,6 +173,40 @@ impl Change {
         }
         Ok(all)
     }
+
+    /// Whether the photo, as ExifTool reads it now, can take this change. `Err` is a refusal:
+    /// a list of persons that would leave out a name the photo has.
+    pub fn fits(&self, fields: &Map<String, Value>) -> Result<(), String> {
+        for field in &self.fields {
+            if let Field::Persons(names) = field {
+                let kept: Vec<String> = names.iter().map(|name| name.trim().to_string()).collect();
+                if let Some(lost) = named_in(fields).into_iter().find(|name| !kept.contains(name)) {
+                    return Err(format!("{lost} is named in it and would be left out"));
+                }
+            }
+        }
+        Ok(())
+    }
+}
+
+/// Every person a photo names, as ExifTool reads it: the names of its face regions, then its
+/// persons.
+pub fn named_in(fields: &Map<String, Value>) -> Vec<String> {
+    let regions = fields
+        .get(REGION_INFO)
+        .and_then(|info| info.get("RegionList"))
+        .map(as_list)
+        .unwrap_or_default();
+    let boxed = regions.iter().filter_map(|region| region.get("Name")).map(plain);
+    let listed = fields.get(PERSON_IN_IMAGE).map(as_list).unwrap_or_default();
+    let mut named: Vec<String> = Vec::new();
+    for name in boxed.chain(listed.iter().map(plain)) {
+        let name = name.trim().to_string();
+        if !name.is_empty() && !named.contains(&name) {
+            named.push(name);
+        }
+    }
+    named
 }
 
 fn set(tag: &str, key: &str, value: Value) -> Assign {
@@ -236,6 +273,7 @@ impl Field {
             Field::Place(place) => Ok(place_assigns(place.as_ref())),
             Field::Taken(taken) => taken_assigns(taken.as_ref()),
             Field::Faces(faces) => face_assigns(faces.as_ref()),
+            Field::Persons(names) => person_assigns(names),
             Field::DropLabel => Ok(vec![gone(LABEL, LABEL)]),
             Field::DropCatalogSets => Ok(vec![gone(CATALOG_SETS, CATALOG_SETS)]),
         }
@@ -556,6 +594,23 @@ fn face_assigns(faces: Option<&Faces>) -> Result<Vec<Assign>, String> {
         set(REGION_INFO, REGION_INFO, Value::Object(info)),
         set(PERSON_IN_IMAGE, PERSON_IN_IMAGE, Value::Array(names)),
     ])
+}
+
+/// `PersonInImage` alone: the region list is not touched, so a box keeps its name and its place.
+fn person_assigns(names: &[String]) -> Result<Vec<Assign>, String> {
+    let mut listed: Vec<Value> = Vec::new();
+    for name in names.iter().map(|name| name.trim()) {
+        if name.is_empty() {
+            return Err("a person without a name".to_string());
+        }
+        if !listed.contains(&Value::from(name)) {
+            listed.push(Value::from(name));
+        }
+    }
+    if listed.is_empty() {
+        return Err("a list of persons without a single one takes them all away".to_string());
+    }
+    Ok(vec![set(PERSON_IN_IMAGE, PERSON_IN_IMAGE, Value::Array(listed))])
 }
 
 /// The arguments for one photo. Every tag is emptied before it is filled: ExifTool *adds* to a list
@@ -934,6 +989,34 @@ mod tests {
             }))
             .is_err()
         );
+    }
+
+    #[test]
+    fn persons_alone_leave_the_regions_and_never_lose_a_name() {
+        let names = |list: &[&str]| list.iter().map(|name| name.to_string()).collect::<Vec<String>>();
+        let assigns = person_assigns(&names(&[" Ben ", "Mia", "Ben"])).unwrap();
+        assert_eq!(assigns.len(), 1, "only the persons");
+        assert_eq!(by_tag(&assigns, PERSON_IN_IMAGE), Value::from(vec!["Ben", "Mia"]));
+        assert!(person_assigns(&[]).is_err());
+        assert!(person_assigns(&names(&[" "])).is_err());
+
+        let read: Value = serde_json::from_str(
+            r#"{"RegionList":[{"Area":{"H":0.3,"W":0.2,"X":0.5,"Y":0.4},"Name":"Ben","Type":"Face"}]}"#,
+        )
+        .unwrap();
+        let file = found(&[(REGION_INFO, read), (PERSON_IN_IMAGE, Value::from(vec!["Ben", "Anna"]))]);
+        assert_eq!(named_in(&file), ["Ben", "Anna"]);
+        let change = |list: &[&str]| Change::of([Field::Persons(names(list))]);
+        assert!(change(&["Anna", "Ben", "Mia"]).fits(&file).is_ok());
+        assert!(change(&["Ben", "Mia"]).fits(&file).is_err(), "Anna would be lost");
+        assert!(
+            change(&["Anna", "Mia"]).fits(&file).is_err(),
+            "the box's name would be lost"
+        );
+
+        let assign = &change(&["Mia", "Ben", "Anna"]).assigns().unwrap()[0];
+        let three = found(&[(PERSON_IN_IMAGE, Value::from(vec!["Anna", "Ben", "Mia"]))]);
+        assert!(settled(assign, &three), "the order of the list is no change");
     }
 
     #[test]

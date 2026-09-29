@@ -1,6 +1,7 @@
 pub mod browse;
 pub mod cache;
 pub mod changeset;
+pub mod checks;
 pub mod clock;
 pub mod dates;
 pub mod details;

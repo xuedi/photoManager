@@ -174,7 +174,7 @@ fn without_gps(cache: &Cache, scope: &Scope) -> cache::Result<Vec<(String, Vec<S
 
 /// The places tags that no other places tag of the photo goes below: `places/inChina/Beijing`,
 /// not `places/inChina` beside it. The bare root says nothing.
-pub(super) fn deepest(tags: &[String]) -> Vec<String> {
+pub(crate) fn deepest(tags: &[String]) -> Vec<String> {
     let places: Vec<&String> = tags
         .iter()
         .filter(|tag| {
@@ -193,12 +193,12 @@ pub(super) fn deepest(tags: &[String]) -> Vec<String> {
 }
 
 /// `places/inChina`: a country and no place in it.
-pub(super) fn names_a_country(tag: &str) -> bool {
+pub(crate) fn names_a_country(tag: &str) -> bool {
     tag.split('/').count() == 2
 }
 
 /// The place data's candidates for the deepest level, the country level as the hint.
-fn offers(geo: &Geo, tag: &str) -> Result<Vec<Offer>, String> {
+pub(crate) fn offers(geo: &Geo, tag: &str) -> Result<Vec<Offer>, String> {
     let levels: Vec<&str> = tag.split('/').collect();
     if levels.len() < 3 {
         return Ok(Vec::new());

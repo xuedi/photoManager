@@ -5,7 +5,7 @@ use adw::prelude::*;
 use adw::subclass::prelude::*;
 use gtk::glib;
 use gtk::glib::subclass::InitializingObject;
-use photomanager_core::filter::{Filter, Gap};
+use photomanager_core::filter::{Filter, Gap, Kind};
 use photomanager_core::remedy::Remedy;
 use photomanager_core::scan::Mode;
 use photomanager_core::survey::{Measure, Place, Survey};
@@ -529,6 +529,9 @@ impl Dashboard {
             }
             activates(&row, measure.missing, &Filter::missing(*gap));
             self.keep(&group, row.upcast());
+            if *gap == Gap::Gps && !survey.gps_left.is_empty() {
+                self.keep(&group, gps_left_row(survey, measure.missing).upcast());
+            }
             if *gap == Gap::Gps && !survey.neighbours.is_empty() {
                 self.keep(&group, neighbours_row(survey).upcast());
             }
@@ -652,6 +655,31 @@ impl Dashboard {
 }
 
 const NEIGHBOURS: &str = "Events where a neighbour knows the position";
+
+/// The photos without GPS by what is left to do for them, each part opening its fixes or its
+/// tool. The parts add up to the gap.
+fn gps_left_row(survey: &Survey, missing: i64) -> adw::ExpanderRow {
+    let row = adw::ExpanderRow::builder()
+        .title("What Is Left for GPS")
+        .subtitle(format!("{missing} photos without GPS, by what places them"))
+        .build();
+    for (check, count) in &survey.gps_left {
+        let filter = Filter::of(Kind::Checked(*check));
+        let inner = adw::ActionRow::builder()
+            .title(check.title())
+            .subtitle(check.detail())
+            .build();
+        let label = gtk::Label::builder().label(count.to_string()).build();
+        label.add_css_class("dim-label");
+        inner.add_suffix(&label);
+        if let Some(fix) = fix_button(*count, &filter, check.title()) {
+            inner.add_suffix(&fix);
+        }
+        clickable(&inner, *count, &filter);
+        row.add_row(&inner);
+    }
+    row
+}
 
 /// The events where a photo measured its position and others did not, each opening Position
 /// from a Neighbour on it.

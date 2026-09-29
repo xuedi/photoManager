@@ -13,7 +13,7 @@ use photomanager_core::layout::Component;
 use photomanager_core::scope::Scope;
 use photomanager_core::tools::folders::Parts;
 use photomanager_core::tools::tag_vocabulary::Generated;
-use photomanager_core::tools::{Answer, Located};
+use photomanager_core::tools::{Answer, Located, people_from_tags, place_words};
 
 use crate::library::Library;
 use crate::panel::map_at;
@@ -70,6 +70,8 @@ pub fn present(tools: &Tools, library: &Rc<Library>, edit: Edit, scope: &Scope) 
             dialog(tools, edit, &[group.upcast_ref()], make, None);
         }
         Edit::AddTag | Edit::RemoveTag | Edit::RenameTag => tag(tools, library, edit),
+        Edit::TagToPerson => tag_to_person(tools, library, edit),
+        Edit::PlacesTagToSublocation => sublocation(tools, library, edit),
         Edit::TidyTags => {
             let names: Vec<&str> = Generated::ALL.iter().map(|generated| generated.tells()).collect();
             let generated = adw::ComboRow::builder()
@@ -496,6 +498,226 @@ fn tag(tools: &Tools, library: &Rc<Library>, edit: Edit) {
                 fill(entry.text().as_str());
             }
             Err(why) => tracing::error!(why, "the tags could not be read"),
+        }
+    ));
+}
+
+/// A list of choices under an entry, narrowed to what is typed in it; choosing one calls `chose`
+/// with its value. Refilled with `fill`.
+struct Choices {
+    /// The heading and the list, shown only while something is listed.
+    part: gtk::Box,
+    list: gtk::ListBox,
+    all: Rc<RefCell<Vec<(String, String)>>>,
+}
+
+impl Choices {
+    fn new(heading: &str) -> Choices {
+        let list = gtk::ListBox::builder()
+            .selection_mode(gtk::SelectionMode::None)
+            .valign(gtk::Align::Start)
+            .build();
+        list.add_css_class("boxed-list");
+        let title = gtk::Label::builder().label(heading).xalign(0.0).build();
+        title.add_css_class("heading");
+        let part = gtk::Box::builder()
+            .orientation(gtk::Orientation::Vertical)
+            .spacing(6)
+            .visible(false)
+            .build();
+        part.append(&title);
+        part.append(&list);
+        Choices {
+            part,
+            list,
+            all: Rc::default(),
+        }
+    }
+
+    /// Shows the choices whose value holds the text, the first fifty.
+    fn show(&self, text: &str, chose: &Rc<dyn Fn(&str)>) {
+        self.list.remove_all();
+        let wanted = text.trim().to_lowercase();
+        for (value, subtitle) in self
+            .all
+            .borrow()
+            .iter()
+            .filter(|(value, _)| value.to_lowercase().contains(&wanted))
+            .take(50)
+        {
+            let row = adw::ActionRow::builder()
+                .title(glib::markup_escape_text(value))
+                .subtitle(glib::markup_escape_text(subtitle))
+                .activatable(true)
+                .build();
+            let (value, chose) = (value.clone(), chose.clone());
+            row.connect_activated(move |_| chose(&value));
+            self.list.append(&row);
+        }
+        self.part.set_visible(self.list.first_child().is_some());
+    }
+}
+
+fn counted(photos: i64) -> String {
+    match photos {
+        1 => "1 photo".to_string(),
+        count => format!("{count} photos"),
+    }
+}
+
+/// A people tag and the person its photos are given: a tag from the people tags, a person from
+/// the People list or a new name.
+fn tag_to_person(tools: &Tools, library: &Rc<Library>, edit: Edit) {
+    let tag = adw::EntryRow::builder().title("People Tag").build();
+    let person = adw::EntryRow::builder().title("Person").build();
+    let group = described(
+        "Every photo of the tag that does not name the person yet gets the name, without a face box. The tag stays. Spell a person Immich knows as Immich does, so a face it finds later joins the name.",
+    );
+    group.add(&tag);
+    group.add(&person);
+    let (tags, people) = (Choices::new("People Tags"), Choices::new("People"));
+    let make: Make = Rc::new(glib::clone!(
+        #[weak]
+        tag,
+        #[weak]
+        person,
+        #[upgrade_or]
+        Err("the form is closed".to_string()),
+        move || edit.read(&format!("{} -> {}", tag.text(), person.text()))
+    ));
+    let dialog = dialog(
+        tools,
+        edit,
+        &[group.upcast_ref(), tags.part.upcast_ref(), people.part.upcast_ref()],
+        make,
+        Some(tag.upcast_ref()),
+    );
+    dialog.set_content_height(560);
+
+    let chose_tag: Rc<dyn Fn(&str)> = Rc::new(glib::clone!(
+        #[weak]
+        tag,
+        #[weak]
+        person,
+        move |path: &str| {
+            tag.set_text(path);
+            person.grab_focus();
+        }
+    ));
+    let chose_person: Rc<dyn Fn(&str)> = Rc::new(glib::clone!(
+        #[weak]
+        person,
+        move |name: &str| person.set_text(name)
+    ));
+    let (tags, people) = (Rc::new(tags), Rc::new(people));
+    tag.connect_changed(glib::clone!(
+        #[strong]
+        tags,
+        #[strong]
+        chose_tag,
+        move |entry| tags.show(entry.text().as_str(), &chose_tag)
+    ));
+    person.connect_changed(glib::clone!(
+        #[strong]
+        people,
+        #[strong]
+        chose_person,
+        move |entry| people.show(entry.text().as_str(), &chose_person)
+    ));
+    library.sidebars(glib::clone!(
+        #[weak]
+        tag,
+        #[weak]
+        person,
+        move |found| match found {
+            Ok(sidebars) => {
+                *tags.all.borrow_mut() = sidebars
+                    .tags
+                    .nodes()
+                    .filter(|(path, _)| people_from_tags::is_people(path))
+                    .map(|(path, count)| (path.to_string(), counted(count)))
+                    .collect();
+                *people.all.borrow_mut() = sidebars
+                    .people
+                    .iter()
+                    .map(|one| (one.name.clone(), counted(one.photos)))
+                    .collect();
+                tags.show(tag.text().as_str(), &chose_tag);
+                people.show(person.text().as_str(), &chose_person);
+            }
+            Err(why) => tracing::error!(why, "the tags and the people could not be read"),
+        }
+    ));
+}
+
+/// A places tag finer than the town its photos stand in, and the name it is kept under.
+fn sublocation(tools: &Tools, library: &Rc<Library>, edit: Edit) {
+    let tag = adw::EntryRow::builder().title("Places Tag").build();
+    let name = adw::EntryRow::builder().title("Sublocation").build();
+    let group = described(
+        "The photos of the tag keep its place as their sublocation, spelled as typed here; every other place word they have stays. The tags listed are the ones whose photos stand in a town of another name.",
+    );
+    group.add(&tag);
+    group.add(&name);
+    let finer = Choices::new("Places Tags Finer than Their Town");
+    let make: Make = Rc::new(glib::clone!(
+        #[weak]
+        tag,
+        #[weak]
+        name,
+        #[upgrade_or]
+        Err("the form is closed".to_string()),
+        move || edit.read(&format!("{} -> {}", tag.text(), name.text()))
+    ));
+    let dialog = dialog(
+        tools,
+        edit,
+        &[group.upcast_ref(), finer.part.upcast_ref()],
+        make,
+        Some(tag.upcast_ref()),
+    );
+    dialog.set_content_height(560);
+
+    let chose: Rc<dyn Fn(&str)> = Rc::new(glib::clone!(
+        #[weak]
+        tag,
+        #[weak]
+        name,
+        move |path: &str| {
+            tag.set_text(path);
+            name.set_text(place_words::leaf(path));
+            name.grab_focus();
+        }
+    ));
+    let finer = Rc::new(finer);
+    tag.connect_changed(glib::clone!(
+        #[strong]
+        finer,
+        #[strong]
+        chose,
+        move |entry| finer.show(entry.text().as_str(), &chose)
+    ));
+    let places = library.counts().places;
+    library.finer_places(glib::clone!(
+        #[weak]
+        tag,
+        #[weak]
+        group,
+        move |found| match found {
+            Ok(found) => {
+                if places == 0 {
+                    group.set_description(Some("There is no place data yet: get it on the dashboard"));
+                }
+                *finer.all.borrow_mut() = found
+                    .into_iter()
+                    .map(|one| {
+                        let towns = one.towns.join(", ");
+                        (one.tag, format!("Stands in {towns}, {}", counted(one.photos as i64)))
+                    })
+                    .collect();
+                finer.show(tag.text().as_str(), &chose);
+            }
+            Err(why) => tracing::error!(why, "the finer places could not be read"),
         }
     ));
 }

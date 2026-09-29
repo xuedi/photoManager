@@ -221,6 +221,7 @@ impl Engine {
         }
 
         let before = self.look(path)?;
+        change.fits(&before.fields).map_err(Error::Refusing)?;
         let mut want = change.assigns().map_err(Error::Refusing)?;
         want.retain(|assign| !change::settled(assign, &before.fields));
         Ok(Intent {

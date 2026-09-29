@@ -35,6 +35,17 @@ CREATE INDEX person_photo ON person (photo_id);
 CREATE INDEX person_name ON person (name);
 ";
 
+/// What the place check found, one row per photo and finding. Added the same way; filled by
+/// [`crate::checks`] after a scan, and gone with the photo's row when it is read again.
+const CHECKED: &str = "
+CREATE TABLE IF NOT EXISTS checked (
+    photo_id INTEGER NOT NULL REFERENCES photo (id) ON DELETE CASCADE,
+    kind     TEXT NOT NULL,
+    detail   TEXT
+);
+CREATE INDEX IF NOT EXISTS checked_kind ON checked (kind);
+";
+
 /// Bumped when the reading of a path changes, so every row is placed again once.
 const PLACEMENT_VERSION: &str = "2";
 
@@ -270,6 +281,7 @@ impl Cache {
         connection.query_row("SELECT count(*) FROM photo", [], |row| row.get::<_, i64>(0))?;
         connection.execute_batch(PLACED)?;
         connection.execute_batch(RAN)?;
+        connection.execute_batch(CHECKED)?;
         derive_persons(&connection)?;
         Ok(Some(Cache::with(connection, file)?))
     }
@@ -301,6 +313,7 @@ impl Cache {
         connection.execute_batch(PLACED)?;
         connection.execute_batch(RAN)?;
         connection.execute_batch(PERSON)?;
+        connection.execute_batch(CHECKED)?;
         connection.pragma_update(None, "user_version", SCHEMA_VERSION)?;
         Cache::with(connection, file)
     }
@@ -606,6 +619,66 @@ impl Cache {
             }
         }
         Ok(found)
+    }
+
+    /// The place words of each of these photos that says any, part by part, the XMP spelling
+    /// before the IPTC one.
+    pub fn place_words(&self, rel_paths: &[String]) -> Result<std::collections::HashMap<String, crate::write::Place>> {
+        let parts: Vec<String> = crate::details::PLACE_FIELDS
+            .iter()
+            .map(|names| {
+                let each: Vec<String> = names
+                    .iter()
+                    .map(|name| format!("nullif(trim(json_extract(raw, '$.\"{name}\"')), '')"))
+                    .collect();
+                format!("coalesce({})", each.join(", "))
+            })
+            .collect();
+        let mut found = std::collections::HashMap::new();
+        for chunk in rel_paths.chunks(CHUNK) {
+            let sql = format!(
+                "SELECT rel_path, {} FROM photo WHERE rel_path IN ({})",
+                parts.join(", "),
+                holes(chunk.len())
+            );
+            let mut statement = self.connection.prepare(&sql)?;
+            let rows = statement.query_map(rusqlite::params_from_iter(chunk), |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    crate::write::Place {
+                        city: row.get(1)?,
+                        state: row.get(2)?,
+                        country: row.get(3)?,
+                        country_code: row.get(4)?,
+                        location: row.get(5)?,
+                    },
+                ))
+            })?;
+            for row in rows {
+                let (rel_path, place) = row?;
+                if place != crate::write::Place::default() {
+                    found.insert(rel_path, place);
+                }
+            }
+        }
+        Ok(found)
+    }
+
+    /// Replaces what the place check found with this: by photo, the finding and what about it.
+    pub fn note_checked(&mut self, found: &[(String, &str, Option<String>)]) -> Result<usize> {
+        let transaction = self.connection.transaction()?;
+        transaction.execute("DELETE FROM checked", [])?;
+        let mut noted = 0;
+        {
+            let mut insert = transaction.prepare(
+                "INSERT INTO checked (photo_id, kind, detail) SELECT id, ?2, ?3 FROM photo WHERE rel_path = ?1",
+            )?;
+            for (rel_path, kind, detail) in found {
+                noted += insert.execute(params![rel_path, kind, detail])?;
+            }
+        }
+        transaction.commit()?;
+        Ok(noted)
     }
 
     /// How each of these photos is stored: its size in pixels and its orientation.

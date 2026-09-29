@@ -160,6 +160,15 @@ and live only in the cache:
 
 They are what the tools in later phases work from, and the dashboard counts them.
 
+## The place check
+
+What the places tags say against the positions needs the place data, which the scan does not
+read, so it is checked apart, right after every scan, and kept in a table of its own beside the
+photos: a photo whose places tag and position disagree, and for each photo without a position,
+what is left to place it (a sure fix, a tag to answer, its event, nothing). A row goes with its
+photo when the photo is read again, and the whole table is replaced by the next check. Like
+everything in the cache it is made again from the files and the place data.
+
 ## Folder names
 
 A path is read against the **folder layout** the user chose in Preferences: the levels above the

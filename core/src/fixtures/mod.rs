@@ -17,7 +17,9 @@
 //! stored wider than tall, so the right way up it stands taller than wide. One photo carries the
 //! face boxes an older program drew, and one names a person without a box. One event mixes a
 //! phone that measured where it was, in the event folder and in a sub-folder, with a camera whose
-//! photos stand on the centre a places tag gave, or on nothing at all.
+//! photos stand on the centre a places tag gave, or on nothing at all. A photo tagged with a person
+//! who has a box in another photo names nobody itself; a located photo carries a places tag finer
+//! than its town, and another the tag of a town far from where it stands.
 //!
 //! Only for tests and for looking at the application without touching real photos.
 
@@ -109,6 +111,7 @@ const PHOTOS: &[Photo] = &[
             "-Model=Panasonic DMC-LS1",
             PLACES_CHINA,
             "-TagsList=people/groupChina/Ben",
+            "-TagsList=people/family/Anna",
             "-XMP-mediapro:CatalogSets=Holiday",
         ],
     },
@@ -373,6 +376,7 @@ const PHOTOS: &[Photo] = &[
             "-GPSLatitudeRef=N",
             "-GPSLongitude=9.9930",
             "-GPSLongitudeRef=E",
+            "-TagsList=places/inGermany/Harbourside",
         ],
     },
     Photo {
@@ -384,6 +388,7 @@ const PHOTOS: &[Photo] = &[
             "-GPSLatitudeRef=N",
             "-GPSLongitude=9.9930",
             "-GPSLongitudeRef=E",
+            "-TagsList=places/inGermany/Bremen",
         ],
     },
     Photo {

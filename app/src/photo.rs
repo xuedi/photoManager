@@ -1052,7 +1052,7 @@ fn field_name(field: &Field) -> &'static str {
         Field::Gps(_) => "location",
         Field::Place(_) => "place",
         Field::Taken(_) => "date",
-        Field::Faces(_) => "people",
+        Field::Faces(_) | Field::Persons(_) => "people",
         Field::DropLabel => "label",
         Field::DropCatalogSets => "catalog sets",
     }

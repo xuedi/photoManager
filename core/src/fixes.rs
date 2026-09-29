@@ -23,8 +23,8 @@ use crate::tags::{Rule, Rules};
 use crate::tools::folders::{self, FolderMigration};
 use crate::tools::gps_from_event::GpsFromEvent;
 use crate::tools::gps_from_places::{self, GpsFromPlacesTag};
-use crate::tools::people;
 use crate::tools::{Answer, Answers, Question, Tool, tag_vocabulary};
+use crate::tools::{people, people_from_tags, place_words};
 use crate::write::{self, Engine};
 
 /// One kind of fix, and the pass its ticked fixes are written as.
@@ -39,7 +39,7 @@ pub struct Finder {
 }
 
 /// Every finder, in the order its fixes are applied.
-pub const FINDERS: [Finder; 6] = [
+pub const FINDERS: [Finder; 8] = [
     Finder {
         key: "tags",
         title: "Tag Tree",
@@ -53,6 +53,12 @@ pub const FINDERS: [Finder; 6] = [
         pass: "Write people from Immich",
     },
     Finder {
+        key: "people-from-tags",
+        title: "People from Tags",
+        fixes: "Photos whose people tag names a person the library knows, as a person without a box",
+        pass: "Write people from tags",
+    },
+    Finder {
         key: "places-from-tags",
         title: "Places from Tags",
         fixes: "Photos without GPS whose places tag names a town exactly",
@@ -63,6 +69,12 @@ pub const FINDERS: [Finder; 6] = [
         title: "Places from Events",
         fixes: "Photos without GPS in an event whose located photos all stand in one town",
         pass: "Set GPS from the event",
+    },
+    Finder {
+        key: "place-words",
+        title: "Place Words from GPS",
+        fixes: "Photos with a position and no place in words, given the town, the state and the country",
+        pass: "Write the place from the position",
     },
     Finder {
         key: "folders",
@@ -108,6 +120,13 @@ enum What {
     Names(String),
     /// The person, by Immich's id, written into the photos Immich finds them in.
     Person(String),
+    /// The person a people tag names, written into its photos without a box.
+    Tagged {
+        tag: String,
+        name: String,
+    },
+    /// The country, by code, whose photos get the words of their position.
+    Country(String),
 }
 
 /// Every fix there is in the library, finder by finder. A finder that cannot look is left out,
@@ -131,6 +150,21 @@ fn find_one(key: &str, cache: &Cache, geo: Option<&Geo>) -> Result<Vec<Fix>, Str
     Ok(match key {
         "tags" => tag_fixes(cache)?,
         "people" => people::sure(cache)?.into_iter().map(person_fix).collect(),
+        "people-from-tags" => people_from_tags::sure(cache)?
+            .into_iter()
+            .map(|found| Fix {
+                key: format!("people-from-tags:{}", found.tag),
+                finder: "people-from-tags",
+                title: found.tag.clone(),
+                detail: format!("{}, without a box", found.name),
+                photos: found.photos,
+                lines: Vec::new(),
+                what: What::Tagged {
+                    tag: found.tag,
+                    name: found.name,
+                },
+            })
+            .collect(),
         "places-from-tags" => gps_from_places::sure(cache, geo)?
             .into_iter()
             .map(|(question, photos)| answered("places-from-tags", question, photos, |answer| answer.tells()))
@@ -140,6 +174,25 @@ fn find_one(key: &str, cache: &Cache, geo: Option<&Geo>) -> Result<Vec<Fix>, Str
             .map(|question| {
                 let photos = question.photos;
                 answered("places-from-events", question, photos, |answer| answer.tells())
+            })
+            .collect(),
+        "place-words" => place_words::sure(cache, geo)?
+            .into_iter()
+            .map(|country| {
+                let shown: Vec<&str> = country.towns.iter().take(SHOWN_TOWNS).map(String::as_str).collect();
+                let mut towns = shown.join(", ");
+                if country.towns.len() > SHOWN_TOWNS {
+                    towns.push_str(&format!(" and {} more", country.towns.len() - SHOWN_TOWNS));
+                }
+                Fix {
+                    key: format!("place-words:{}", country.code),
+                    finder: "place-words",
+                    title: country.name,
+                    detail: "The town, the state and the country, from the position".to_string(),
+                    photos: country.photos,
+                    lines: vec![("Towns".to_string(), towns)],
+                    what: What::Country(country.code),
+                }
             })
             .collect(),
         "folders" => folder_fixes(cache, geo)?,
@@ -239,6 +292,8 @@ fn folder_fixes(cache: &Cache, geo: Option<&Geo>) -> Result<Vec<Fix>, String> {
 
 /// How many of the renames of a fix are shown before the rest is only counted.
 const SHOWN_RENAMES: usize = 3;
+/// How many of the towns of a country are named before the rest is only counted.
+const SHOWN_TOWNS: usize = 5;
 
 fn name_fixes(cache: &Cache) -> Result<Vec<Fix>, String> {
     Ok(names::folders(cache)?
@@ -333,6 +388,8 @@ pub fn change_set(finder: &Finder, fixes: &[&Fix], cache: &Cache, geo: Option<&G
     let mut tidy = false;
     let mut named = BTreeSet::new();
     let mut persons = BTreeSet::new();
+    let mut tagged = std::collections::BTreeMap::new();
+    let mut countries = BTreeSet::new();
     for fix in fixes.iter().filter(|fix| fix.finder == finder.key) {
         match &fix.what {
             What::Rule(rule) => {
@@ -348,15 +405,23 @@ pub fn change_set(finder: &Finder, fixes: &[&Fix], cache: &Cache, geo: Option<&G
             What::Person(id) => {
                 persons.insert(id.clone());
             }
+            What::Tagged { tag, name } => {
+                tagged.insert(tag.clone(), name.clone());
+            }
+            What::Country(code) => {
+                countries.insert(code.clone());
+            }
         }
     }
     let wanted: Vec<Wanted> = match finder.key {
         "tags" => tag_vocabulary::renamed(cache, &whole(), &rules, tidy).map_err(failed)?,
         "people" => people::wanted(cache, &persons, &whole()).map_err(failed)?,
+        "people-from-tags" => people_from_tags::wanted(cache, &tagged, &whole()).map_err(failed)?,
         "places-from-tags" => GpsFromPlacesTag
             .wanted(cache, geo, &whole(), &answers)
             .map_err(failed)?,
         "places-from-events" => GpsFromEvent.wanted(cache, geo, &whole(), &answers).map_err(failed)?,
+        "place-words" => place_words::wanted(cache, geo, &countries, &whole()).map_err(failed)?,
         "folders" => FolderMigration.wanted(cache, geo, &whole(), &answers).map_err(failed)?,
         "file-names" => names::folders(cache)?
             .into_iter()
@@ -535,6 +600,35 @@ mod tests {
             5,
             "what was not ticked is still there"
         );
+    }
+
+    #[test]
+    fn a_person_from_a_tag_and_the_words_of_a_position_are_fixes_that_go_once_written() {
+        let mut library = Library::new("fixes-persons-words");
+        let fixes = find(&library.cache, Some(&geo()));
+        assert_eq!(
+            keys(&fixes, "people-from-tags"),
+            ["people-from-tags:people/family/Anna"]
+        );
+        let anna = fixes.iter().find(|fix| fix.finder == "people-from-tags").unwrap();
+        assert_eq!((anna.detail.as_str(), anna.photos), ("Anna, without a box", 1));
+        let words = keys(&fixes, "place-words");
+        assert!(words.contains(&"place-words:DE".to_string()), "{words:?}");
+
+        let ticked: Vec<Fix> = fixes
+            .iter()
+            .filter(|fix| fix.finder == "people-from-tags" || fix.key == "place-words:DE")
+            .cloned()
+            .collect();
+        let passes = apply_ticked(&mut library, &ticked);
+        let order: Vec<(&str, usize)> = passes.iter().map(|pass| (pass.finder, pass.summary.refused)).collect();
+        assert_eq!(order, [("people-from-tags", 0), ("place-words", 0)]);
+        assert!(passes.iter().all(|pass| pass.summary.written > 0), "{passes:?}");
+
+        library.rescan();
+        let again = find(&library.cache, Some(&geo()));
+        assert!(keys(&again, "people-from-tags").is_empty());
+        assert!(!keys(&again, "place-words").contains(&"place-words:DE".to_string()));
     }
 
     #[test]
