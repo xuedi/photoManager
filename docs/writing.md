@@ -69,8 +69,9 @@ re-read of the whole file, every time, and that is the price of the guarantee: m
 folder of real photos, a write with verification takes about 110 ms per photo, and a pass where
 everything is already right about 53 ms.
 
-Verification compares what was asked against what the file says, not text against text. A tag list
-is a set, so the same tags in another order are the same tags. A number that went through a
+Verification compares what was asked against what the file says, not text against text. The same
+items of a list in another order are the same list, but an item listed twice is not: a list with a
+copy in it is written again without. A number that went through a
 rational comes back rounded, so numbers compare within a tolerance. A list of one reads back as a
 bare value. Inside a structure, order matters.
 

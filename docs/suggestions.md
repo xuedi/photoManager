@@ -17,6 +17,7 @@ refused for good is no fix and is not listed.
 | Finder | One fix is | Sure when |
 |--------|------------|-----------|
 | Tag Tree | one rename rule, or the tag fields that disagree | the shape of the tree leaves one place for the tag |
+| Duplicate People | one person a photo names more than once | every box of the name lies on one face |
 | People | one person Immich names | no other person in Immich has the name |
 | Places from Tags | one places tag of photos without GPS | the place data knows the name exactly |
 | Places from Events | one event with photos without GPS | every located photo of the event stands in one town |
@@ -82,6 +83,22 @@ A flat keyword two tags have the name of, one no tag has, and a root that stands
 sure, and are not found: they are renamed by hand with Rename Tag. Only the photos a rule changes
 are written, with every level in every field; the generated tags are left as they are - Tidy Tags
 is where they are made.
+
+## Duplicate People
+
+A person is in a photo once. A file can still name someone twice: a box drawn again on the same
+face, or a name listed twice among the persons - what earlier writes of Immich's copies of a face
+left behind. This finder names them once, before People runs, so People sees the files tidy. It
+reads only what the files say; Immich plays no part. One fix per person.
+
+- **Sure** is a name whose boxes in a photo all lie on one face: every two of them share at least
+  half of the smaller. The largest box stays, as it is, and the others go; a name listed twice
+  among the persons is listed once. Every other box and every other person stays as it was.
+- **Left, with why:** a name with boxes on different faces - which one is the person is not the
+  app's to guess - and a photo with a box without a name, which a write could not keep. They are
+  a line on the person's fix; a person whose photos are all left is no fix.
+- **What goes** is only ever a copy of a box that stays, so no one leaves a photo and no face
+  loses its box.
 
 ## People
 

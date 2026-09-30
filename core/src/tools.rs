@@ -21,6 +21,7 @@ use crate::write;
 use crate::write::change::Derived;
 use crate::write::{Change, Field, Gps};
 
+pub mod duplicate_people;
 pub mod folders;
 pub mod gps_from_event;
 pub mod gps_from_places;

@@ -573,7 +573,9 @@ fn face_assigns(faces: Option<&Faces>) -> Result<Vec<Assign>, String> {
         region.insert("Name".to_string(), Value::from(name));
         region.insert("Type".to_string(), Value::from("Face"));
         regions.push(Value::Object(region));
-        names.push(Value::from(name));
+        if !names.contains(&Value::from(name)) {
+            names.push(Value::from(name));
+        }
     }
     for name in faces.persons.iter().map(|name| name.trim()) {
         if !name.is_empty() && !names.contains(&Value::from(name)) {
@@ -701,11 +703,11 @@ fn as_list(value: &Value) -> Vec<Value> {
     }
 }
 
-/// A tag list is a set: the same tags in another order say the same thing.
+/// The same items in another order say the same thing; an item listed twice does not, so a list
+/// with a copy in it is written again without.
 fn texts(items: &[Value]) -> Vec<String> {
     let mut all: Vec<String> = items.iter().map(|item| plain(item).trim().to_string()).collect();
     all.sort();
-    all.dedup();
     all
 }
 

@@ -568,7 +568,7 @@ fn shown_people(faces: &[change::Face], persons: &[String]) -> String {
     let boxed: Vec<&str> = faces.iter().map(|face| face.name.trim()).collect();
     let mut unboxed: Vec<&str> = Vec::new();
     for name in persons.iter().map(|name| name.trim()) {
-        if !name.is_empty() && !boxed.contains(&name) && !unboxed.contains(&name) {
+        if !name.is_empty() && !boxed.contains(&name) {
             unboxed.push(name);
         }
     }
@@ -593,10 +593,9 @@ fn shown_regions(said: Option<&Regions>, wanted: Option<&change::Faces>, after: 
                 boxed.chain(unboxed).filter(|name| !name.is_empty()).collect()
             })
             .unwrap_or_default();
-        for list in [&mut named, &mut wanted] {
-            list.sort();
-            list.dedup();
-        }
+        named.sort();
+        wanted.sort();
+        wanted.dedup();
         named != wanted
     };
     if names != after {

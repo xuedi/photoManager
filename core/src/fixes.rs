@@ -24,7 +24,7 @@ use crate::tools::folders::{self, FolderMigration};
 use crate::tools::gps_from_event::GpsFromEvent;
 use crate::tools::gps_from_places::{self, GpsFromPlacesTag};
 use crate::tools::{Answer, Answers, Question, Tool, tag_vocabulary};
-use crate::tools::{people, people_from_tags, place_words};
+use crate::tools::{duplicate_people, people, people_from_tags, place_words};
 use crate::write::{self, Engine};
 
 /// One kind of fix, and the pass its ticked fixes are written as.
@@ -39,12 +39,18 @@ pub struct Finder {
 }
 
 /// Every finder, in the order its fixes are applied.
-pub const FINDERS: [Finder; 8] = [
+pub const FINDERS: [Finder; 9] = [
     Finder {
         key: "tags",
         title: "Tag Tree",
         fixes: "Tags into the shape the rest of the tree has, and tag fields that disagree",
         pass: "Tidy the tag tree",
+    },
+    Finder {
+        key: "duplicate-people",
+        title: "Duplicate People",
+        fixes: "Photos that name a person more than once on the same face, named once",
+        pass: "Name people once",
     },
     Finder {
         key: "people",
@@ -118,6 +124,8 @@ enum What {
     },
     /// The folder whose photos are named by their date.
     Names(String),
+    /// The person, by the name folded, named once in the photos that name them more than once.
+    Doubled(String),
     /// The person, by Immich's id, written into the photos Immich finds them in.
     Person(String),
     /// The person a people tag names, written into its photos without a box.
@@ -149,6 +157,7 @@ fn whole() -> Scope {
 fn find_one(key: &str, cache: &Cache, geo: Option<&Geo>) -> Result<Vec<Fix>, String> {
     Ok(match key {
         "tags" => tag_fixes(cache)?,
+        "duplicate-people" => duplicate_people::sure(cache)?.into_iter().map(doubled_fix).collect(),
         "people" => people::sure(cache)?.into_iter().map(person_fix).collect(),
         "people-from-tags" => people_from_tags::sure(cache)?
             .into_iter()
@@ -227,6 +236,28 @@ fn answered(finder: &'static str, question: Question, photos: usize, detail: imp
             question: question.key,
             answer,
         },
+    }
+}
+
+fn doubled_fix(found: duplicate_people::Found) -> Fix {
+    let mut lines = vec![(
+        "Goes".to_string(),
+        match found.copies {
+            1 => "1 copy".to_string(),
+            copies => format!("{copies} copies"),
+        },
+    )];
+    if let Some(why) = found.why {
+        lines.push(("Left".to_string(), format!("{}, {why}", counted(found.refused))));
+    }
+    Fix {
+        key: format!("duplicate-people:{}", found.key),
+        finder: "duplicate-people",
+        title: found.name,
+        detail: "Named once, the largest box on the face stays".to_string(),
+        photos: found.photos,
+        lines,
+        what: What::Doubled(found.key),
     }
 }
 
@@ -388,6 +419,7 @@ pub fn change_set(finder: &Finder, fixes: &[&Fix], cache: &Cache, geo: Option<&G
     let mut tidy = false;
     let mut named = BTreeSet::new();
     let mut persons = BTreeSet::new();
+    let mut doubled = BTreeSet::new();
     let mut tagged = std::collections::BTreeMap::new();
     let mut countries = BTreeSet::new();
     for fix in fixes.iter().filter(|fix| fix.finder == finder.key) {
@@ -402,6 +434,9 @@ pub fn change_set(finder: &Finder, fixes: &[&Fix], cache: &Cache, geo: Option<&G
             What::Names(dir) => {
                 named.insert(dir.clone());
             }
+            What::Doubled(key) => {
+                doubled.insert(key.clone());
+            }
             What::Person(id) => {
                 persons.insert(id.clone());
             }
@@ -415,6 +450,7 @@ pub fn change_set(finder: &Finder, fixes: &[&Fix], cache: &Cache, geo: Option<&G
     }
     let wanted: Vec<Wanted> = match finder.key {
         "tags" => tag_vocabulary::renamed(cache, &whole(), &rules, tidy).map_err(failed)?,
+        "duplicate-people" => duplicate_people::wanted(cache, &doubled, &whole()).map_err(failed)?,
         "people" => people::wanted(cache, &persons, &whole()).map_err(failed)?,
         "people-from-tags" => people_from_tags::wanted(cache, &tagged, &whole()).map_err(failed)?,
         "places-from-tags" => GpsFromPlacesTag
