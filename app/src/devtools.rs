@@ -64,7 +64,16 @@ pub fn install(app: &adw::Application, window: &Window, paths: &Paths, library: 
             }
         })
         .build();
-    window.add_action_entries([rating, immich_key]);
+    // A pointer that rests on a row is nothing a test from outside can make; this frames a face
+    // the way pointing at a person in the panel does. An empty name frames none.
+    let point_at = gio::ActionEntry::builder("photo-point-at")
+        .parameter_type(Some(glib::VariantTy::STRING))
+        .activate(|window: &Window, _, parameter| {
+            let name = parameter.and_then(|value| value.str()).filter(|name| !name.is_empty());
+            window.gallery().photo().point_at(name);
+        })
+        .build();
+    window.add_action_entries([rating, immich_key, point_at]);
 }
 
 fn state(window: &Window, paths: &Paths, library: Option<&Library>) -> String {

@@ -38,6 +38,9 @@ pub enum Full {
     Failed(String),
 }
 
+/// How wide the dark edge of a face frame is, in pixels.
+const FRAME: f64 = 3.0;
+
 /// A change built and diffed, waiting for Apply.
 #[derive(Debug)]
 pub struct Review {
@@ -68,6 +71,8 @@ mod imp {
         pub stage: TemplateChild<gtk::Overlay>,
         #[template_child]
         pub picture: TemplateChild<gtk::Picture>,
+        #[template_child]
+        pub frames: TemplateChild<gtk::DrawingArea>,
         #[template_child]
         pub previous_button: TemplateChild<gtk::Button>,
         #[template_child]
@@ -100,6 +105,10 @@ mod imp {
         /// Which answer about the details is the newest asked for.
         pub asked: Cell<u64>,
         pub toast: RefCell<String>,
+        /// The person whose face is framed on the picture: the one pointed at in the panel.
+        pub pointed: RefCell<Option<String>>,
+        /// Whether All Fields is open: kept while stepping, closed for every photo opened.
+        pub raw_open: Cell<bool>,
     }
 
     #[glib::object_subclass]
@@ -121,6 +130,7 @@ mod imp {
         fn constructed(&self) {
             self.parent_constructed();
             self.obj().build_keys();
+            self.obj().build_frames();
         }
     }
 
@@ -170,6 +180,7 @@ impl PhotoPage {
 
     /// Shows the photo at this position of the list.
     pub fn open(&self, at: u32) {
+        self.imp().raw_open.set(false);
         self.show(at);
         self.imp().stage.grab_focus();
     }
@@ -188,6 +199,7 @@ impl PhotoPage {
         imp.picture.set_paintable(None::<&gdk::Paintable>);
         *imp.shown.borrow_mut() = None;
         *imp.details.borrow_mut() = None;
+        self.point_at(None);
         imp.sheet.borrow_mut().clear(&imp.panel);
     }
 
@@ -750,6 +762,7 @@ impl PhotoPage {
         let Some(listed) = self.listed_at(at) else {
             return;
         };
+        self.point_at(None);
         imp.at.set(at);
         let name = listed
             .rel_path
@@ -988,9 +1001,19 @@ impl PhotoPage {
             nearest: nearest.as_ref(),
             has_places: library.counts().places > 0,
             always_map,
+            raw_open: imp.raw_open.get(),
         };
         let form = imp.form.borrow().as_ref().map(|form| form.widget());
+        self.point_at(None);
         imp.sheet.borrow_mut().fill(&imp.panel, &look, form.as_ref());
+        self.connect_people();
+        if let Some(toggle) = imp.sheet.borrow().raw_toggle() {
+            toggle.connect_toggled(glib::clone!(
+                #[weak(rename_to = page)]
+                self,
+                move |toggle| page.imp().raw_open.set(toggle.is_active())
+            ));
+        }
         if always_map {
             self.show_map();
         }
@@ -1011,6 +1034,146 @@ impl PhotoPage {
         tracing::info!(always, "the map setting changed");
         if always {
             self.show_map();
+        }
+    }
+
+    fn build_frames(&self) {
+        let imp = self.imp();
+        let page = self.downgrade();
+        imp.frames.set_draw_func(move |_, cairo, width, height| {
+            let Some(page) = page.upgrade() else {
+                return;
+            };
+            for (x, y, w, h) in page.frame_rects(f64::from(width), f64::from(height)) {
+                cairo.set_source_rgb(0.0, 0.0, 0.0);
+                cairo.set_line_width(FRAME);
+                cairo.rectangle(x - FRAME / 2.0, y - FRAME / 2.0, w + FRAME, h + FRAME);
+                let _ = cairo.stroke();
+                cairo.set_source_rgba(1.0, 1.0, 1.0, 0.9);
+                cairo.set_line_width(1.0);
+                cairo.rectangle(x + 0.5, y + 0.5, (w - 1.0).max(0.0), (h - 1.0).max(0.0));
+                let _ = cairo.stroke();
+            }
+        });
+        imp.picture.connect_paintable_notify(glib::clone!(
+            #[weak(rename_to = page)]
+            self,
+            move |_| page.imp().frames.queue_draw()
+        ));
+    }
+
+    /// Frames the face of this person on the picture, or none.
+    pub fn point_at(&self, name: Option<&str>) {
+        let imp = self.imp();
+        let name = name.map(String::from);
+        if *imp.pointed.borrow() == name {
+            return;
+        }
+        *imp.pointed.borrow_mut() = name;
+        imp.frames.queue_draw();
+    }
+
+    /// Whether All Fields is open.
+    pub fn raw_open(&self) -> bool {
+        self.imp().raw_open.get()
+    }
+
+    /// Opens or closes All Fields, as its arrow does.
+    pub fn set_raw_open(&self, open: bool) {
+        if let Some(toggle) = self.imp().sheet.borrow().raw_toggle() {
+            toggle.set_active(open);
+        }
+    }
+
+    /// The person whose face is framed.
+    pub fn pointed(&self) -> Option<String> {
+        self.imp().pointed.borrow().clone()
+    }
+
+    /// The rows of the panel's persons with a face box.
+    pub fn boxed_people(&self) -> Vec<(String, adw::ActionRow)> {
+        self.imp().sheet.borrow().boxed_people()
+    }
+
+    /// The frames of the person pointed at, on a picture fitted into a stage of this size and
+    /// centred in it: left, top, width and height, in its pixels.
+    pub fn frame_rects(&self, width: f64, height: f64) -> Vec<(f64, f64, f64, f64)> {
+        let imp = self.imp();
+        let Some(name) = imp.pointed.borrow().clone() else {
+            return Vec::new();
+        };
+        let Some(paintable) = imp.picture.paintable() else {
+            return Vec::new();
+        };
+        let (picture_width, picture_height) = (
+            f64::from(paintable.intrinsic_width()),
+            f64::from(paintable.intrinsic_height()),
+        );
+        if picture_width <= 0.0 || picture_height <= 0.0 || width <= 0.0 || height <= 0.0 {
+            return Vec::new();
+        }
+        let scale = (width / picture_width).min(height / picture_height);
+        let (shown_width, shown_height) = (picture_width * scale, picture_height * scale);
+        let (left, top) = ((width - shown_width) / 2.0, (height - shown_height) / 2.0);
+        let details = imp.details.borrow();
+        let Some(details) = details.as_ref() else {
+            return Vec::new();
+        };
+        details
+            .faces
+            .iter()
+            .filter(|face| face.name == name)
+            .map(|face| {
+                (
+                    left + (face.x - face.width / 2.0) * shown_width,
+                    top + (face.y - face.height / 2.0) * shown_height,
+                    face.width * shown_width,
+                    face.height * shown_height,
+                )
+            })
+            .collect()
+    }
+
+    /// Frames a person's face while their row in the panel is pointed at or has the focus.
+    fn connect_people(&self) {
+        let rows = self.imp().sheet.borrow().boxed_people();
+        for (name, row) in rows {
+            let enter = glib::clone!(
+                #[weak(rename_to = page)]
+                self,
+                #[strong]
+                name,
+                move || page.point_at(Some(&name))
+            );
+            let leave = glib::clone!(
+                #[weak(rename_to = page)]
+                self,
+                #[strong]
+                name,
+                move || page.leave_person(&name)
+            );
+            let motion = gtk::EventControllerMotion::new();
+            motion.connect_enter(glib::clone!(
+                #[strong]
+                enter,
+                move |_, _, _| enter()
+            ));
+            motion.connect_leave(glib::clone!(
+                #[strong]
+                leave,
+                move |_| leave()
+            ));
+            let focus = gtk::EventControllerFocus::new();
+            focus.connect_enter(move |_| enter());
+            focus.connect_leave(move |_| leave());
+            row.add_controller(motion);
+            row.add_controller(focus);
+        }
+    }
+
+    fn leave_person(&self, name: &str) {
+        if self.imp().pointed.borrow().as_deref() == Some(name) {
+            self.point_at(None);
         }
     }
 

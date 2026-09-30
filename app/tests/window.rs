@@ -1117,7 +1117,38 @@ fn reads_the_panel(window: &Window) {
         !texts.iter().any(|text| text == "Person: me"),
         "a people tag is a tag, not a person"
     );
+    let frames = || page.frame_rects(400.0, 300.0);
+    assert!(frames().is_empty(), "no face framed until a person is pointed at");
+    let rows = page.boxed_people();
+    let names: Vec<&str> = rows.iter().map(|(name, _)| name.as_str()).collect();
+    assert_eq!(names, ["Anna", "Tom"]);
+    rows[0].1.grab_focus();
+    until(
+        || page.pointed().as_deref() == Some("Anna"),
+        "the focused row frames Anna",
+    );
+    until(|| page.shows_picture(), "the picture is there to frame on");
+    let near = |one: &[(f64, f64, f64, f64)], other: &[(f64, f64, f64, f64)]| {
+        one.len() == other.len()
+            && one.iter().zip(other).all(|(a, b)| {
+                [(a.0, b.0), (a.1, b.1), (a.2, b.2), (a.3, b.3)]
+                    .iter()
+                    .all(|(a, b)| (a - b).abs() < 0.01)
+            })
+    };
+    assert!(
+        near(&frames(), &[(86.0, 33.0, 84.0, 114.0)]),
+        "a square picture fitted into 400 by 300 is 300 wide, 50 in: {:?}",
+        frames()
+    );
+    page.point_at(Some("Tom"));
+    assert!(near(&frames(), &[(185.0, 240.0, 30.0, 30.0)]), "{:?}", frames());
+    page.point_at(None);
+    assert!(frames().is_empty());
+
     let texts = open("Denmark/2018-10-00 Wedding Trip to Copenhagen/DSCF0002.JPG");
+    assert!(page.pointed().is_none(), "another photo frames nobody");
+    assert!(page.boxed_people().is_empty(), "Mia has no box to frame");
     has(&texts, "Person: Mia, no face box");
     has(&texts, "No coordinates");
     assert!(!page.shows_map(), "no coordinates, no map");
@@ -1133,6 +1164,24 @@ fn reads_the_panel(window: &Window) {
     has(&texts, "Orientation: 6, turned right");
     assert!(!page.shows_map(), "no map until it is asked for");
 
+    assert!(!page.raw_open(), "All Fields starts closed");
+    page.set_raw_open(true);
+    assert!(page.raw_open());
+    let (there, back) = match page.position() + 1 < page.count() {
+        true => ("win.photo-next", "win.photo-previous"),
+        false => ("win.photo-previous", "win.photo-next"),
+    };
+    WidgetExt::activate_action(window, there, None).unwrap();
+    until(
+        || page.details().is_some_and(|details| details.rel_path != LOCATED),
+        "the next photo",
+    );
+    assert!(page.raw_open(), "open, it stays open while stepping");
+    WidgetExt::activate_action(window, back, None).unwrap();
+    until(
+        || page.details().is_some_and(|details| details.rel_path == LOCATED),
+        "back again",
+    );
     let all = page.raw_shown();
     assert!(all > 5, "every raw field is listed: {all}");
     page.filter_raw("gpslat");
@@ -1140,6 +1189,10 @@ fn reads_the_panel(window: &Window) {
     assert!(narrowed > 0 && narrowed < all, "{narrowed} of {all}");
     page.filter_raw("");
     assert_eq!(page.raw_shown(), all);
+
+    WidgetExt::activate_action(window, "win.photo-close", None).unwrap();
+    open(LOCATED);
+    assert!(!page.raw_open(), "a photo opened again starts with All Fields closed");
 
     WidgetExt::activate_action(window, "win.photo-panel", None).unwrap();
     assert!(!page.shows_panel(), "F9 hides the panel");

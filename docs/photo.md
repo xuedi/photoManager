@@ -70,15 +70,23 @@ way a person asks:
 | When | the date taken with its offset, the XMP date where it differs, the folder's date and whether the two agree, by the rule the dashboard counts with |
 | Where | the coordinates, the nearest place, the location text, the place tags, the folder |
 | Tags | the tag paths as a small tree, one branch per root |
-| People | the names from `people` tags, either spelling of the root, and from face regions |
+| People | the persons the photo names, from its face regions and its persons, each saying whether a face box says where they are |
 | Camera | make and model, dimensions, orientation, rating |
 | File | the path, size, content id, when the file last changed, its issues |
-| All Fields | every EXIF, IPTC and XMP field the scan read, filterable by name or value, selectable to copy |
+| All Fields | every EXIF, IPTC and XMP field the scan read, filterable by name or value, selectable to copy; folded until its arrow opens it |
 
 A position worked out rather than measured says so under the coordinates and how: from the places
 tag, the event, set by hand. One borrowed from a photo beside it says how far off it may be -
 "From a neighbour, 200 m" - since that is what the person chose when they gave it
 ([tools.md](tools.md#position-from-a-neighbour)).
+
+Pointing at a person with a face box, or moving the focus onto them, frames their face on the
+picture: a dark frame with a light edge inside, so it shows on a dark photo too. The box is the
+file's, turned the way the photo is shown and laid over the picture where it is drawn; a box
+measured on a picture of another shape is not drawn, as it would frame something else.
+
+All Fields starts folded for every photo opened from the gallery, with its count in view. Opened,
+it stays open while stepping through the photos.
 
 Nothing in the panel opens the file. It is as fresh as the last scan and says so. The nearest
 place comes from the local [place data](places.md), with no network. Under the breakpoint the

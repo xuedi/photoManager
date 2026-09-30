@@ -24,9 +24,12 @@ pub struct Panel {
     groups: Vec<gtk::Widget>,
     raw: Option<gtk::ListBox>,
     search: Option<gtk::SearchEntry>,
+    raw_toggle: Option<gtk::ToggleButton>,
     map: Option<shumate::SimpleMap>,
     map_slot: Option<gtk::Box>,
     always: Option<adw::SwitchRow>,
+    /// The rows of the persons with a face box, by name.
+    boxed_people: Vec<(String, adw::ActionRow)>,
     texts: Vec<String>,
 }
 
@@ -37,6 +40,8 @@ pub struct Look<'a> {
     /// Whether the place data is there to ask at all.
     pub has_places: bool,
     pub always_map: bool,
+    /// Whether All Fields is open.
+    pub raw_open: bool,
 }
 
 impl Panel {
@@ -46,9 +51,11 @@ impl Panel {
         }
         self.raw = None;
         self.search = None;
+        self.raw_toggle = None;
         self.map = None;
         self.map_slot = None;
         self.always = None;
+        self.boxed_people.clear();
         self.texts.clear();
     }
 
@@ -94,7 +101,7 @@ impl Panel {
         self.add(root, camera.upcast());
         let file = self.file(details);
         self.add(root, file.upcast());
-        let raw = self.raw_fields(details);
+        let raw = self.raw_fields(details, look.raw_open);
         self.add(root, raw.upcast());
     }
 
@@ -131,6 +138,16 @@ impl Panel {
     /// The switch that keeps the map on for every photo, when there is a map to show.
     pub fn always_switch(&self) -> Option<adw::SwitchRow> {
         self.always.clone()
+    }
+
+    /// The rows of the persons with a face box, to frame the face while one is pointed at.
+    pub fn boxed_people(&self) -> Vec<(String, adw::ActionRow)> {
+        self.boxed_people.clone()
+    }
+
+    /// The arrow that opens and closes All Fields.
+    pub fn raw_toggle(&self) -> Option<gtk::ToggleButton> {
+        self.raw_toggle.clone()
     }
 
     pub fn shows_map(&self) -> bool {
@@ -357,7 +374,10 @@ impl Panel {
                     let row = adw::ActionRow::builder().title(name).use_markup(false).build();
                     row.add_prefix(&gtk::Image::from_icon_name("avatar-default-symbolic"));
                     match boxed {
-                        true => self.texts.push(format!("Person: {name}")),
+                        true => {
+                            self.texts.push(format!("Person: {name}"));
+                            self.boxed_people.push((name.clone(), row.clone()));
+                        }
                         false => {
                             row.set_subtitle("No face box");
                             self.texts.push(format!("Person: {name}, no face box"));
@@ -424,7 +444,7 @@ impl Panel {
         group
     }
 
-    fn raw_fields(&mut self, details: &Details) -> adw::PreferencesGroup {
+    fn raw_fields(&mut self, details: &Details, open: bool) -> adw::PreferencesGroup {
         let group = adw::PreferencesGroup::builder()
             .title("All Fields")
             .description(format!("{} fields the scan read", details.raw.len()))
@@ -477,10 +497,41 @@ impl Panel {
         let holder = gtk::Box::builder().orientation(gtk::Orientation::Vertical).build();
         holder.append(&search);
         holder.append(&list);
-        group.add(&holder);
+        let revealer = gtk::Revealer::builder()
+            .child(&holder)
+            .reveal_child(open)
+            .transition_type(gtk::RevealerTransitionType::SlideDown)
+            .build();
+        group.add(&revealer);
+        let toggle = gtk::ToggleButton::builder()
+            .icon_name(folded_icon(open))
+            .tooltip_text("Show All Fields")
+            .active(open)
+            .valign(gtk::Align::Center)
+            .build();
+        toggle.add_css_class("flat");
+        toggle.update_property(&[gtk::accessible::Property::Label("Show All Fields")]);
+        toggle.connect_toggled(glib::clone!(
+            #[weak]
+            revealer,
+            move |toggle| {
+                revealer.set_reveal_child(toggle.is_active());
+                toggle.set_icon_name(folded_icon(toggle.is_active()));
+            }
+        ));
+        group.set_header_suffix(Some(&toggle));
         self.raw = Some(list);
         self.search = Some(search);
+        self.raw_toggle = Some(toggle);
         group
+    }
+}
+
+/// The arrow of a part that folds: pointing at it closed, down into it open.
+fn folded_icon(open: bool) -> &'static str {
+    match open {
+        true => "pan-down-symbolic",
+        false => "pan-end-symbolic",
     }
 }
 

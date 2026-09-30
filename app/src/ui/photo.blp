@@ -125,6 +125,11 @@ template $PmPhotoPage: Adw.NavigationPage {
             };
 
             [overlay]
+            DrawingArea frames {
+              can-target: false;
+            }
+
+            [overlay]
             Button previous_button {
               icon-name: "go-previous-symbolic";
               tooltip-text: "Previous Photo";

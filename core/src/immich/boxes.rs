@@ -35,6 +35,26 @@ fn turned_back(orientation: i64, x: f64, y: f64) -> (f64, f64) {
     }
 }
 
+/// A box as the file stores it, where it is on the picture as it is shown: the way there that
+/// `turned_back` is the way back from.
+pub fn shown(area: Area, orientation: Option<i64>) -> Area {
+    let Area { x, y, w, h } = area;
+    let (x, y) = match orientation.unwrap_or(1) {
+        2 => (1.0 - x, y),
+        3 => (1.0 - x, 1.0 - y),
+        4 => (x, 1.0 - y),
+        5 => (y, x),
+        6 => (1.0 - y, x),
+        7 => (1.0 - y, 1.0 - x),
+        8 => (y, 1.0 - x),
+        _ => (x, y),
+    };
+    match sideways(orientation) {
+        true => Area { x, y, w: h, h: w },
+        false => Area { x, y, w, h },
+    }
+}
+
 /// Whether a photo of this orientation is shown on its side, so its width is its height.
 pub fn sideways(orientation: Option<i64>) -> bool {
     matches!(orientation, Some(5..=8))
@@ -141,6 +161,31 @@ mod tests {
         }
         let unknown = stored(&face_at(kept, 3000, 2000), None).unwrap();
         assert!(near(unknown, kept), "no orientation is the stored one");
+    }
+
+    #[test]
+    fn a_stored_box_is_shown_where_immich_shows_it_and_turns_back_to_itself() {
+        let kept = Area {
+            x: 0.3,
+            y: 0.2,
+            w: 0.1,
+            h: 0.3,
+        };
+        for orientation in 1..=8 {
+            let on_screen = shown(kept, Some(orientation));
+            assert_eq!(
+                on_screen,
+                orient_region_info(kept, orientation),
+                "orientation {orientation}"
+            );
+            let (width, height) = match sideways(Some(orientation)) {
+                true => (2000, 3000),
+                false => (3000, 2000),
+            };
+            let back = stored(&face_at(on_screen, width, height), Some(orientation)).unwrap();
+            assert!(near(back, kept), "orientation {orientation}: {back:?} is not {kept:?}");
+        }
+        assert_eq!(shown(kept, None), kept);
     }
 
     #[test]

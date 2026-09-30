@@ -11,6 +11,8 @@ use serde_json::Value;
 use crate::cache::{Cache, Result};
 use crate::clock::stamp;
 use crate::filter::Gap;
+use crate::immich::boxes::{self, Area};
+use crate::metadata::Regions;
 use crate::write::change::{DERIVED_BY, is_derived};
 use crate::write::{Change, Field, Gps, Place, Taken};
 
@@ -50,10 +52,62 @@ pub struct Details {
     /// The persons it names, by name, each with whether a face box says where they are. The
     /// `people` tags are tags, not persons.
     pub people: Vec<(String, bool)>,
+    /// Each face box, where it lies on the picture as it is shown. A box measured on a picture of
+    /// another shape is left out: it would land somewhere else.
+    pub faces: Vec<FaceBox>,
     /// Each issue the scan found, and what it said about it.
     pub issues: Vec<(String, Option<String>)>,
     /// Every field the scan read, by name.
     pub raw: Vec<(String, String)>,
+}
+
+/// A face box on the picture as it is shown: centre and size, each a fraction of it.
+#[derive(Debug, Clone, PartialEq)]
+pub struct FaceBox {
+    pub name: String,
+    pub x: f64,
+    pub y: f64,
+    pub width: f64,
+    pub height: f64,
+}
+
+/// How far the shape of the picture a box was measured on may be from the photo's.
+const SHAPE: f64 = 0.02;
+
+/// What lies where on the photo as it is shown, from the face regions as the file stores them.
+fn face_boxes(regions: &Regions, width: Option<i64>, height: Option<i64>, orientation: Option<i64>) -> Vec<FaceBox> {
+    if let (Some(their_width), Some(their_height), Some(width), Some(height)) =
+        (regions.width, regions.height, width, height)
+    {
+        let theirs = their_width as f64 / their_height.max(1) as f64;
+        let ours = width as f64 / height.max(1) as f64;
+        if (theirs / ours - 1.0).abs() > SHAPE {
+            return Vec::new();
+        }
+    }
+    regions
+        .faces
+        .iter()
+        .filter(|face| !face.name.trim().is_empty() && face.width > 0.0 && face.height > 0.0)
+        .map(|face| {
+            let area = boxes::shown(
+                Area {
+                    x: face.x,
+                    y: face.y,
+                    w: face.width,
+                    h: face.height,
+                },
+                orientation,
+            );
+            FaceBox {
+                name: face.name.trim().to_string(),
+                x: area.x,
+                y: area.y,
+                width: area.w,
+                height: area.h,
+            }
+        })
+        .collect()
 }
 
 /// What the edit form holds: text as it was typed, and the tags and rating as they were picked.
@@ -92,7 +146,7 @@ impl Details {
             "SELECT id, size, mtime_ns, content_id, country, city, event_name, event_year, event_month,
                 event_day, taken_at, taken_offset, xmp_taken_at, gps_lat, gps_lon, camera_make,
                 camera_model, orientation, rating, width, height, raw,
-                CASE WHEN {} THEN ({}) END, gps_method
+                CASE WHEN {} THEN ({}) END, gps_method, regions
              FROM photo p WHERE rel_path = ?1",
             gap.measured(),
             gap.missing()
@@ -126,10 +180,15 @@ impl Details {
                     gps_method: row.get(23)?,
                     ..Details::default()
                 };
-                Ok((row.get::<_, i64>(0)?, row.get::<_, String>(21)?, details))
+                Ok((
+                    row.get::<_, i64>(0)?,
+                    row.get::<_, String>(21)?,
+                    row.get::<_, Option<String>>(24)?,
+                    details,
+                ))
             })
             .optional()?;
-        let Some((id, raw, mut details)) = found else {
+        let Some((id, raw, regions, mut details)) = found else {
             return Ok(None);
         };
 
@@ -146,6 +205,11 @@ impl Details {
             .query_map(params![rel_path], |row| Ok((row.get(0)?, row.get(1)?)))?
             .collect::<Result<Vec<_>>>()?;
 
+        details.faces = regions
+            .as_deref()
+            .and_then(Regions::read)
+            .map(|regions| face_boxes(&regions, details.width, details.height, details.orientation))
+            .unwrap_or_default();
         details.raw = raw_fields(&raw);
         details.place = place(&details.raw);
         details.altitude = altitude(&details.raw);

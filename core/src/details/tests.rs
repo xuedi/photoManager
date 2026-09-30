@@ -314,6 +314,45 @@ mod on_the_fixture {
     }
 
     #[test]
+    fn the_face_boxes_are_where_the_faces_are_shown() {
+        let regions = |root: &std::path::Path, rel_path: &str, width: i64, height: i64| {
+            let status = Command::new("exiftool")
+                .args(["-q", "-overwrite_original"])
+                .arg(format!(
+                    "-XMP-mwg-rs:RegionInfo={{AppliedToDimensions={{W={width},H={height},Unit=pixel}},\
+                     RegionList=[{{Area={{X=0.25,Y=0.5,W=0.2,H=0.3,Unit=normalized}},Name=Ben,Type=Face}}]}}"
+                ))
+                .arg(root.join(rel_path))
+                .status()
+                .unwrap();
+            assert!(status.success());
+        };
+        let (_, cache) = scanned("faces", |root| {
+            regions(root, LOCATED, 24, 16);
+            regions(root, KIRA, 40, 10);
+        });
+        let faces = |rel_path: &str| Details::of(&cache, rel_path).unwrap().unwrap().faces;
+        let face = |name: &str, x: f64, y: f64, width: f64, height: f64| FaceBox {
+            name: name.to_string(),
+            x,
+            y,
+            width,
+            height,
+        };
+        assert_eq!(
+            faces(PEOPLE),
+            [face("Anna", 0.26, 0.3, 0.28, 0.38), face("Tom", 0.5, 0.85, 0.1, 0.1)]
+        );
+        assert_eq!(
+            faces(LOCATED),
+            [face("Ben", 0.5, 0.25, 0.3, 0.2)],
+            "turned clockwise: stored on the left, shown at the top"
+        );
+        assert!(faces(KIRA).is_empty(), "measured on a picture of another shape");
+        assert!(faces(OFF).is_empty());
+    }
+
+    #[test]
     fn a_derived_position_is_read_into_the_cache_and_said() {
         let (root, cache) = scanned("derived", |root| {
             let status = Command::new("exiftool")
