@@ -22,7 +22,7 @@ use crate::write::{self, Change, Faces, Field};
 /// How far the shape of the picture Immich measured on may be from the file's.
 const SHAPE: f64 = 0.02;
 /// How much of the smaller of two boxes the other must cover for both to be on one face.
-const SAME_FACE: f64 = 0.5;
+pub(crate) const SAME_FACE: f64 = 0.5;
 
 /// What the snapshot says, arranged for asking about photos.
 struct Known {
@@ -224,7 +224,7 @@ pub fn wanted(cache: &Cache, persons: &BTreeSet<String>, scope: &Scope) -> cache
 }
 
 /// How much of the smaller box the two share, from 0 to 1.
-fn shared(one: &write::Face, other: &write::Face) -> f64 {
+pub(crate) fn shared(one: &write::Face, other: &write::Face) -> f64 {
     let span = |centre: f64, size: f64| (centre - size / 2.0, centre + size / 2.0);
     let overlap = |(a0, a1): (f64, f64), (b0, b1): (f64, f64)| (a1.min(b1) - a0.max(b0)).max(0.0);
     let across = overlap(span(one.x, one.width), span(other.x, other.width));
@@ -234,6 +234,27 @@ fn shared(one: &write::Face, other: &write::Face) -> f64 {
         true => across * down / smaller,
         false => 0.0,
     }
+}
+
+/// Whether the file has a box of this person on one of the faces Immich has of them: then the
+/// file's box stays as it is, however little Immich's differs.
+fn settled(old: &[write::Face], immich: &[write::Face]) -> bool {
+    old.iter().any(|face| {
+        immich
+            .iter()
+            .any(|new| fold(&face.name) == fold(&new.name) && shared(face, new) >= SAME_FACE)
+    })
+}
+
+/// The one box a person gets of the several Immich may hold of them in a photo, the same pick
+/// every time.
+pub(crate) fn largest(faces: Vec<write::Face>) -> Option<write::Face> {
+    faces.into_iter().max_by(|one, other| {
+        (one.width * one.height)
+            .total_cmp(&(other.width * other.height))
+            .then(other.x.total_cmp(&one.x))
+            .then(other.y.total_cmp(&one.y))
+    })
 }
 
 /// The regions a photo gets when the chosen persons Immich found in it are merged into what it
@@ -259,28 +280,32 @@ fn merged(
     let (Some(width), Some(height)) = (shape.width, shape.height) else {
         return Some(Err("the scan found no size for it".to_string()));
     };
-    let immich: Vec<write::Face> = found
-        .iter()
-        .filter_map(|(face, person)| {
-            let area = boxes::stored(face, shape.orientation)?;
-            Some(write::Face {
+    let (old, persons) = match said {
+        Some(said) => (said.faces.as_slice(), said.persons.as_slice()),
+        None => (&[][..], &[][..]),
+    };
+    let mut by_person: BTreeMap<&str, Vec<write::Face>> = BTreeMap::new();
+    for (face, person) in &found {
+        if let Some(area) = boxes::stored(face, shape.orientation) {
+            by_person.entry(person.id.as_str()).or_default().push(write::Face {
                 name: person.name.trim().to_string(),
                 x: area.x,
                 y: area.y,
                 width: area.w,
                 height: area.h,
-            })
-        })
+            });
+        }
+    }
+    let immich: Vec<write::Face> = by_person
+        .into_values()
+        .filter(|faces| !settled(old, faces))
+        .filter_map(largest)
         .collect();
     if immich.is_empty() {
         return None;
     }
     let names: BTreeSet<String> = immich.iter().map(|face| fold(&face.name)).collect();
 
-    let (old, persons) = match said {
-        Some(said) => (said.faces.as_slice(), said.persons.as_slice()),
-        None => (&[][..], &[][..]),
-    };
     let kept: Vec<&write::Face> = old
         .iter()
         .filter(|face| !names.contains(&fold(&face.name)))

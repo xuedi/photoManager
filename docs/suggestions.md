@@ -105,6 +105,9 @@ never written.
   gives way to Immich's too, as a person is in a photo once. Every other box stays exactly as it
   was, and so does every person the file names without a box. `PersonInImage` then names every
   box, then everyone without one. Nothing else is written: no tag, no date, no place.
+- **A person once.** Immich may hold one face several times - its own detection and every import
+  of the file's regions. A person gets one box, the largest of Immich's, and a box the file
+  already has of them on the same face stays as it is: the person is written already.
 - **One person at a time.** A photo of two persons gets the one ticked; the other stays for their
   own fix.
 - **The boxes.** Immich measures a face on its preview, turned the way the photo is shown. The

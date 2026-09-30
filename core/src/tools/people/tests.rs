@@ -313,3 +313,97 @@ fn a_box_without_a_name_is_not_lost_the_photo_is_refused() {
         )]
     );
 }
+
+/// Writes these face boxes into the photo as its only regions, as another program would.
+fn write_regions(library: &mut Library, rel_path: &str, boxes: &[(&str, f64, f64, f64, f64)]) {
+    let list: Vec<String> = boxes
+        .iter()
+        .map(|(name, x, y, w, h)| format!("{{Area={{X={x},Y={y},W={w},H={h},Unit=normalized}},Name={name},Type=Face}}"))
+        .collect();
+    let status = std::process::Command::new("exiftool")
+        .args(["-q", "-overwrite_original"])
+        .arg(format!(
+            "-XMP-mwg-rs:RegionInfo={{AppliedToDimensions={{W=16,H=16,Unit=pixel}},RegionList=[{}]}}",
+            list.join(",")
+        ))
+        .arg(library.root.join(rel_path))
+        .status()
+        .unwrap();
+    assert!(status.success());
+    library.rescan();
+}
+
+fn boxes(regions: &Regions) -> Vec<(&str, f64, f64, f64, f64)> {
+    regions
+        .faces
+        .iter()
+        .map(|face| (face.name.as_str(), face.x, face.y, face.width, face.height))
+        .collect()
+}
+
+#[test]
+fn a_face_immich_holds_several_times_is_written_once_the_largest() {
+    let (mut library, immich) = fetched("people-copies");
+    immich.change(|data| {
+        data.add_face(fake::LENA, Some("p-lena"), 0.25, 0.25, 0.75, 0.75);
+        data.add_face(fake::LENA, Some("p-lena"), 0.2, 0.2, 0.8, 0.8);
+        data.add_face(fake::LENA, Some("p-lena"), 0.25, 0.25, 0.75, 0.75);
+    });
+    fetch_again(&library, &immich);
+    let set = built(&library, &["p-lena"]);
+    library.apply(&set);
+    library.rescan();
+    assert_eq!(
+        boxes(&regions(&library, fake::LENA)),
+        [("Lena Park", 0.5, 0.5, 0.6, 0.6)],
+        "one box, the largest of the copies"
+    );
+    assert!(
+        found(&library).iter().all(|(id, ..)| id != "p-lena"),
+        "the copies left in Immich are no fix: {:?}",
+        found(&library)
+    );
+}
+
+#[test]
+fn a_box_the_file_has_on_the_same_face_stays_as_it_is() {
+    let (mut library, _immich) = fetched("people-settled");
+    write_regions(&mut library, fake::LENA, &[("Lena Park", 0.51, 0.49, 0.48, 0.52)]);
+    assert!(
+        found(&library).iter().all(|(id, ..)| id != "p-lena"),
+        "a little off is the same face: {:?}",
+        found(&library)
+    );
+    assert_eq!(built(&library, &["p-lena"]).counts().change, 0);
+}
+
+#[test]
+fn a_box_of_the_name_on_another_face_gives_way_to_one_of_immichs() {
+    let (mut library, immich) = fetched("people-elsewhere");
+    immich.change(|data| data.add_face(fake::LENA, Some("p-lena"), 0.25, 0.25, 0.75, 0.75));
+    fetch_again(&library, &immich);
+    write_regions(&mut library, fake::LENA, &[("Lena Park", 0.1, 0.1, 0.1, 0.1)]);
+    let set = built(&library, &["p-lena"]);
+    library.apply(&set);
+    library.rescan();
+    assert_eq!(
+        boxes(&regions(&library, fake::LENA)),
+        [("Lena Park", 0.5, 0.5, 0.5, 0.5)]
+    );
+}
+
+#[test]
+fn two_persons_held_twice_each_get_one_box_each() {
+    let (mut library, immich) = fetched("people-two-copies");
+    immich.change(|data| {
+        data.add_face(fake::TWO, Some("p-ann"), 0.1, 0.1, 0.4, 0.5);
+        data.add_face(fake::TWO, Some("p-ben"), 0.6, 0.2, 0.9, 0.6);
+    });
+    fetch_again(&library, &immich);
+    let set = built(&library, &["p-ann", "p-ben"]);
+    library.apply(&set);
+    library.rescan();
+    let two = regions(&library, fake::TWO);
+    assert_eq!(names(&two), ["Ann", "Tom", "Ben"]);
+    assert_eq!(two.persons, ["Ann", "Tom", "Ben"]);
+}
