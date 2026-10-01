@@ -70,6 +70,8 @@ pub struct Facts {
     /// A folder that changed after the last scan began, `""` for the library's own.
     pub changed: Option<String>,
     pub photos: i64,
+    /// The different pictures among the photos, one thumbnail each.
+    pub images: i64,
     pub thumbnails: i64,
     pub filled: Option<Ran>,
     pub places: i64,
@@ -89,6 +91,7 @@ impl Facts {
             added: cache.ran(ADDED)?.map(|ran| ran.at),
             filled: cache.ran(THUMBNAILS)?,
             photos: cache.photo_count()?,
+            images: cache.image_count()?,
             ..Facts::default()
         })
     }
@@ -191,10 +194,10 @@ fn thumbnails(facts: &Facts) -> Status {
             ..never(Job::Thumbnails)
         };
     }
-    let missing = (facts.photos - facts.thumbnails).max(0);
+    let missing = (facts.images - facts.thumbnails).max(0);
     let mut facts_of = vec![(
         "Made",
-        format!("{} of {}", facts.thumbnails.min(facts.photos), facts.photos),
+        format!("{} of {}", facts.thumbnails.min(facts.images), facts.images),
     )];
     if let Some(filled) = &facts.filled {
         facts_of.push(("Last filled in", dates::local(&filled.at)));
@@ -415,7 +418,8 @@ mod tests {
     #[test]
     fn missing_thumbnails_are_worth_making() {
         let mut facts = Facts {
-            photos: 10,
+            photos: 11,
+            images: 10,
             thumbnails: 7,
             ..facts()
         };
@@ -423,7 +427,11 @@ mod tests {
         assert_eq!((status.state, status.caption.as_str()), (State::Worth, "3 missing"));
         facts.thumbnails = 10;
         let status = super::status(Job::Thumbnails, &facts);
-        assert_eq!((status.state, status.caption.as_str()), (State::Fine, "all made"));
+        assert_eq!(
+            (status.state, status.caption.as_str()),
+            (State::Fine, "all made"),
+            "two photos of one picture share a thumbnail"
+        );
         facts.thumbnails = 12;
         assert_eq!(
             state(Job::Thumbnails, &facts),

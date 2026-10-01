@@ -428,6 +428,12 @@ impl Cache {
             .query_row("SELECT count(*) FROM photo", [], |row| row.get(0))
     }
 
+    /// How many different pictures the photos hold: two files of one picture share a thumbnail.
+    pub fn image_count(&self) -> Result<i64> {
+        self.connection
+            .query_row("SELECT count(DISTINCT content_id) FROM photo", [], |row| row.get(0))
+    }
+
     pub fn event_count(&self) -> Result<i64> {
         self.connection
             .query_row("SELECT count(DISTINCT event_dir) FROM photo", [], |row| row.get(0))
