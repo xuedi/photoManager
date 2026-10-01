@@ -544,6 +544,14 @@ fn a_non_ascii_tag_and_file_name_survive() {
         fields.get("IPTC:Keywords"),
         Some(&Value::from(vec!["Kyffhäuser", "inDeutschland", "places"]))
     );
+    assert_eq!(fields.get("IPTC:CodedCharacterSet"), Some(&Value::from("\u{1b}%G")));
+
+    let plain = std::process::Command::new("exiftool")
+        .args(["-s3", "-IPTC:Keywords"])
+        .arg(setup.path(rel_path))
+        .output()
+        .unwrap();
+    assert!(String::from_utf8_lossy(&plain.stdout).contains("Kyffhäuser"));
 }
 
 #[test]

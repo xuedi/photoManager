@@ -167,6 +167,12 @@ impl Change {
         for field in &self.fields {
             all.extend(field.assigns()?);
         }
+        if all
+            .iter()
+            .any(|assign| assign.tag.starts_with("IPTC:") && !assign.value.is_null())
+        {
+            all.push(utf8_iptc());
+        }
         let mut seen = std::collections::HashSet::new();
         for assign in &all {
             if !seen.insert(assign.tag.clone()) {
@@ -221,6 +227,21 @@ fn set(tag: &str, key: &str, value: Value) -> Assign {
 
 fn gone(tag: &str, key: &str) -> Assign {
     set(tag, key, Value::Null)
+}
+
+/// A tag written only so the others read right, which a preview does not show.
+pub fn is_bookkeeping(assign: &Assign) -> bool {
+    assign.key == "IPTC:CodedCharacterSet"
+}
+
+/// IPTC has no charset of its own: without this a reader takes the text for Latin-1, and
+/// `Timișoara` comes out as `TimiÈ™oara`. Written raw, as the escape sequence it reads back as.
+fn utf8_iptc() -> Assign {
+    set(
+        "IPTC:CodedCharacterSet#",
+        "IPTC:CodedCharacterSet",
+        Value::from("\u{1b}%G"),
+    )
 }
 
 /// ExifTool writes an EXIF tag under a group we do not read it back under.

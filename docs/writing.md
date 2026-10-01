@@ -153,6 +153,10 @@ same keyword stands in all five fields, the path fields included: leaving them e
 reader fall back to another field, and the fields would disagree again. The flat choice is applied
 where every change set is built, so no tag write can leave a topic path behind.
 
+IPTC has no charset of its own, so any write that puts text into IPTC also sets
+`IPTC:CodedCharacterSet` to UTF-8; without it other readers take the text for Latin-1 and a name
+like `Timișoara` comes out garbled.
+
 A position worked out rather than measured - a city centre derived from a tag, an event's town, a
 point chosen on a map - says so in the file itself, in two standard EXIF fields every GPS viewer
 shows and none uses to place the pin. So the file, not the database, is what remembers that a position is a guess; the scan reads the mark

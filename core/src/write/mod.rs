@@ -330,6 +330,7 @@ impl Engine {
         Ok(intent
             .want
             .iter()
+            .filter(|assign| !change::is_bookkeeping(assign))
             .map(|assign| Assignment::of(assign, &intent.before.fields))
             .collect())
     }
