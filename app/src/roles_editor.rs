@@ -83,6 +83,13 @@ pub fn group(library: Rc<Library>, told: impl Fn(&str) + 'static) -> adw::Prefer
         })
         .collect();
 
+    let flat = adw::SwitchRow::builder()
+        .title("Flat Keywords")
+        .subtitle("Topics written as their last level, the same in every tag field; the roles keep their tree")
+        .active(roles.flat)
+        .build();
+    group.add(&flat);
+
     let state = adw::ActionRow::builder()
         .title("Kept")
         .subtitle(state_of(kept.is_some()))
@@ -110,8 +117,11 @@ pub fn group(library: Rc<Library>, told: impl Fn(&str) + 'static) -> adw::Prefer
         proposal,
         #[weak]
         country,
+        #[weak]
+        flat,
         move |_| {
             let chosen = Roles {
+                flat: flat.is_active(),
                 roots: combos
                     .iter()
                     .filter_map(|(role, combo)| {

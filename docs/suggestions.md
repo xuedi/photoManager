@@ -100,6 +100,20 @@ sure, and are not found: they are renamed by hand with Rename Tag. Only the phot
 are written, with every level in every field; the generated tags are left as they are - Tidy Tags
 is where they are made.
 
+### Flat keywords
+
+A library can choose [flat keywords](tools.md#tag-roles) for its topics - every tag of no role.
+Then the shape of a topic's tree says nothing any more: the rules above are only found for the
+roles, which keep their tree, and one fix more is offered while any topic is a path still:
+
+- **Topics as flat keywords** writes each topic as its last level, `mixed/food` as `food`, on
+  every photo that has one. Its lines name each root with how many keywords it holds, and every
+  **merge**: two paths, or a path and a flat keyword, that end in the same name become one keyword.
+  A merge is never silent: it is listed before anything is written, so one can be renamed first
+  with Rename Tag. A root that is a home address or a place is the person's to move first, with
+  Places Tag to Sublocation; the finder does not tell a place from a topic.
+- Case twins and look-alikes are still found on the dashboard, among the flat names.
+
 ## Duplicate People
 
 A person is in a photo once. A file can still name someone twice: a box drawn again on the same

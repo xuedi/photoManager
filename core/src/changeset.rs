@@ -208,6 +208,15 @@ pub struct ChangeSet {
 impl ChangeSet {
     /// Reads the cache, never a photo, and writes nothing at all.
     pub fn build(cache: &Cache, title: &str, wanted: &[Wanted]) -> crate::cache::Result<ChangeSet> {
+        let roles = cache.roles();
+        let flat: Vec<Wanted>;
+        let wanted = match roles.flat {
+            true => {
+                flat = wanted.iter().map(|one| as_flat(one, &roles)).collect();
+                &flat[..]
+            }
+            false => wanted,
+        };
         let paths: Vec<String> = wanted
             .iter()
             .filter(|one| one.moved.is_none())
@@ -598,6 +607,18 @@ fn verdict(wanted: &Wanted, known: Option<&Stated>, differences: &[Difference]) 
         true => Verdict::Nothing,
         false => Verdict::Change,
     }
+}
+
+/// A wish with its tags as a library of flat keywords writes them: every tag write of such a library
+/// goes through here, so no writer can leave a topic path behind.
+fn as_flat(one: &Wanted, roles: &crate::roles::Roles) -> Wanted {
+    let mut one = one.clone();
+    for field in &mut one.change.fields {
+        if let Field::Tags(paths) = field {
+            *paths = roles.keywords(paths);
+        }
+    }
+    one
 }
 
 fn differences(change: &Change, known: Option<(&Said, &write::Place)>) -> Vec<Difference> {

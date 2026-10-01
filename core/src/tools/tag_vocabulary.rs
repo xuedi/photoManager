@@ -21,6 +21,75 @@ use crate::tags::{self, Rule, Rules};
 use crate::write::change::expand;
 use crate::write::{Change, Field};
 
+/// The topics that are paths still, in a library of flat keywords: each with the keyword it
+/// becomes, and the keywords more than one path becomes.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct Flatten {
+    /// Each root of topics with paths below it, with how many paths.
+    pub roots: Vec<(String, usize)>,
+    /// A keyword and the paths and flat keywords that become it, when more than one does.
+    pub collisions: Vec<(String, Vec<String>)>,
+    pub photos: usize,
+}
+
+/// What is left to flatten, `None` in a library of trees or with nothing to flatten.
+pub fn flatten(cache: &Cache) -> cache::Result<Option<Flatten>> {
+    let roles = cache.roles();
+    if !roles.flat {
+        return Ok(None);
+    }
+    let sets = cache.tag_sets()?;
+    let topics: BTreeSet<String> = sets
+        .iter()
+        .flat_map(|tags| tags::deepest(tags))
+        .filter(|tag| roles.is_topic(tag))
+        .collect();
+    let mut roots: std::collections::BTreeMap<String, usize> = std::collections::BTreeMap::new();
+    let mut becomes: std::collections::BTreeMap<String, Vec<String>> = std::collections::BTreeMap::new();
+    for topic in &topics {
+        let keyword = topic.rsplit('/').next().unwrap_or(topic).trim().to_string();
+        if let Some((root, _)) = topic.split_once('/') {
+            *roots.entry(root.to_string()).or_default() += 1;
+        }
+        becomes.entry(keyword).or_default().push(topic.clone());
+    }
+    if roots.is_empty() {
+        return Ok(None);
+    }
+    let photos = sets
+        .iter()
+        .filter(|tags| {
+            tags::deepest(tags)
+                .iter()
+                .any(|tag| roles.is_topic(tag) && tag.contains('/'))
+        })
+        .count();
+    Ok(Some(Flatten {
+        roots: roots.into_iter().collect(),
+        collisions: becomes.into_iter().filter(|(_, paths)| paths.len() > 1).collect(),
+        photos,
+    }))
+}
+
+/// Every photo of the scope with a topic that is a path still, written with its tags: the change
+/// set writes them flat.
+pub fn flattened(cache: &Cache, scope: &Scope) -> cache::Result<Vec<Wanted>> {
+    let roles = cache.roles();
+    Ok(cache
+        .tagged(&scope.paths(cache)?)?
+        .into_iter()
+        .filter(|photo| {
+            tags::deepest(&photo.tags)
+                .iter()
+                .any(|tag| roles.is_topic(tag) && tag.contains('/'))
+        })
+        .map(|photo| {
+            let then = tags::deepest(&photo.tags);
+            write(photo, then)
+        })
+        .collect())
+}
+
 /// What becomes of the tags that only say what the date, the place words or the folder say.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub enum Generated {
@@ -187,7 +256,12 @@ pub struct Found {
 /// roots spelled two ways first, then the flat keywords into their one branch, then the leaves
 /// above their branch's usual depth. What is not sure - a keyword two tags have the name of, a
 /// root that stands apart - is not found; it is renamed by hand.
+///
+/// With flat keywords the shape of a topic's tree says nothing: only the roles keep a tree, so only
+/// their rules are found.
 pub fn shape(cache: &Cache) -> cache::Result<Vec<Found>> {
+    let roles = cache.roles();
+    let kept = |path: &str| !roles.flat || !roles.is_topic(path);
     let photos = cache.tag_sets()?;
     let tree = tags::mapped_tree(&Rules::default(), &photos);
     let carrying = |path: &str| {
@@ -200,6 +274,9 @@ pub fn shape(cache: &Cache) -> cache::Result<Vec<Found>> {
     let mut rules = Rules::default();
     let mut add = |rule: Result<Rule, String>, why: String| {
         let Ok(rule) = rule else { return };
+        if !kept(rule.from()) || rule.to().is_some_and(|to| !kept(to)) {
+            return;
+        }
         if rules.add(rule.clone()).is_ok() {
             found.push(Found {
                 photos: carrying(rule.from()),
@@ -577,5 +654,130 @@ mod tests {
             .map(|one| one.rule.written())
             .collect();
         assert_eq!(again, ["rename People -> people"], "nothing flat is left to move");
+    }
+
+    fn flat(library: &mut Library) {
+        let roles = crate::roles::Roles {
+            flat: true,
+            ..library.cache.roles()
+        };
+        library.cache.keep_roles(Some(&roles)).unwrap();
+    }
+
+    #[test]
+    fn a_flat_write_says_the_same_keywords_in_every_field_and_is_settled() {
+        let mut library = Library::new("tags-flat-write");
+        let scope = Scope::Photos {
+            title: "Kira".to_string(),
+            paths: vec![KIRA.to_string()],
+        };
+        let tree = built(
+            &library,
+            renamed(
+                &library.cache,
+                &scope,
+                &kept(&["rename mixed/disgusting -> mixed/gross"]),
+                false,
+            ),
+        );
+        assert!(
+            tags_in(&tree, KIRA).contains(&"mixed/gross".to_string()),
+            "a tree by default"
+        );
+
+        flat(&mut library);
+        let set = built(
+            &library,
+            renamed(
+                &library.cache,
+                &scope,
+                &kept(&["rename mixed/disgusting -> mixed/gross"]),
+                false,
+            ),
+        );
+        assert_eq!(
+            tags_in(&set, KIRA),
+            ["People/Kira", "gross", "places/inIreland/Galway"],
+            "the topic flat, the roles a tree"
+        );
+        assert_eq!(library.apply(&set).written, 1);
+        let kira: std::collections::BTreeMap<String, String> = fields(&library, KIRA).into_iter().collect();
+        for field in [
+            "XMP-digiKam:TagsList",
+            "XMP-microsoft:LastKeywordXMP",
+            "XMP-lr:HierarchicalSubject",
+            "XMP-dc:Subject",
+            "IPTC:Keywords",
+        ] {
+            assert!(
+                kira[field].split(", ").any(|tag| tag == "gross"),
+                "{field}: {}",
+                kira[field]
+            );
+            assert!(!kira[field].contains("mixed"), "{field}: {}", kira[field]);
+        }
+        library.rescan();
+        let again = built(
+            &library,
+            renamed(
+                &library.cache,
+                &scope,
+                &kept(&["rename mixed/disgusting -> mixed/gross"]),
+                false,
+            ),
+        );
+        assert!(again.is_empty(), "nothing left to rename: {:?}", again.rows);
+        let tidy = built(&library, tidied(&library.cache, &scope, Generated::Kept));
+        assert!(tidy.is_empty(), "settled: {:?}", tidy.rows);
+    }
+
+    #[test]
+    fn flatten_lists_its_roots_and_collisions_and_leaves_the_roles_alone() {
+        let mut library = Library::new("tags-flatten");
+        assert_eq!(flatten(&library.cache).unwrap(), None, "a tree by default");
+        flat(&mut library);
+        let found = flatten(&library.cache).unwrap().expect("topics to flatten");
+        assert!(found.roots.iter().any(|(root, _)| root == "mixed"), "{found:?}");
+        assert!(
+            found
+                .collisions
+                .iter()
+                .any(|(keyword, paths)| keyword == "food" && paths.len() == 3),
+            "a flat food, mixed/food and topics/food become one: {found:?}"
+        );
+        assert!(!found.roots.iter().any(|(root, _)| root == "people" || root == "places"));
+
+        let set = built(&library, flattened(&library.cache, &whole()));
+        assert_eq!(set.rows.len(), found.photos);
+        library.apply(&set);
+        library.rescan();
+        assert_eq!(flatten(&library.cache).unwrap(), None, "a second run finds nothing");
+        let tags = &library.cache.stated(&[KIRA.to_string()]).unwrap()[KIRA].said.tags;
+        assert!(
+            tags.contains(&"People/Kira".to_string()) && tags.contains(&"disgusting".to_string()),
+            "{tags:?}"
+        );
+    }
+
+    #[test]
+    fn under_flat_no_shape_rule_fires_for_a_topic() {
+        let mut library = Library::new("tags-flat-shape");
+        let before: Vec<String> = shape(&library.cache)
+            .unwrap()
+            .iter()
+            .map(|found| found.rule.written())
+            .collect();
+        assert!(before.iter().any(|rule| rule.contains("mixed/funny")), "{before:?}");
+        flat(&mut library);
+        let after: Vec<String> = shape(&library.cache)
+            .unwrap()
+            .iter()
+            .map(|found| found.rule.written())
+            .collect();
+        assert!(!after.iter().any(|rule| rule.contains("mixed")), "{after:?}");
+        assert!(
+            after.contains(&"rename People -> people".to_string()),
+            "a role keeps its tree: {after:?}"
+        );
     }
 }

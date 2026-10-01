@@ -72,6 +72,14 @@ impl Rule {
         }
     }
 
+    /// Where a rename takes the tag, `None` for a delete.
+    pub fn to(&self) -> Option<&str> {
+        match self {
+            Rule::Rename { to, .. } => Some(to),
+            Rule::Delete { .. } => None,
+        }
+    }
+
     /// `Rename People to people`, `Delete mixed/wired`.
     pub fn tells(&self) -> String {
         match self {

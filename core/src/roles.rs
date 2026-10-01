@@ -122,6 +122,9 @@ pub struct Roles {
     /// The generated roles whose tags stay tags: made from the data by Tidy Tags, and never
     /// dropped as redundant.
     pub kept: Vec<Role>,
+    /// The topics - every tag of no role - are written as flat keywords, their last level only,
+    /// the same in every tag field. A role's tags keep their tree.
+    pub flat: bool,
 }
 
 /// The roles kept as tags when nothing else is said: the events, since a viewer that reads tags
@@ -157,6 +160,28 @@ impl Roles {
     pub fn within(&self, role: Role, tag: &str) -> bool {
         let first = tag.split('/').next().unwrap_or(tag).trim();
         self.root(role).is_some_and(|root| root.eq_ignore_ascii_case(first))
+    }
+
+    /// Whether a tag is a topic: below no role's root, and not a role's root itself.
+    pub fn is_topic(&self, tag: &str) -> bool {
+        !Role::ALL.into_iter().any(|role| self.within(role, tag))
+    }
+
+    /// A photo's tags as a write puts them: as they are, or with the topics flat. The deepest
+    /// paths, each once.
+    pub fn keywords(&self, tags: &[String]) -> Vec<String> {
+        let deepest = crate::tags::deepest(tags);
+        if !self.flat {
+            return deepest;
+        }
+        let flat: Vec<String> = deepest
+            .into_iter()
+            .map(|tag| match self.is_topic(&tag) {
+                true => tag.rsplit('/').next().unwrap_or(&tag).trim().to_string(),
+                false => tag,
+            })
+            .collect();
+        crate::tags::deepest(&flat)
     }
 
     /// The levels of a places tag below the root, and the country among them.
@@ -247,6 +272,7 @@ impl Roles {
                 false => CountryLevel::Name,
             },
             kept: KEPT.to_vec(),
+            flat: false,
         }
     }
 
@@ -261,6 +287,7 @@ impl Roles {
             "roots": roots,
             "country": self.country.key(),
             "kept": self.kept.iter().map(|role| role.key()).collect::<Vec<_>>(),
+            "flat": self.flat,
         })
         .to_string()
     }
@@ -292,7 +319,13 @@ impl Roles {
                 .collect(),
             _ => KEPT.to_vec(),
         };
-        Ok(Roles { roots, country, kept })
+        let flat = value.get("flat").and_then(Value::as_bool).unwrap_or(false);
+        Ok(Roles {
+            roots,
+            country,
+            kept,
+            flat,
+        })
     }
 }
 

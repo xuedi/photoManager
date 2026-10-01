@@ -156,6 +156,13 @@ Sublocation, Tidy Tags, Folder Migration's city from the places tags, and the pl
 roles are a tool setting in `app.db`, handed to the cache so the finders that run beside the window
 read them too.
 
+**Flat keywords** is the choice beside the roles: the topics - every tag of no role - are written
+as their last level only, `mixed/food` as `food`, the same keyword in all five tag fields, by
+every tag write; a role's tags keep their tree, so a person is never made a topic. The tree is the
+default, as many libraries keep a keyword hierarchy on purpose. Turning flat on writes nothing by
+itself: the [Topics as flat keywords](suggestions.md#flat-keywords) fix flattens what is a path
+still.
+
 A generated role - places, year, events - can be **kept as tags**: Tidy Tags then makes its tags
 from the data, and [Redundant Tags](suggestions.md#redundant-tags) never takes them away. One that
 is not kept is left to its field. By default only the events are kept, because a viewer that reads

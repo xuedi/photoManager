@@ -144,10 +144,14 @@ visited as few times as possible, and it is never left half written.
 | event | `XMP-iptcExt:Event`, the IPTC Extension field for the event a photo belongs to, as the default language: the event's name on one line, without its date |
 | leftovers | takes away `XMP-xmp:Label` and `XMP-mediapro:CatalogSets`, where older writers left keywords; [every tag write](tools.md#the-tags) takes both away |
 
-All five tag fields say the same thing, because different readers each read a different one, and
-they carry every level of every path: `places/inChina/Beijing` also means `places` and
+All five tag fields say the same thing, because different readers each read a different one -
+Immich takes the first of `TagsList`, `HierarchicalSubject` and `Keywords` it finds - and they
+carry every level of every path: `places/inChina/Beijing` also means `places` and
 `places/inChina`. A level may not contain the separators, and a path with an empty level is
-refused.
+refused. A library of [flat keywords](tools.md#tag-roles) writes a topic as a one-level tag, so the
+same keyword stands in all five fields, the path fields included: leaving them empty would let each
+reader fall back to another field, and the fields would disagree again. The flat choice is applied
+where every change set is built, so no tag write can leave a topic path behind.
 
 A position worked out rather than measured - a city centre derived from a tag, an event's town, a
 point chosen on a map - says so in the file itself, in two standard EXIF fields every GPS viewer

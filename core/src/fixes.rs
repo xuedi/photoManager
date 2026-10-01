@@ -132,6 +132,8 @@ pub struct Fix {
 enum What {
     Rule(Rule),
     Tidy,
+    /// The topics that are paths still, written as flat keywords.
+    Flatten,
     Answer {
         question: String,
         answer: Answer,
@@ -474,6 +476,37 @@ fn tag_fixes(cache: &Cache) -> Result<Vec<Fix>, String> {
         .iter()
         .filter(|photo| photo.untidy)
         .count();
+    if let Some(flatten) = tag_vocabulary::flatten(cache).map_err(failed)? {
+        let mut lines: Vec<(String, String)> = flatten
+            .roots
+            .iter()
+            .map(|(root, paths)| {
+                let keywords = match paths {
+                    1 => "1 keyword".to_string(),
+                    paths => format!("{paths} keywords"),
+                };
+                (root.clone(), keywords)
+            })
+            .collect();
+        lines.extend(
+            flatten
+                .collisions
+                .iter()
+                .map(|(keyword, paths)| (format!("Merged into {keyword}"), paths.join(", "))),
+        );
+        fixes.push(Fix {
+            key: "tags:flatten".to_string(),
+            finder: "tags",
+            title: "Topics as flat keywords".to_string(),
+            detail: match flatten.collisions.len() {
+                0 => "Each topic its last level only, the same in every tag field".to_string(),
+                collisions => format!("Each topic its last level only; {collisions} keywords merge"),
+            },
+            photos: flatten.photos,
+            lines,
+            what: What::Flatten,
+        });
+    }
     if untidy > 0 {
         fixes.push(Fix {
             key: "tags:tidy".to_string(),
@@ -495,6 +528,7 @@ pub fn change_set(finder: &Finder, fixes: &[&Fix], cache: &Cache, geo: Option<&G
     let mut answers = Answers::default();
     let mut rules = Rules::default();
     let mut tidy = false;
+    let mut flatten = false;
     let mut named = BTreeSet::new();
     let mut persons = BTreeSet::new();
     let mut doubled = BTreeSet::new();
@@ -510,6 +544,7 @@ pub fn change_set(finder: &Finder, fixes: &[&Fix], cache: &Cache, geo: Option<&G
                 }
             }
             What::Tidy => tidy = true,
+            What::Flatten => flatten = true,
             What::Answer { question, answer } => answers.set(question, Some(answer.clone())),
             What::Names(dir) => {
                 named.insert(dir.clone());
@@ -535,7 +570,19 @@ pub fn change_set(finder: &Finder, fixes: &[&Fix], cache: &Cache, geo: Option<&G
         }
     }
     let wanted: Vec<Wanted> = match finder.key {
-        "tags" => tag_vocabulary::renamed(cache, &whole(), &rules, tidy).map_err(failed)?,
+        "tags" => {
+            let mut wanted = tag_vocabulary::renamed(cache, &whole(), &rules, tidy).map_err(failed)?;
+            if flatten {
+                let written: BTreeSet<String> = wanted.iter().map(|one| one.rel_path.clone()).collect();
+                wanted.extend(
+                    tag_vocabulary::flattened(cache, &whole())
+                        .map_err(failed)?
+                        .into_iter()
+                        .filter(|one| !written.contains(&one.rel_path)),
+                );
+            }
+            wanted
+        }
         "duplicate-people" => duplicate_people::wanted(cache, &doubled, &whole()).map_err(failed)?,
         "people" => people::wanted(cache, &persons, &whole()).map_err(failed)?,
         "people-from-tags" => people_from_tags::wanted(cache, &tagged, &whole(), false).map_err(failed)?,
