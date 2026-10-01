@@ -11,6 +11,7 @@ use super::{Answer, Answers, Offer, Question, Tool};
 use crate::cache::{self, Cache};
 use crate::changeset::Wanted;
 use crate::geo::Geo;
+use crate::roles::{Role, Roles};
 use crate::scope::Scope;
 
 /// What the file is told about where its position came from.
@@ -28,6 +29,7 @@ impl Tool for GpsFromPlacesTag {
         scope: &Scope,
         answers: &Answers,
     ) -> Result<Vec<Question>, String> {
+        let roles = cache.roles();
         let photos = without_gps(cache, scope).map_err(|error| error.to_string())?;
         let mut groups: BTreeMap<&str, usize> = BTreeMap::new();
         for (_, tags) in &photos {
@@ -38,9 +40,9 @@ impl Tool for GpsFromPlacesTag {
 
         let mut questions = Vec::new();
         for (tag, photos) in groups {
-            let apart = names_a_country(tag);
+            let apart = roles.names_a_country(tag);
             let offers = match geo {
-                Some(geo) => offers(geo, tag)?,
+                Some(geo) => offers(geo, tag, &roles)?,
                 None => Vec::new(),
             };
             let answer = match answers.get(tag) {
@@ -71,10 +73,11 @@ impl Tool for GpsFromPlacesTag {
         scope: &Scope,
         answers: &Answers,
     ) -> cache::Result<Vec<Wanted>> {
+        let roles = cache.roles();
         let mut wanted = Vec::new();
         let mut placed = Vec::new();
         for (rel_path, tags) in without_gps(cache, scope)? {
-            match decide(&tags, answers) {
+            match decide(&tags, answers, &roles) {
                 Decision::Nothing => {}
                 Decision::Refused(why) => wanted.push(Wanted::refused(rel_path, why)),
                 Decision::Place(answer) => placed.push((rel_path, answer)),
@@ -128,14 +131,14 @@ enum Decision<'a> {
 
 /// What one photo gets from the answers to its tags. A tag still waiting holds back a photo that
 /// has another, so a later answer cannot find it already placed by the first.
-fn decide<'a>(tags: &[String], answers: &'a Answers) -> Decision<'a> {
+fn decide<'a>(tags: &[String], answers: &'a Answers, roles: &Roles) -> Decision<'a> {
     let mut places: Vec<(&str, &Answer)> = Vec::new();
     let mut waiting = false;
     for tag in tags {
         match answers.get(tag) {
             Some(Answer::Leave) => {}
             Some(answer) => places.push((tag, answer)),
-            None if names_a_country(tag) => {}
+            None if roles.names_a_country(tag) => {}
             None => waiting = true,
         }
     }
@@ -157,6 +160,7 @@ fn decide<'a>(tags: &[String], answers: &'a Answers) -> Decision<'a> {
 
 /// The photos of the scope without a position, each with its deepest places tags.
 fn without_gps(cache: &Cache, scope: &Scope) -> cache::Result<Vec<(String, Vec<String>)>> {
+    let roles = cache.roles();
     let paths = scope.paths(cache)?;
     let stated = cache.stated(&paths)?;
     Ok(paths
@@ -166,7 +170,7 @@ fn without_gps(cache: &Cache, scope: &Scope) -> cache::Result<Vec<(String, Vec<S
             if said.gps_lat.is_some() && said.gps_lon.is_some() {
                 return None;
             }
-            let tags = deepest(&said.tags);
+            let tags = deepest(&said.tags, &roles);
             (!tags.is_empty()).then_some((rel_path, tags))
         })
         .collect())
@@ -174,14 +178,8 @@ fn without_gps(cache: &Cache, scope: &Scope) -> cache::Result<Vec<(String, Vec<S
 
 /// The places tags that no other places tag of the photo goes below: `places/inChina/Beijing`,
 /// not `places/inChina` beside it. The bare root says nothing.
-pub(crate) fn deepest(tags: &[String]) -> Vec<String> {
-    let places: Vec<&String> = tags
-        .iter()
-        .filter(|tag| {
-            let mut levels = tag.split('/');
-            levels.next().is_some_and(|root| root.eq_ignore_ascii_case("places")) && levels.next().is_some()
-        })
-        .collect();
+pub(crate) fn deepest(tags: &[String], roles: &Roles) -> Vec<String> {
+    let places: Vec<&String> = tags.iter().filter(|tag| roles.is(Role::Places, tag)).collect();
     let mut deepest: Vec<String> = places
         .iter()
         .filter(|tag| !places.iter().any(|other| other.starts_with(&format!("{tag}/"))))
@@ -192,24 +190,13 @@ pub(crate) fn deepest(tags: &[String]) -> Vec<String> {
     deepest
 }
 
-/// `places/inChina`: a country and no place in it.
-pub(crate) fn names_a_country(tag: &str) -> bool {
-    tag.split('/').count() == 2
-}
-
 /// The place data's candidates for the deepest level, the country level as the hint.
-pub(crate) fn offers(geo: &Geo, tag: &str) -> Result<Vec<Offer>, String> {
-    let levels: Vec<&str> = tag.split('/').collect();
-    if levels.len() < 3 {
+pub(crate) fn offers(geo: &Geo, tag: &str, roles: &Roles) -> Result<Vec<Offer>, String> {
+    let Some(place) = roles.place_of(tag) else {
         return Ok(Vec::new());
-    }
-    let country = levels[1];
-    let hint = match country.strip_prefix("in") {
-        Some(rest) if rest.starts_with(char::is_uppercase) => rest,
-        _ => country,
     };
     let found = geo
-        .find(levels[levels.len() - 1], Some(hint))
+        .find(place, roles.country_of(tag).as_deref())
         .map_err(|error| error.to_string())?;
     Ok(found.candidates.iter().map(Offer::of).collect())
 }
@@ -643,6 +630,8 @@ mod tests {
     #[test]
     fn only_the_deepest_places_tags_count() {
         let tags = |all: &[&str]| all.iter().map(|tag| tag.to_string()).collect::<Vec<_>>();
+        let roles = crate::roles::Roles::proposed(&[("places".to_string(), 1)], &["inChina".to_string()]);
+        let deepest = |all: &[String]| deepest(all, &roles);
         assert_eq!(
             deepest(&tags(&["places", "places/inChina", BEIJING, "people/me"])),
             [BEIJING]

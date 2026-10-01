@@ -18,6 +18,8 @@ use crate::changeset::{self, ChangeSet, Wanted};
 use crate::filter::Filter;
 use crate::geo::Geo;
 use crate::names;
+use crate::redundant;
+use crate::roles::Role;
 use crate::scope::Scope;
 use crate::tags::{Rule, Rules};
 use crate::tools::folders::{self, FolderMigration};
@@ -39,7 +41,7 @@ pub struct Finder {
 }
 
 /// Every finder, in the order its fixes are applied.
-pub const FINDERS: [Finder; 10] = [
+pub const FINDERS: [Finder; 11] = [
     Finder {
         key: "tags",
         title: "Tag Tree",
@@ -87,6 +89,12 @@ pub const FINDERS: [Finder; 10] = [
         title: "Events from Folders",
         fixes: "Photos in an event folder whose own field does not name the event yet",
         pass: "Write the event from the folder",
+    },
+    Finder {
+        key: "redundant-tags",
+        title: "Redundant Tags",
+        fixes: "Tags of a role whose own field says what they say, taken off where that is proved",
+        pass: "Take off the redundant tags",
     },
     Finder {
         key: "folders",
@@ -143,6 +151,8 @@ enum What {
     Country(String),
     /// The event folder whose photos get its event in their own field.
     EventDir(String),
+    /// The role whose proven tags go.
+    Role(Role),
 }
 
 /// Every fix there is in the library, finder by finder. A finder that cannot look is left out,
@@ -233,6 +243,7 @@ fn find_one(key: &str, cache: &Cache, geo: Option<&Geo>) -> Result<Vec<Fix>, Str
                 }
             })
             .collect(),
+        "redundant-tags" => redundant::sure(cache, geo)?.into_iter().map(redundant_fix).collect(),
         "folders" => folder_fixes(cache, geo)?,
         "file-names" => name_fixes(cache)?,
         other => return Err(format!("there is no finder {other}")),
@@ -265,6 +276,38 @@ fn answered(finder: &'static str, question: Question, photos: usize, detail: imp
             question: question.key,
             answer,
         },
+    }
+}
+
+/// How many of the reasons a role's tags stay are named before the rest is only counted.
+const SHOWN_REASONS: usize = 4;
+
+fn redundant_fix(found: redundant::Found) -> Fix {
+    let mut lines: Vec<(String, String)> = found
+        .kept
+        .iter()
+        .take(SHOWN_REASONS)
+        .map(|(why, photos)| ("Kept".to_string(), format!("{}, {why}", counted(*photos))))
+        .collect();
+    let more: usize = found.kept.iter().skip(SHOWN_REASONS).map(|(_, photos)| photos).sum();
+    if more > 0 {
+        lines.push(("Kept".to_string(), format!("{} for other reasons", counted(more))));
+    }
+    let tags = match found.tags {
+        1 => "1 tag".to_string(),
+        tags => format!("{tags} tags"),
+    };
+    Fix {
+        key: format!("redundant-tags:{}", found.role.key()),
+        finder: "redundant-tags",
+        title: format!("{} Tags", found.role.title()),
+        detail: format!(
+            "{tags} that only say {}, which the photo's field says",
+            found.role.says()
+        ),
+        photos: found.photos,
+        lines,
+        what: What::Role(found.role),
     }
 }
 
@@ -458,6 +501,7 @@ pub fn change_set(finder: &Finder, fixes: &[&Fix], cache: &Cache, geo: Option<&G
     let mut tagged = std::collections::BTreeMap::new();
     let mut countries = BTreeSet::new();
     let mut events = BTreeSet::new();
+    let mut roles = BTreeSet::new();
     for fix in fixes.iter().filter(|fix| fix.finder == finder.key) {
         match &fix.what {
             What::Rule(rule) => {
@@ -485,19 +529,23 @@ pub fn change_set(finder: &Finder, fixes: &[&Fix], cache: &Cache, geo: Option<&G
             What::EventDir(dir) => {
                 events.insert(dir.clone());
             }
+            What::Role(role) => {
+                roles.insert(*role);
+            }
         }
     }
     let wanted: Vec<Wanted> = match finder.key {
         "tags" => tag_vocabulary::renamed(cache, &whole(), &rules, tidy).map_err(failed)?,
         "duplicate-people" => duplicate_people::wanted(cache, &doubled, &whole()).map_err(failed)?,
         "people" => people::wanted(cache, &persons, &whole()).map_err(failed)?,
-        "people-from-tags" => people_from_tags::wanted(cache, &tagged, &whole()).map_err(failed)?,
+        "people-from-tags" => people_from_tags::wanted(cache, &tagged, &whole(), false).map_err(failed)?,
         "places-from-tags" => GpsFromPlacesTag
             .wanted(cache, geo, &whole(), &answers)
             .map_err(failed)?,
         "places-from-events" => GpsFromEvent.wanted(cache, geo, &whole(), &answers).map_err(failed)?,
         "place-words" => place_words::wanted(cache, geo, &countries, &whole()).map_err(failed)?,
         "events-from-folders" => events_from_folders::wanted(cache, &events, &whole()).map_err(failed)?,
+        "redundant-tags" => redundant::wanted(cache, geo, &roles, &whole()).map_err(failed)?,
         "folders" => FolderMigration.wanted(cache, geo, &whole(), &answers).map_err(failed)?,
         "file-names" => names::folders(cache)?
             .into_iter()
@@ -871,5 +919,57 @@ mod tests {
         let again = find(&library.cache, Some(&geo()));
         assert!(keys(&again, "folders").is_empty());
         assert!(keys(&again, "places-from-tags").is_empty());
+    }
+
+    /// What each role-based finder finds, by finder, as counts of fixes and photos.
+    fn role_based(fixes: &[Fix]) -> Vec<(&'static str, usize, usize)> {
+        [
+            "people-from-tags",
+            "places-from-tags",
+            "places-from-events",
+            "place-words",
+        ]
+        .into_iter()
+        .map(|finder| {
+            let own: Vec<&Fix> = fixes.iter().filter(|fix| fix.finder == finder).collect();
+            (finder, own.len(), own.iter().map(|fix| fix.photos).sum())
+        })
+        .collect()
+    }
+
+    #[test]
+    fn another_library_s_roots_find_the_same_and_no_roles_find_nothing() {
+        let mut library = Library::new("fixes-roles");
+        let ours = role_based(&find(&library.cache, Some(&geo())));
+        assert!(ours.iter().take(2).all(|(_, fixes, _)| *fixes > 0), "{ours:?}");
+
+        let mut rules = Rules::default();
+        for rule in [
+            "rename people -> Persons",
+            "rename People -> Persons",
+            "rename places -> Location",
+        ] {
+            rules.add(Rule::read(rule).unwrap()).unwrap();
+        }
+        let wanted = tag_vocabulary::renamed(&library.cache, &whole(), &rules, false).unwrap();
+        let set = ChangeSet::build(&library.cache, "roots", &wanted).unwrap();
+        library.apply(&set);
+        library.rescan();
+        let roles = library.cache.roles();
+        assert_eq!(
+            (
+                roles.root(crate::roles::Role::People),
+                roles.root(crate::roles::Role::Places)
+            ),
+            (Some("Persons"), Some("Location"))
+        );
+        assert_eq!(role_based(&find(&library.cache, Some(&geo()))), ours, "read as it is");
+
+        library.cache.keep_roles(Some(&crate::roles::Roles::default())).unwrap();
+        let none = role_based(&find(&library.cache, Some(&geo())));
+        assert!(
+            none.iter().take(2).all(|(_, fixes, _)| *fixes == 0),
+            "no people or places tags without their roles: {none:?}"
+        );
     }
 }

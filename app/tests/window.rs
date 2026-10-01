@@ -188,6 +188,7 @@ fn suggests_fixes_to_tick(window: &Window, opened: &Rc<Library>) {
         BEIJING,
         "places-from-events:Germany/2016-06-00 Harbour Walk",
         "events-from-folders:Germany/2019-07-13 Sommerfest",
+        "redundant-tags:year",
         FOLDER,
         "file-names:Denmark/2018-10-00 Wedding Trip to Copenhagen",
     ] {
@@ -204,6 +205,7 @@ fn suggests_fixes_to_tick(window: &Window, opened: &Rc<Library>) {
         "Places from Tags",
         "Places from Events",
         "Events from Folders",
+        "Redundant Tags",
         "Folders",
         "File Names",
     ] {

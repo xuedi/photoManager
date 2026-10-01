@@ -15,6 +15,7 @@ use crate::cache::Cache;
 use crate::filter::Filter;
 use crate::geo::Geo;
 use crate::geo::reverse::kilometres;
+use crate::roles::{Role, Roles};
 use crate::scope::Scope;
 use crate::tools::gps_from_event::GpsFromEvent;
 use crate::tools::gps_from_places::{self, GpsFromPlacesTag, deepest};
@@ -35,15 +36,28 @@ pub enum Check {
     GpsEvent,
     /// No position and nothing to go on.
     GpsNothing,
+    /// A tag of a role whose tags may go, which its field does not prove.
+    Kept(Role),
 }
 
 impl Check {
-    pub const ALL: [Check; 5] = [
+    pub const ALL: [Check; 9] = [
         Check::PlaceDisagrees,
         Check::GpsSure,
         Check::GpsAsks,
         Check::GpsEvent,
         Check::GpsNothing,
+        Check::Kept(Role::People),
+        Check::Kept(Role::Places),
+        Check::Kept(Role::Year),
+        Check::Kept(Role::Events),
+    ];
+    /// The tags of a role that stay, one finding per role.
+    pub const KEPT: [Check; 4] = [
+        Check::Kept(Role::People),
+        Check::Kept(Role::Places),
+        Check::Kept(Role::Year),
+        Check::Kept(Role::Events),
     ];
     /// What is left to do for the photos without a position, in the order it is worked down.
     pub const GPS: [Check; 4] = [Check::GpsSure, Check::GpsAsks, Check::GpsEvent, Check::GpsNothing];
@@ -55,6 +69,10 @@ impl Check {
             Check::GpsAsks => "gps-asks",
             Check::GpsEvent => "gps-event",
             Check::GpsNothing => "gps-nothing",
+            Check::Kept(Role::People) => "kept-people",
+            Check::Kept(Role::Places) => "kept-places",
+            Check::Kept(Role::Year) => "kept-year",
+            Check::Kept(Role::Events) => "kept-events",
         }
     }
 
@@ -69,6 +87,10 @@ impl Check {
             Check::GpsAsks => "A tag the person answers",
             Check::GpsEvent => "The event decides",
             Check::GpsNothing => "Nothing to go on",
+            Check::Kept(Role::People) => "People tags no field says yet",
+            Check::Kept(Role::Places) => "Places tags no field says yet",
+            Check::Kept(Role::Year) => "Year tags no field says yet",
+            Check::Kept(Role::Events) => "Event tags no field says yet",
         }
     }
 
@@ -80,6 +102,10 @@ impl Check {
             Check::GpsAsks => "without GPS whose places tag names a town to answer",
             Check::GpsEvent => "without GPS whose event decides",
             Check::GpsNothing => "without GPS and nothing to go on",
+            Check::Kept(Role::People) => "whose people tag no person they name says",
+            Check::Kept(Role::Places) => "whose places tag no position or place word says",
+            Check::Kept(Role::Year) => "whose year tag their date does not say",
+            Check::Kept(Role::Events) => "whose event tag their event field does not say",
         }
     }
 
@@ -93,6 +119,10 @@ impl Check {
             Check::GpsAsks => "their places tag names a town the place data is not sure of",
             Check::GpsEvent => "no town tag; the event they are in is placed with Set Place",
             Check::GpsNothing => "no town tag and no event",
+            Check::Kept(Role::People) => "Redundant Tags keeps them: the photo does not name the person",
+            Check::Kept(Role::Places) => "Redundant Tags keeps them: no position, or it is elsewhere",
+            Check::Kept(Role::Year) => "Redundant Tags keeps them: no date, or another year",
+            Check::Kept(Role::Events) => "Redundant Tags keeps them: no event field, or another event",
         }
     }
 }
@@ -106,7 +136,10 @@ pub struct Checked {
 /// Checks the library and keeps what it found in the cache, instead of what the last check did.
 pub fn run(cache: &mut Cache, geo: Option<&Geo>) -> Result<Checked, String> {
     let started = std::time::Instant::now();
-    let found = find(cache, geo)?;
+    let mut found = find(cache, geo)?;
+    for (rel_path, role, why) in crate::redundant::kept(cache, geo).map_err(|error| error.to_string())? {
+        found.push((rel_path, Check::Kept(role), Some(why.to_string())));
+    }
     let rows: Vec<(String, &str, Option<String>)> = found
         .iter()
         .map(|(rel_path, check, detail)| (rel_path.clone(), check.key(), detail.clone()))
@@ -139,6 +172,7 @@ pub fn find(cache: &Cache, geo: Option<&Geo>) -> Result<Vec<(String, Check, Opti
         }
         None => HashSet::new(),
     };
+    let roles = cache.roles();
     let mut towns = Towns::default();
 
     let mut found = Vec::new();
@@ -146,18 +180,18 @@ pub fn find(cache: &Cache, geo: Option<&Geo>) -> Result<Vec<(String, Check, Opti
         let Some(said) = stated.get(&rel_path).map(|one| &one.said) else {
             continue;
         };
-        let tags = deepest(&said.tags);
+        let tags = deepest(&said.tags, &roles);
         match said.gps_lat.zip(said.gps_lon) {
             Some((lat, lon)) => {
                 let Some(geo) = geo else { continue };
-                if let Some(why) = towns.disagreement(geo, &tags, lat, lon)? {
+                if let Some(why) = towns.disagreement(geo, &roles, &tags, lat, lon)? {
                     found.push((rel_path, Check::PlaceDisagrees, Some(why)));
                 }
             }
             None => {
                 let check = if sure.contains(&rel_path) {
                     Check::GpsSure
-                } else if tags.iter().any(|tag| !gps_from_places::names_a_country(tag)) {
+                } else if tags.iter().any(|tag| !roles.names_a_country(tag)) {
                     Check::GpsAsks
                 } else if events.contains_key(&rel_path) {
                     Check::GpsEvent
@@ -204,14 +238,21 @@ struct Towns {
 
 impl Towns {
     /// Why a photo's places tags disagree with where it stands, if one does.
-    fn disagreement(&mut self, geo: &Geo, tags: &[String], lat: f64, lon: f64) -> Result<Option<String>, String> {
+    fn disagreement(
+        &mut self,
+        geo: &Geo,
+        roles: &Roles,
+        tags: &[String],
+        lat: f64,
+        lon: f64,
+    ) -> Result<Option<String>, String> {
         for tag in tags {
-            if gps_from_places::names_a_country(tag) {
+            if roles.names_a_country(tag) {
                 let named = match self.countries.get(tag) {
                     Some(code) => code.clone(),
                     None => {
                         let code = geo
-                            .country(tag.split('/').nth(1).unwrap_or_default())
+                            .country(&roles.country_of(tag).unwrap_or_default())
                             .map_err(|error| error.to_string())?
                             .map(|(code, _)| code);
                         self.countries.insert(tag.clone(), code.clone());
@@ -234,7 +275,7 @@ impl Towns {
             let town = match self.towns.get(tag) {
                 Some(town) => *town,
                 None => {
-                    let town = gps_from_places::offers(geo, tag)?
+                    let town = gps_from_places::offers(geo, tag, roles)?
                         .first()
                         .filter(|offer| offer.sure)
                         .and_then(|offer| offer.place())

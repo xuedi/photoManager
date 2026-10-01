@@ -26,13 +26,12 @@ use crate::changeset::Wanted;
 use crate::geo::lookup::How;
 use crate::geo::{Geo, fold};
 use crate::layout::{Component, Fit, Layout, Placement, plain_name};
+use crate::roles::Roles;
 use crate::scope::Scope;
 use crate::tags;
 use crate::write::Move;
 
 pub struct FolderMigration;
-
-const PLACES: &str = "places";
 
 /// How a move the people gate holds back starts to say why.
 pub const PEOPLE_FIRST: &str = "Immich names";
@@ -209,16 +208,10 @@ struct PlaceTag {
     city: Option<String>,
 }
 
-fn place_tag(path: &str) -> Option<PlaceTag> {
+fn place_tag(path: &str, roles: &Roles) -> Option<PlaceTag> {
     let levels: Vec<&str> = path.split('/').collect();
-    if !levels.first()?.eq_ignore_ascii_case(PLACES) {
-        return None;
-    }
-    let country = levels.get(1)?;
-    let country = match country.strip_prefix("in") {
-        Some(rest) if !rest.is_empty() => rest,
-        _ => country,
-    };
+    let country = roles.country_of(path)?;
+    let country = country.as_str();
     Some(PlaceTag {
         country: country.to_string(),
         city: levels.get(2).map(|city| city.to_string()),
@@ -265,18 +258,20 @@ struct Choice {
 /// Countries by the codes the place data gives them, and by their spelling where it gives none.
 struct Countries<'a> {
     geo: Option<&'a Geo>,
+    roles: Roles,
     folders: Vec<String>,
     codes: HashMap<String, Option<(String, String)>>,
 }
 
 impl<'a> Countries<'a> {
-    fn new(geo: Option<&'a Geo>, folders: &[Folder]) -> Countries<'a> {
+    fn new(geo: Option<&'a Geo>, folders: &[Folder], roles: Roles) -> Countries<'a> {
         let geo = geo.filter(|geo| geo.is_filled());
         let mut names: Vec<String> = folders.iter().filter_map(|folder| folder.country.clone()).collect();
         names.sort();
         names.dedup();
         Countries {
             geo,
+            roles,
             folders: names,
             codes: HashMap::new(),
         }
@@ -349,12 +344,12 @@ struct Spellings {
 }
 
 impl Spellings {
-    fn new(cache: &Cache, folders: &[Folder]) -> cache::Result<Spellings> {
+    fn new(cache: &Cache, folders: &[Folder], roles: &Roles) -> cache::Result<Spellings> {
         let mut tagged: Vec<String> = cache
             .tag_sets()?
             .into_iter()
             .flatten()
-            .filter_map(|path| place_tag(&path)?.city)
+            .filter_map(|path| place_tag(&path, roles)?.city)
             .collect();
         tagged.sort();
         tagged.dedup();
@@ -469,7 +464,7 @@ impl<'a> Survey<'a> {
                 None => {}
             }
         }
-        let mut countries = Countries::new(geo, &folders);
+        let mut countries = Countries::new(geo, &folders, cache.roles());
         let checked = layout
             .levels
             .iter()
@@ -501,7 +496,7 @@ impl<'a> Survey<'a> {
                     placement
                         .above
                         .iter()
-                        .find(|folder| countries.is_country(folder) || tags_name(&photos, folder))
+                        .find(|folder| countries.is_country(folder) || tags_name(&photos, folder, &countries.roles))
                         .cloned()
                 });
             let (country, country_sure) = match by_folder {
@@ -533,11 +528,12 @@ impl<'a> Survey<'a> {
                 positions.entry(dir).or_default().push((lat, lon));
             }
         }
+        let spellings = Spellings::new(cache, &folders, &countries.roles)?;
         Ok(Survey {
             geo,
             layout,
             countries,
-            spellings: Spellings::new(cache, &folders)?,
+            spellings,
             folders,
             events,
             loose: cache.tagged(&loose_paths)?,
@@ -567,7 +563,10 @@ impl<'a> Survey<'a> {
             .map(|photo| (tags::deepest(&photo.tags), photo.city.clone()))
             .collect();
         for (deepest, city) in photos {
-            let named: BTreeSet<PlaceTag> = deepest.iter().filter_map(|tag| place_tag(tag)).collect();
+            let named: BTreeSet<PlaceTag> = deepest
+                .iter()
+                .filter_map(|tag| place_tag(tag, &self.countries.roles))
+                .collect();
             let mut other_country = None;
             let mut named_cities = BTreeSet::new();
             for tag in &named {
@@ -1000,12 +999,12 @@ fn disagrees(countries: &mut Countries, placement: &Placement, photos: &[Tagged]
 }
 
 /// Whether the photos' places tags name this country.
-fn tags_name(photos: &[Tagged], country: &str) -> bool {
+fn tags_name(photos: &[Tagged], country: &str, roles: &Roles) -> bool {
     photos.iter().any(|photo| {
         photo
             .tags
             .iter()
-            .filter_map(|tag| place_tag(tag))
+            .filter_map(|tag| place_tag(tag, roles))
             .any(|tag| fold(&tag.country) == fold(country))
     })
 }
@@ -1014,7 +1013,7 @@ fn tags_name(photos: &[Tagged], country: &str) -> bool {
 /// know it as a country, or at least not as a city. A library's own name for a country the place
 /// data spells otherwise stays its country; `Hamburg` does not.
 fn country_folder(countries: &mut Countries, folder: &str, photos: &[Tagged]) -> bool {
-    countries.is_country(folder) || tags_name(photos, folder) || !countries.is_city(folder)
+    countries.is_country(folder) || tags_name(photos, folder, &countries.roles) || !countries.is_city(folder)
 }
 
 /// How many events a layout would find out of place, of how many: off it by their folders, or
@@ -1022,7 +1021,7 @@ fn country_folder(countries: &mut Countries, folder: &str, photos: &[Tagged]) ->
 /// layout is kept, so it reads nothing but the cache and the place data.
 pub fn events_off(cache: &Cache, geo: Option<&Geo>, layout: &Layout) -> cache::Result<(usize, usize)> {
     let folders = cache.event_folders()?;
-    let mut countries = Countries::new(geo, &folders);
+    let mut countries = Countries::new(geo, &folders, cache.roles());
     let checked = layout
         .levels
         .iter()
@@ -1057,7 +1056,7 @@ fn tagged_country(photos: &[Tagged], countries: &mut Countries) -> Option<String
     for photo in photos {
         let said: BTreeSet<String> = tags::deepest(&photo.tags)
             .iter()
-            .filter_map(|tag| place_tag(tag))
+            .filter_map(|tag| place_tag(tag, &countries.roles))
             .map(|tag| tag.country)
             .collect();
         for country in said {

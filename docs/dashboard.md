@@ -116,7 +116,11 @@ the photos it would not add up, and it is not shown.
   town's width - from where the photo stands, or a country-only tag names another country than the
   one it stands in. A tag the place data is not sure of says nothing either way. This has to be
   empty before the places tags can go; its photos are shown, and the person decides which of the
-  two is wrong.
+  two is wrong,
+- per [tag role](tools.md#tag-roles) not kept as tags, the photos with a tag of it that
+  [Redundant Tags](suggestions.md#redundant-tags) keeps, because its field does not say it yet:
+  a people tag whose person the photo does not name, a places tag without a position, a year tag
+  on a photo without a date. They come from the place check too, with why.
 
 These say what is untidy; how to fix it is the step after. While the Suggestions tab has any
 fixes, a line at the top of the dashboard says how many and opens it

@@ -15,6 +15,7 @@ use crate::cache::{self, Cache};
 use crate::changeset::Wanted;
 use crate::filter::Filter;
 use crate::metadata::Regions;
+use crate::roles::{Role, Roles};
 use crate::scope::Scope;
 use crate::write::{Change, Field};
 
@@ -27,10 +28,9 @@ pub struct Found {
     pub photos: usize,
 }
 
-/// Whether a tag is below the `people` root, in any case.
-pub fn is_people(tag: &str) -> bool {
-    let mut levels = tag.split('/');
-    levels.next().is_some_and(|root| root.eq_ignore_ascii_case("people")) && levels.next().is_some()
+/// Whether a tag is below the root of the people role, in any case.
+pub fn is_people(tag: &str, roles: &Roles) -> bool {
+    roles.is(Role::People, tag)
 }
 
 /// Whether any photo carries a tag below this one: a group, not a person.
@@ -71,9 +71,9 @@ fn known(cache: &Cache) -> Result<HashMap<String, BTreeSet<String>>, String> {
 }
 
 /// The people tags no other tag goes below: a tag with tags below it is a group.
-fn leaves(all: &BTreeSet<String>) -> Vec<String> {
+fn leaves(all: &BTreeSet<String>, roles: &Roles) -> Vec<String> {
     all.iter()
-        .filter(|tag| is_people(tag))
+        .filter(|tag| is_people(tag, roles))
         .filter(|tag| {
             let below = format!("{tag}/");
             all.range(below.clone()..)
@@ -99,7 +99,7 @@ pub fn sure(cache: &Cache) -> Result<Vec<Found>, String> {
     let known = known(cache)?;
 
     let mut found = Vec::new();
-    for tag in leaves(&all) {
+    for tag in leaves(&all, &cache.roles()) {
         let Some(spellings) = known.get(&fold(leaf(&tag))) else {
             continue;
         };
@@ -124,8 +124,14 @@ pub fn sure(cache: &Cache) -> Result<Vec<Found>, String> {
 }
 
 /// Each photo of the scope that carries one of these tags gets the persons they name, without a
-/// box, where it does not name them yet. By tag, the name.
-pub fn wanted(cache: &Cache, named: &BTreeMap<String, String>, scope: &Scope) -> cache::Result<Vec<Wanted>> {
+/// box, where it does not name them yet. By tag, the name. With `untag`, the tags go in the same
+/// write, from a photo that names the person already too.
+pub fn wanted(
+    cache: &Cache,
+    named: &BTreeMap<String, String>,
+    scope: &Scope,
+    untag: bool,
+) -> cache::Result<Vec<Wanted>> {
     let paths = scope.paths(cache)?;
     let stated = cache.stated(&paths)?;
     let mut wanted = Vec::new();
@@ -135,8 +141,18 @@ pub fn wanted(cache: &Cache, named: &BTreeMap<String, String>, scope: &Scope) ->
         if names.is_empty() {
             continue;
         }
-        if let Some(persons) = adding(one.said.regions.as_ref(), &names) {
-            wanted.push(Wanted::new(rel_path, Change::of([Field::Persons(persons)])));
+        let mut fields: Vec<Field> = adding(one.said.regions.as_ref(), &names)
+            .map(Field::Persons)
+            .into_iter()
+            .collect();
+        if untag {
+            let then = named
+                .keys()
+                .fold(one.said.tags.clone(), |tags, tag| crate::tags::without(&tags, tag));
+            fields.extend([Field::Tags(then), Field::DropLabel, Field::DropCatalogSets]);
+        }
+        if !fields.is_empty() {
+            wanted.push(Wanted::new(rel_path, Change::of(fields)));
         }
     }
     Ok(wanted)
@@ -231,7 +247,7 @@ mod tests {
         let mut library = Library::new("people-from-tags-write");
         let named = BTreeMap::from([("people/family/Anna".to_string(), "Anna".to_string())]);
         let whole = Scope::Filter(Filter::all());
-        let wanted = wanted(&library.cache, &named, &whole).unwrap();
+        let wanted = wanted(&library.cache, &named, &whole, false).unwrap();
         let set = ChangeSet::build(&library.cache, "Write people from tags", &wanted).unwrap();
         let rows: Vec<(&str, &Verdict)> = set
             .rows
@@ -278,6 +294,9 @@ mod tests {
             None,
             "named, in any case"
         );
-        assert!(is_people("People/Kira") && !is_people("people") && !is_people("places/inChina"));
+        let roles = Library::new("people-from-tags-role").cache.roles();
+        assert!(
+            is_people("People/Kira", &roles) && !is_people("people", &roles) && !is_people("places/inChina", &roles)
+        );
     }
 }

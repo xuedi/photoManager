@@ -10,6 +10,7 @@ use gtk::glib;
 use photomanager_core::dates::Shift;
 use photomanager_core::edits::{Edit, Value};
 use photomanager_core::layout::Component;
+use photomanager_core::roles::Role;
 use photomanager_core::scope::Scope;
 use photomanager_core::tools::folders::Parts;
 use photomanager_core::tools::tag_vocabulary::Generated;
@@ -569,22 +570,27 @@ fn counted(photos: i64) -> String {
 /// A people tag and the person its photos are given: a tag from the people tags, a person from
 /// the People list or a new name.
 fn tag_to_person(tools: &Tools, library: &Rc<Library>, edit: Edit) {
-    let tag = adw::EntryRow::builder().title("People Tag").build();
+    let tag = adw::EntryRow::builder().title("Tag").build();
     let person = adw::EntryRow::builder().title("Person").build();
+    let roles = library.roles();
+    let untag = untag_switch(roles.root(Role::People).is_some());
     let group = described(
-        "Every photo of the tag that does not name the person yet gets the name, without a face box. The tag stays. Spell a person Immich knows as Immich does, so a face it finds later joins the name.",
+        "Every photo of the tag that does not name the person yet gets the name, without a face box. Spell a person Immich knows as Immich does, so a face it finds later joins the name.",
     );
     group.add(&tag);
     group.add(&person);
-    let (tags, people) = (Choices::new("People Tags"), Choices::new("People"));
+    group.add(&untag);
+    let (tags, people) = (Choices::new("Tags"), Choices::new("People"));
     let make: Make = Rc::new(glib::clone!(
         #[weak]
         tag,
         #[weak]
         person,
+        #[weak]
+        untag,
         #[upgrade_or]
         Err("the form is closed".to_string()),
-        move || edit.read(&format!("{} -> {}", tag.text(), person.text()))
+        move || edit.read(&format!("{} {} {}", tag.text(), arrow(&untag), person.text()))
     ));
     let dialog = dialog(
         tools,
@@ -632,12 +638,19 @@ fn tag_to_person(tools: &Tools, library: &Rc<Library>, edit: Edit) {
         person,
         move |found| match found {
             Ok(sidebars) => {
-                *tags.all.borrow_mut() = sidebars
+                let mut all: Vec<(bool, String, String)> = sidebars
                     .tags
                     .nodes()
-                    .filter(|(path, _)| people_from_tags::is_people(path))
-                    .map(|(path, count)| (path.to_string(), counted(count)))
+                    .map(|(path, count)| {
+                        (
+                            !people_from_tags::is_people(path, &roles),
+                            path.to_string(),
+                            counted(count),
+                        )
+                    })
                     .collect();
+                all.sort();
+                *tags.all.borrow_mut() = all.into_iter().map(|(_, path, count)| (path, count)).collect();
                 *people.all.borrow_mut() = sidebars
                     .people
                     .iter()
@@ -658,17 +671,21 @@ fn sublocation(tools: &Tools, library: &Rc<Library>, edit: Edit) {
     let group = described(
         "The photos of the tag keep its place as their sublocation, spelled as typed here; every other place word they have stays. The tags listed are the ones whose photos stand in a town of another name.",
     );
+    let untag = untag_switch(library.roles().root(Role::Places).is_some());
     group.add(&tag);
     group.add(&name);
+    group.add(&untag);
     let finer = Choices::new("Places Tags Finer than Their Town");
     let make: Make = Rc::new(glib::clone!(
         #[weak]
         tag,
         #[weak]
         name,
+        #[weak]
+        untag,
         #[upgrade_or]
         Err("the form is closed".to_string()),
-        move || edit.read(&format!("{} -> {}", tag.text(), name.text()))
+        move || edit.read(&format!("{} {} {}", tag.text(), arrow(&untag), name.text()))
     ));
     let dialog = dialog(
         tools,
@@ -850,4 +867,21 @@ fn rename_event(tools: &Tools, library: &Rc<Library>, edit: Edit, scope: &Scope)
         move || edit.read(entry.text().as_str())
     ));
     dialog(tools, edit, &[group.upcast_ref()], make, Some(entry.upcast_ref()));
+}
+
+/// Whether the tag goes in the same write: on by default where the tag's role is set.
+fn untag_switch(role_set: bool) -> adw::SwitchRow {
+    adw::SwitchRow::builder()
+        .title("Take the Tag Off")
+        .subtitle("In the same write, once the field says it")
+        .active(role_set)
+        .build()
+}
+
+/// How the edit is told to take the tag off or not.
+fn arrow(untag: &adw::SwitchRow) -> &'static str {
+    match untag.is_active() {
+        true => "=>",
+        false => "->",
+    }
 }

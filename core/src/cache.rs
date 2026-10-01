@@ -7,6 +7,7 @@ use rusqlite::{Connection, OptionalExtension, params};
 
 use crate::layout::{Layout, Placement};
 use crate::metadata::{Metadata, Regions};
+use crate::roles::{Role, Roles};
 use crate::scan::Issue;
 
 const SCHEMA_VERSION: i64 = 7;
@@ -18,6 +19,10 @@ const CHUNK: usize = 500;
 /// Which layout the rows were placed with. Added to any cache of this version when it is opened,
 /// so the placements can be read again when the layout changes without a rescan.
 const PLACED: &str = "CREATE TABLE IF NOT EXISTS placed (layout TEXT NOT NULL)";
+
+/// The tag roles the person kept, added the same way, so a finder on a read-only cache reads them
+/// too. Without a row, the roles are proposed from the roots the photos carry.
+const ROLES: &str = "CREATE TABLE IF NOT EXISTS roles (roles TEXT NOT NULL)";
 
 /// When each upkeep job last ran and what it said, added the same way. Thrown away with the cache,
 /// so a rebuilt cache was never scanned, which is true.
@@ -285,6 +290,7 @@ impl Cache {
         }
         connection.query_row("SELECT count(*) FROM photo", [], |row| row.get::<_, i64>(0))?;
         connection.execute_batch(PLACED)?;
+        connection.execute_batch(ROLES)?;
         connection.execute_batch(RAN)?;
         connection.execute_batch(CHECKED)?;
         derive_persons(&connection)?;
@@ -316,6 +322,7 @@ impl Cache {
         prepare(&connection)?;
         connection.execute_batch(SCHEMA)?;
         connection.execute_batch(PLACED)?;
+        connection.execute_batch(ROLES)?;
         connection.execute_batch(RAN)?;
         connection.execute_batch(PERSON)?;
         connection.execute_batch(CHECKED)?;
@@ -346,6 +353,59 @@ impl Cache {
     /// The layout the paths are read with.
     pub fn layout(&self) -> &Layout {
         &self.layout
+    }
+
+    /// The tag roles: the ones kept, else the ones proposed from the roots the photos carry now.
+    pub fn roles(&self) -> Roles {
+        let kept: Option<String> = self
+            .connection
+            .query_row("SELECT roles FROM roles", [], |row| row.get(0))
+            .optional()
+            .unwrap_or(None);
+        if let Some(roles) = kept.as_deref().and_then(|text| Roles::read(text).ok()) {
+            return roles;
+        }
+        self.proposed_roles().unwrap_or_else(|error| {
+            tracing::warn!(%error, "the tag roles could not be proposed");
+            Roles::default()
+        })
+    }
+
+    /// Every root of the tag tree, with how many photos carry it or a tag below it, the most
+    /// first.
+    pub fn roots_counted(&self) -> Result<Vec<(String, i64)>> {
+        let mut statement = self.connection.prepare(
+            "SELECT substr(path, 1, instr(path || '/', '/') - 1) AS root, count(DISTINCT photo_id) AS photos
+             FROM tag GROUP BY root ORDER BY photos DESC, root",
+        )?;
+        statement.query_map([], |row| Ok((row.get(0)?, row.get(1)?)))?.collect()
+    }
+
+    /// The roles proposed from the roots the photos carry.
+    pub fn proposed_roles(&self) -> Result<Roles> {
+        let roots = self.roots_counted()?;
+        let places = Roles::proposed(&roots, &[]).root(Role::Places).map(String::from);
+        let below: Vec<String> = match places {
+            Some(root) => {
+                let mut statement = self.connection.prepare(
+                    "SELECT DISTINCT substr(path, length(?1) + 2, instr(substr(path, length(?1) + 2) || '/', '/') - 1)
+                     FROM tag WHERE path LIKE ?1 || '/%'",
+                )?;
+                statement.query_map([root], |row| row.get(0))?.collect::<Result<_>>()?
+            }
+            None => Vec::new(),
+        };
+        Ok(Roles::proposed(&roots, &below))
+    }
+
+    /// Keeps the roles the person chose, or forgets them so the proposal is used again.
+    pub fn keep_roles(&self, roles: Option<&Roles>) -> Result<()> {
+        self.connection.execute("DELETE FROM roles", [])?;
+        if let Some(roles) = roles {
+            self.connection
+                .execute("INSERT INTO roles (roles) VALUES (?1)", params![roles.written()])?;
+        }
+        Ok(())
     }
 
     /// Reads every path again with this layout when the rows were placed with another one: the

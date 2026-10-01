@@ -131,6 +131,36 @@ more, and the preview says how much. Measured over a folder of real photos a wri
 40 ms, so thousands of photos take minutes; the scope can make it one country or one event at a
 time.
 
+## Tag roles
+
+Some roots of a tag tree say what a field of its own says too: who is in the photo, where it was
+taken, the year, the event. Which root that is, and how a places tag spells its country, is the
+library's own habit - `people/...` and `places/inGermany/Berlin` here, `Persons/...`,
+`Location/Germany/Berlin` or flat keywords elsewhere - so it is a setting, in Preferences under the
+folder layout, and nothing else assumes a name:
+
+| Role | Its tags say | Its field |
+|------|--------------|-----------|
+| People | who is in the photo | the persons it names, with a face box or without |
+| Places | where it was taken | the position and the place words, the sublocation for a place finer than a town |
+| Year | the year | the date |
+| Events | the event | the event field |
+
+Each role is chosen from the roots the library has, or none; the country of a places tag is
+`in<Country>`, the country's name, or no country level. Until the roles are saved, they are
+proposed from the roots - a root of a usual name (`people`, `Persons`, `places`, `Location`,
+`timeline`, `events` and the like), the one with the most photos when two are spelled alike - so a
+library without such roots has no role at all. Every finder and edit that reads a role takes it
+from here: People from Tags, Places from Tags and Places from Events, Place Words, Places Tag to
+Sublocation, Tidy Tags, Folder Migration's city from the places tags, and the place check. The
+roles are a tool setting in `app.db`, handed to the cache so the finders that run beside the window
+read them too.
+
+A generated role - places, year, events - can be **kept as tags**: Tidy Tags then makes its tags
+from the data, and [Redundant Tags](suggestions.md#redundant-tags) never takes them away. One that
+is not kept is left to its field. By default only the events are kept, because a viewer that reads
+tags and not the event field has no other way to browse an event.
+
 ## The tags
 
 One vocabulary instead of four: every tag write puts every path with every level into all five
@@ -146,18 +176,25 @@ writers left.
   separator inside one, is refused before the preview.
 - **Tidy Tags** writes every photo of the scope the same in every field, and chooses what becomes
   of the generated tags: the year, place and event tags that repeat what the date, the place words
-  and the event say - the photo's own event field, else its folder's name. **Derived from the data** makes `timeline/<year>`,
-  `places/in<Country>/<City>` and `events/<year> <name>` from them, each replacing the whole
-  branch of its root, so they can never disagree with it; they can also be **dropped**, or **left
-  as they are**. A tidy photo that would say the same is left out.
+  and the event say - the photo's own event field, else its folder's name. **Derived from the
+  data** makes `<year root>/<year>`, `<places root>/<country>/<City>` and
+  `<events root>/<year> <name>` for the roles kept as tags, each replacing the whole branch of its
+  root, so they can never disagree with it; a role not kept is left as it is. They can also be
+  **dropped**, or **left as they are**. A tidy photo that would say the same is left out.
 
-- **Tag to Person** gives the photos of a people tag a person, in `PersonInImage`, without a
-  face box - for the tags [People from Tags](suggestions.md#people-from-tags) is not sure of: a
-  person under another name, or one no face recognition knows. The person is chosen from the
-  People list with its search, or typed; a name typed is a person of the library from then on.
-  A photo that names the person already is left, a box is never touched, the tag stays, and a tag
-  with tags below it is refused as a group. Typing a person the way Immich spells them lets a face
-  Immich finds later join the name.
+- **Tag to Person** gives the photos of a tag a person, in `PersonInImage`, without a face box -
+  for the tags [People from Tags](suggestions.md#people-from-tags) is not sure of: a person under
+  another name, one no face recognition knows, a flat keyword that is a name. Any tag is taken; the
+  people role's come first in the list. The person is chosen from the People list with its search,
+  or typed; a name typed is a person of the library from then on. A photo that names the person
+  already gets no second name, a box is never touched, and a tag with tags below it is refused as
+  a group. Typing a person the way Immich spells them lets a face Immich finds later join the name.
+- **Take the tag off**, in Tag to Person and in
+  [Places Tag to Sublocation](#places-tag-to-sublocation), takes the tag away in the same write
+  that names the person or keeps the sublocation - on by default where the tag's role is set. A
+  mapping only the person knows, a nickname for a person or a place name the place data does not
+  know, is so proved by the read back rather than remembered. A write that is refused leaves the
+  tag where it was.
 
 The tag forms list the tree with a search, so a tag is chosen rather than remembered.
 

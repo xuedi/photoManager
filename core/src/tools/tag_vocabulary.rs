@@ -2,8 +2,10 @@
 //! five tag fields do not agree, is written with its whole set: every field, every level, and the
 //! label and catalog sets that older writers left emptied.
 //!
-//! The generated tags - the year, the place, the event - can be made from the data, so they can
-//! never disagree with it; they can also be dropped, or left as they are.
+//! The generated tags - the year, the place, the event, under the roots the tag roles name - can
+//! be made from the data, so they can never disagree with it; they can also be dropped, or left as
+//! they are. Only a role kept as tags is made: one whose field is enough is left to the Redundant
+//! Tags finder, which takes a tag away only where its field is proved to say it.
 //!
 //! What the shape of the tree says is off - roots spelled two ways, flat keywords with one home,
 //! leaves above the usual depth of their branch - is found here as rules, each a fix.
@@ -13,19 +15,17 @@ use std::collections::BTreeSet;
 use crate::browse::TagTree;
 use crate::cache::{self, Cache, Tagged};
 use crate::changeset::Wanted;
+use crate::roles::{Role, Roles};
 use crate::scope::Scope;
 use crate::tags::{self, Rule, Rules};
 use crate::write::change::expand;
 use crate::write::{Change, Field};
 
-pub const TIMELINE: &str = "timeline";
-pub const PLACES: &str = "places";
-pub const EVENTS: &str = "events";
-
 /// What becomes of the tags that only say what the date, the place words or the folder say.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub enum Generated {
-    /// Made from the data: `timeline/<year>`, `places/in<Country>/<City>`, `events/<year> <name>`.
+    /// Made from the data: `timeline/<year>`, `places/in<Country>/<City>`, `events/<year> <name>`,
+    /// for the roles kept as tags.
     #[default]
     Derived,
     /// Taken away: the date, the position and the folder already say it.
@@ -60,15 +60,19 @@ impl Generated {
 
 /// What a photo's tags become: mapped by the rules, a bare root dropped, and the generated tags
 /// made, dropped or kept.
-fn tags_of(photo: &Tagged, rules: &Rules, generated: Generated, tree: &TagTree) -> Vec<String> {
+fn tags_of(photo: &Tagged, rules: &Rules, generated: Generated, tree: &TagTree, roles: &Roles) -> Vec<String> {
     let mapped = tags::without_bare_roots(rules.map(&photo.tags), tree);
     let then = match generated {
         Generated::Kept => mapped,
         Generated::Dropped => mapped
             .into_iter()
-            .filter(|path| ![TIMELINE, PLACES, EVENTS].iter().any(|root| tags::within(path, root)))
+            .filter(|path| {
+                !Role::ALL
+                    .iter()
+                    .any(|role| role.generated() && roles.within(*role, path))
+            })
             .collect(),
-        Generated::Derived => derived(mapped, photo),
+        Generated::Derived => derived(mapped, photo, roles),
     };
     tags::deepest(&then)
 }
@@ -85,9 +89,10 @@ fn write(photo: Tagged, then: Vec<String>) -> Wanted {
 pub fn tidied(cache: &Cache, scope: &Scope, generated: Generated) -> cache::Result<Vec<Wanted>> {
     let rules = Rules::default();
     let tree = tags::mapped_tree(&rules, &cache.tag_sets()?);
+    let roles = cache.roles();
     let mut wanted = Vec::new();
     for photo in cache.tagged(&scope.paths(cache)?)? {
-        let then = tags_of(&photo, &rules, generated, &tree);
+        let then = tags_of(&photo, &rules, generated, &tree, &roles);
         if !photo.untidy && levels(&then) == levels(&photo.tags) {
             continue;
         }
@@ -100,9 +105,10 @@ pub fn tidied(cache: &Cache, scope: &Scope, generated: Generated) -> cache::Resu
 /// `untidy`, also the ones whose tag fields do not agree. Nothing else about the tags changes.
 pub fn renamed(cache: &Cache, scope: &Scope, rules: &Rules, untidy: bool) -> cache::Result<Vec<Wanted>> {
     let tree = tags::mapped_tree(rules, &cache.tag_sets()?);
+    let roles = cache.roles();
     let mut wanted = Vec::new();
     for photo in cache.tagged(&scope.paths(cache)?)? {
-        let then = tags_of(&photo, rules, Generated::Kept, &tree);
+        let then = tags_of(&photo, rules, Generated::Kept, &tree, &roles);
         let changed = levels(&rules.map(&photo.tags)) != levels(&photo.tags);
         if changed || (untidy && photo.untidy) {
             wanted.push(write(photo, then));
@@ -114,38 +120,45 @@ pub fn renamed(cache: &Cache, scope: &Scope, rules: &Rules, untidy: bool) -> cac
 /// Each generated root replaced by what the data says, where it says anything: the year of the
 /// date, the city and country of the place words, the event the photo's own field names, else its
 /// folder's. A photo the data says nothing about keeps what it has.
-fn derived(tags: Vec<String>, photo: &Tagged) -> Vec<String> {
-    let mut made: Vec<(&str, String)> = Vec::new();
-    if let Some(year) = photo.taken_at.as_deref().and_then(|at| at.get(..4)) {
-        made.push((TIMELINE, format!("{TIMELINE}/{year}")));
+fn derived(tags: Vec<String>, photo: &Tagged, roles: &Roles) -> Vec<String> {
+    let made_as = |role: Role| roles.root(role).filter(|_| roles.keeps(role));
+    let mut made: Vec<(Role, String)> = Vec::new();
+    if let Some(root) = made_as(Role::Year)
+        && let Some(year) = photo.taken_at.as_deref().and_then(|at| at.get(..4))
+    {
+        made.push((Role::Year, format!("{root}/{year}")));
     }
     let country = photo.country_named.as_ref().or(photo.country.as_ref());
-    if photo.city.is_some() || photo.country_named.is_some() {
-        let country = country.map(|country| format!("in{}", level(country).replace(' ', "")));
-        let place = [Some(PLACES.to_string()), country, photo.city.as_deref().map(level)]
+    if let Some(root) = made_as(Role::Places)
+        && (photo.city.is_some() || photo.country_named.is_some())
+    {
+        let country = country.and_then(|country| roles.country.level(country));
+        let place = [Some(root.to_string()), country, photo.city.as_deref().map(level)]
             .into_iter()
             .flatten()
             .collect::<Vec<String>>();
         if place.len() > 1 {
-            made.push((PLACES, place.join("/")));
+            made.push((Role::Places, place.join("/")));
         }
     }
     let event = match photo.event_dir {
         Some(_) => photo.event_field.as_deref().or(photo.event_name.as_deref()),
         None => photo.event_field.as_deref(),
     };
-    if let Some(name) = event.map(level).filter(|name| !name.is_empty()) {
+    if let Some(root) = made_as(Role::Events)
+        && let Some(name) = event.map(level).filter(|name| !name.is_empty())
+    {
         made.push((
-            EVENTS,
+            Role::Events,
             match photo.event_year.filter(|year| *year > 0) {
-                Some(year) => format!("{EVENTS}/{year} {name}"),
-                None => format!("{EVENTS}/{name}"),
+                Some(year) => format!("{root}/{year} {name}"),
+                None => format!("{root}/{name}"),
             },
         ));
     }
     let mut then: Vec<String> = tags
         .into_iter()
-        .filter(|path| !made.iter().any(|(root, _)| tags::within(path, root)))
+        .filter(|path| !made.iter().any(|(role, _)| roles.within(*role, path)))
         .collect();
     then.extend(made.into_iter().map(|(_, path)| path));
     then
@@ -223,6 +236,22 @@ pub fn shape(cache: &Cache) -> cache::Result<Vec<Found>> {
 mod unit_tests {
     use super::*;
 
+    /// This library's roots, every generated role kept as tags.
+    fn kept() -> Roles {
+        Roles {
+            kept: vec![Role::Places, Role::Year, Role::Events],
+            ..Roles::proposed(
+                &[
+                    ("people".to_string(), 1),
+                    ("places".to_string(), 1),
+                    ("timeline".to_string(), 1),
+                    ("events".to_string(), 1),
+                ],
+                &["inChina".to_string()],
+            )
+        }
+    }
+
     fn photo(tags: &[&str]) -> Tagged {
         Tagged {
             rel_path: "Germany/2019-07-13 Sommerfest/a.jpg".to_string(),
@@ -248,7 +277,7 @@ mod unit_tests {
             ])
         };
         let tree = TagTree::of(&["events/x".to_string()]);
-        let derived = tags_of(&tagged, &Rules::default(), Generated::Derived, &tree);
+        let derived = tags_of(&tagged, &Rules::default(), Generated::Derived, &tree, &kept());
         assert_eq!(
             derived,
             [
@@ -259,7 +288,7 @@ mod unit_tests {
             ]
         );
         assert_eq!(
-            tags_of(&tagged, &Rules::default(), Generated::Dropped, &tree),
+            tags_of(&tagged, &Rules::default(), Generated::Dropped, &tree, &kept()),
             ["people/Anna"]
         );
 
@@ -268,7 +297,7 @@ mod unit_tests {
             ..photo(&["places/inChina/Beijing"])
         };
         assert_eq!(
-            tags_of(&bare, &Rules::default(), Generated::Derived, &tree),
+            tags_of(&bare, &Rules::default(), Generated::Derived, &tree, &kept()),
             ["places/inChina/Beijing"],
             "without a date, place words or an event there is nothing to derive"
         );
@@ -278,9 +307,24 @@ mod unit_tests {
             ..tagged.clone()
         };
         assert!(
-            tags_of(&renamed, &Rules::default(), Generated::Derived, &tree)
+            tags_of(&renamed, &Rules::default(), Generated::Derived, &tree, &kept())
                 .contains(&"events/2019 Summer Party".to_string()),
             "the event the photo names comes before its folder's"
+        );
+
+        let events_only = Roles {
+            kept: vec![Role::Events],
+            ..kept()
+        };
+        assert_eq!(
+            tags_of(&tagged, &Rules::default(), Generated::Derived, &tree, &events_only),
+            [
+                "events/2019 Sommerfest",
+                "people/Anna",
+                "places/inNetherland/Amsterdam",
+                "timeline/2018"
+            ],
+            "a role not kept as tags is left as it is"
         );
     }
 }
@@ -415,7 +459,7 @@ mod tests {
         );
         assert_eq!(
             tags_in(&set, "China/2008-01-00 Holiday SOUTHTOUR/IMG_0001.JPG"),
-            ["mixed/food", "places/inChina"]
+            ["mixed/food", "places/inChina", "timeline/2008"]
         );
         assert!(
             set.rows.iter().all(|row| row.rel_path != LABELLED),
@@ -460,6 +504,11 @@ mod tests {
     #[test]
     fn derived_tags_follow_the_data_and_a_moved_photo_after_the_next_run() {
         let mut library = Library::new("tags-derived");
+        let every_kept = crate::roles::Roles {
+            kept: vec![Role::Places, Role::Year, Role::Events],
+            ..library.cache.roles()
+        };
+        library.cache.keep_roles(Some(&every_kept)).unwrap();
         let set = built(&library, tidied(&library.cache, &whole(), Generated::Derived));
         assert_eq!(
             tags_in(&set, UNTAGGED),

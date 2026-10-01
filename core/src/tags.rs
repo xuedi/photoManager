@@ -190,6 +190,11 @@ impl Rules {
 
 /// The paths no other path of the set is below, each once, in order: `places/inChina` says
 /// nothing `places/inChina/Beijing` does not.
+/// A photo's tags without one and everything below it, as its deepest paths.
+pub fn without(tags: &[String], gone: &str) -> Vec<String> {
+    deepest(tags).into_iter().filter(|path| !within(path, gone)).collect()
+}
+
 pub fn deepest(tags: &[String]) -> Vec<String> {
     let all: BTreeSet<&str> = tags
         .iter()

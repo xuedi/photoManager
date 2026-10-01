@@ -12,6 +12,7 @@ use crate::changeset::Wanted;
 use crate::filter::Filter;
 use crate::geo::reverse::kilometres;
 use crate::geo::{Geo, fold};
+use crate::roles::Roles;
 use crate::scope::Scope;
 use crate::write::{Change, Field, Place};
 
@@ -121,10 +122,10 @@ pub struct Finer {
     pub photos: usize,
 }
 
-/// Whether a tag is a place below a country's places tag: `places/inGermany/Harbourside`.
-pub fn is_below_a_country(tag: &str) -> bool {
-    let levels: Vec<&str> = tag.split('/').collect();
-    levels.len() >= 3 && levels[0].eq_ignore_ascii_case("places")
+/// Whether a tag is a place below a country's places tag: `places/inGermany/Harbourside`, or with
+/// no country level, any place below the root.
+pub fn is_below_a_country(tag: &str, roles: &Roles) -> bool {
+    roles.place_of(tag).is_some()
 }
 
 /// The last level of a places tag, the way a person would spell it to begin with.
@@ -151,10 +152,11 @@ pub fn finer(cache: &Cache, geo: Option<&Geo>) -> Result<Vec<Finer>, String> {
     let stated = cache.stated(&paths).map_err(failed)?;
     let mut tags: BTreeMap<String, Tagged> = BTreeMap::new();
     let mut near: HashMap<(i64, i64), Option<Located>> = HashMap::new();
+    let roles = cache.roles();
     for one in stated.values() {
         let located = one.said.gps_lat.zip(one.said.gps_lon);
-        for tag in deepest(&one.said.tags) {
-            if tag.split('/').count() < 3 {
+        for tag in deepest(&one.said.tags, &roles) {
+            if !is_below_a_country(&tag, &roles) {
                 continue;
             }
             let entry = tags.entry(tag).or_default();
@@ -171,7 +173,7 @@ pub fn finer(cache: &Cache, geo: Option<&Geo>) -> Result<Vec<Finer>, String> {
     let mut finer: Vec<Finer> = tags
         .into_iter()
         .filter_map(|(tag, found)| Some((tag, found.photos, found.towns, found.at?)))
-        .filter(|(tag, _, towns, at)| is_finer(geo, tag, towns, *at))
+        .filter(|(tag, _, towns, at)| is_finer(geo, &roles, tag, towns, *at))
         .map(|(tag, photos, towns, _)| {
             let mut towns: Vec<(String, usize)> = towns.into_iter().collect();
             towns.sort_by(|one, other| other.1.cmp(&one.1).then(one.0.cmp(&other.0)));
@@ -190,12 +192,12 @@ pub fn finer(cache: &Cache, geo: Option<&Geo>) -> Result<Vec<Finer>, String> {
 /// of them, but for case and accents, or another name of the same place the place data is sure
 /// of, such as a name in another language; and not when that place is a town somewhere else, as that is a tag and
 /// a position that disagree ([`crate::checks`]). `at` is where one of its photos stands.
-fn is_finer(geo: &Geo, tag: &str, towns: &BTreeMap<String, usize>, at: (f64, f64)) -> bool {
+fn is_finer(geo: &Geo, roles: &Roles, tag: &str, towns: &BTreeMap<String, usize>, at: (f64, f64)) -> bool {
     let named = |name: &str| towns.keys().any(|town| fold(town) == fold(name));
     if named(leaf(tag)) {
         return false;
     }
-    let sure = super::gps_from_places::offers(geo, tag)
+    let sure = super::gps_from_places::offers(geo, tag, roles)
         .ok()
         .and_then(|offers| offers.into_iter().next())
         .filter(|offer| offer.sure)
@@ -207,8 +209,9 @@ fn is_finer(geo: &Geo, tag: &str, towns: &BTreeMap<String, usize>, at: (f64, f64
 }
 
 /// Every photo of the scope that carries the tag, or a tag below it, gets the name as its
-/// `Sublocation`; every other place word it has is carried along as it is.
-pub fn sublocation(cache: &Cache, scope: &Scope, tag: &str, name: &str) -> cache::Result<Vec<Wanted>> {
+/// `Sublocation`; every other place word it has is carried along as it is. With `untag`, the tag
+/// goes in the same write.
+pub fn sublocation(cache: &Cache, scope: &Scope, tag: &str, name: &str, untag: bool) -> cache::Result<Vec<Wanted>> {
     let name = name.trim();
     let tagged: BTreeSet<String> = Filter::of(crate::filter::Kind::Tagged(vec![tag.to_string()]))
         .paths(cache)?
@@ -220,6 +223,7 @@ pub fn sublocation(cache: &Cache, scope: &Scope, tag: &str, name: &str) -> cache
         .filter(|rel_path| tagged.contains(rel_path))
         .collect();
     let words = cache.place_words(&paths)?;
+    let stated = cache.stated(&paths)?;
     Ok(paths
         .into_iter()
         .map(|rel_path| {
@@ -228,7 +232,15 @@ pub fn sublocation(cache: &Cache, scope: &Scope, tag: &str, name: &str) -> cache
                 location: Some(name.to_string()),
                 ..now
             };
-            Wanted::new(rel_path, Change::of([Field::Place(Some(place))]))
+            let mut fields = vec![Field::Place(Some(place))];
+            if untag && let Some(one) = stated.get(&rel_path) {
+                fields.extend([
+                    Field::Tags(crate::tags::without(&one.said.tags, tag)),
+                    Field::DropLabel,
+                    Field::DropCatalogSets,
+                ]);
+            }
+            Wanted::new(rel_path, Change::of(fields))
         })
         .collect())
 }
@@ -296,7 +308,13 @@ mod tests {
         assert_eq!(finer.iter().find(|one| one.tag == FINER).unwrap().towns, ["Hamburg"]);
         let towns = BTreeMap::from([("Lörrach".to_string(), 1)]);
         assert!(
-            !is_finer(&geo, "places/inGermany/Lorrach", &towns, (47.6, 7.66)),
+            !is_finer(
+                &geo,
+                &library.cache.roles(),
+                "places/inGermany/Lorrach",
+                &towns,
+                (47.6, 7.66)
+            ),
             "a town spelled without its accents is its town"
         );
         assert!(
@@ -312,7 +330,7 @@ mod tests {
         let set = ChangeSet::build(
             &library.cache,
             "",
-            &sublocation(&library.cache, &whole(), FINER, " Harbour Side ").unwrap(),
+            &sublocation(&library.cache, &whole(), FINER, " Harbour Side ", false).unwrap(),
         )
         .unwrap();
         let rows: Vec<(&str, &Verdict)> = set
@@ -331,7 +349,7 @@ mod tests {
         let again = ChangeSet::build(
             &library.cache,
             "",
-            &sublocation(&library.cache, &whole(), FINER, "Harbour Side").unwrap(),
+            &sublocation(&library.cache, &whole(), FINER, "Harbour Side", false).unwrap(),
         )
         .unwrap();
         assert_eq!(again.counts().change, 0, "a second run has nothing to do");

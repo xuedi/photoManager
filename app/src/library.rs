@@ -23,6 +23,7 @@ use photomanager_core::immich::{self, Fetched, Snapshot};
 use photomanager_core::layout::{Layout, Placement};
 use photomanager_core::metadata::Exiv2;
 use photomanager_core::paths::Paths;
+use photomanager_core::roles::Roles;
 use photomanager_core::scan::{self, Mode, Progress, Summary, Thumbnails};
 use photomanager_core::scope::Scope;
 use photomanager_core::settings::{self, Settings};
@@ -136,6 +137,9 @@ impl Library {
         let layout = settings.as_ref().map(settings::layout).unwrap_or_default();
         if let Err(error) = cache.follow_layout(&layout) {
             tracing::error!(%error, "the photos could not be placed in the folder layout");
+        }
+        if let Err(error) = cache.keep_roles(settings.as_ref().and_then(settings::roles).as_ref()) {
+            tracing::error!(%error, "the tag roles could not be handed to the cache");
         }
         Ok(Rc::new(Library {
             geo: RefCell::new(geo),
@@ -356,6 +360,60 @@ impl Library {
         let cache = cache.as_ref().ok_or("the cache is busy")?;
         let geo = self.geo.borrow();
         edits::proposal(cache, geo.as_ref(), scope)
+    }
+
+    /// The tag roles the finders read: the ones kept, else the ones proposed from the roots.
+    pub fn roles(&self) -> Roles {
+        self.cache.borrow().as_ref().map(Cache::roles).unwrap_or_default()
+    }
+
+    /// The roles the person kept, `None` while the proposal is used.
+    pub fn kept_roles(&self) -> Option<Roles> {
+        self.settings.borrow().as_ref().and_then(settings::roles)
+    }
+
+    /// The roles proposed from the roots the tags have now.
+    pub fn proposed_roles(&self) -> Roles {
+        self.cache
+            .borrow()
+            .as_ref()
+            .and_then(|cache| cache.proposed_roles().ok())
+            .unwrap_or_default()
+    }
+
+    /// Every root of the tag tree, the most photos first.
+    pub fn roots_counted(&self) -> Vec<(String, i64)> {
+        self.cache
+            .borrow()
+            .as_ref()
+            .and_then(|cache| cache.roots_counted().ok())
+            .unwrap_or_default()
+    }
+
+    /// Keeps the roles, or with `None` goes back to the proposal, and finds what follows again.
+    pub fn set_roles(&self, roles: Option<&Roles>) -> Result<(), String> {
+        if self.scanning.get() || self.working.get() {
+            return Err("wait until the library is not busy".to_string());
+        }
+        {
+            let cache = self.cache.borrow();
+            let cache = cache.as_ref().ok_or("the cache is busy")?;
+            cache.keep_roles(roles).map_err(|error| error.to_string())?;
+        }
+        match roles {
+            Some(roles) => self.put_setting(settings::TAG_ROLES, &roles.written()),
+            None => {
+                if let Some(settings) = self.settings.borrow_mut().as_mut()
+                    && let Err(error) = settings.forget(settings::TAG_ROLES)
+                {
+                    tracing::error!(%error, "the tag roles could not be forgotten");
+                }
+            }
+        }
+        tracing::info!(kept = roles.is_some(), "tag roles set");
+        *self.survey.borrow_mut() = None;
+        self.moved_on();
+        Ok(())
     }
 
     /// The scope's one event, and the name Rename Event starts from.

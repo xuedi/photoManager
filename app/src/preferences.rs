@@ -86,6 +86,14 @@ pub fn present(parent: &impl IsA<gtk::Widget>, library: Rc<Library>) {
         dialog,
         move |told| dialog.add_toast(adw::Toast::new(told))
     ));
+    folders.add(&crate::roles_editor::group(
+        library.clone(),
+        glib::clone!(
+            #[weak]
+            dialog,
+            move |told: &str| dialog.add_toast(adw::Toast::new(told))
+        ),
+    ));
     // The editor lives as long as the dialog does.
     let holding = RefCell::new(Some(editor));
     dialog.connect_closed(move |_| {

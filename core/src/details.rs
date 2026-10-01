@@ -13,6 +13,7 @@ use crate::clock::stamp;
 use crate::filter::Gap;
 use crate::immich::boxes::{self, Area};
 use crate::metadata::Regions;
+use crate::roles::Role;
 use crate::write::change::{DERIVED_BY, is_derived};
 use crate::write::{Change, Field, Gps, Place, Taken};
 
@@ -38,6 +39,8 @@ pub struct Details {
     pub event: Option<String>,
     /// The event the photo's own field names.
     pub event_field: Option<String>,
+    /// The root the library's places tags are under, if it has one.
+    pub places_root: Option<String>,
     pub gps: Option<(f64, f64)>,
     /// How the position was worked out, when the photo says.
     pub gps_method: Option<String>,
@@ -194,6 +197,7 @@ impl Details {
         let Some((id, raw, regions, mut details)) = found else {
             return Ok(None);
         };
+        details.places_root = cache.roles().root(Role::Places).map(String::from);
 
         let mut statement = connection.prepare("SELECT path FROM tag WHERE photo_id = ?1 ORDER BY path")?;
         details.tags = statement
@@ -230,11 +234,14 @@ impl Details {
         rational(lookup(&self.raw, POSITIONING_ERROR)?.trim_end_matches('m'))
     }
 
-    /// The tags below `places`, in either spelling of the root.
+    /// The tags below the places root, in any spelling of it.
     pub fn place_tags(&self) -> Vec<&str> {
+        let Some(places) = &self.places_root else {
+            return Vec::new();
+        };
         self.tags
             .iter()
-            .filter(|tag| root(tag).eq_ignore_ascii_case("places"))
+            .filter(|tag| root(tag).eq_ignore_ascii_case(places))
             .map(String::as_str)
             .collect()
     }

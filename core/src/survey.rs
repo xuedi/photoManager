@@ -328,11 +328,13 @@ fn tidy(cache: &Cache) -> Result<Vec<Finding>> {
         "photos whose file name is not the date they were taken".to_string(),
         Filter::of(Kind::OffName),
     )?;
-    add(
-        Check::PlaceDisagrees.title().to_string(),
-        Check::PlaceDisagrees.detail().to_string(),
-        Filter::of(Kind::Checked(Check::PlaceDisagrees)),
-    )?;
+    for check in std::iter::once(Check::PlaceDisagrees).chain(Check::KEPT) {
+        add(
+            check.title().to_string(),
+            check.detail().to_string(),
+            Filter::of(Kind::Checked(check)),
+        )?;
+    }
     for (kind, title, detail) in [
         (IssueKind::Sidecar, "Sidecars", "XMP files next to the photos"),
         (IssueKind::NotAPhoto, "Not photos", "files that are not JPEG images"),

@@ -22,6 +22,7 @@ refused for good is no fix and is not listed.
 | Places from Tags | one places tag of photos without GPS | the place data knows the name exactly |
 | Places from Events | one event with photos without GPS | every located photo of the event stands in one town |
 | Events from Folders | one event folder whose photos do not name it in their own field | its folder has a name |
+| Redundant Tags | the tags of one role whose field says them | the field is proved, tag by tag and photo by photo |
 | Folders | one event off the folder layout, or renamed in its photos | every level of its folder is sure |
 | File Names | one folder whose photos are not named by their date | the photo has a date |
 
@@ -225,6 +226,28 @@ date - `2019-07-13 Summer Party` gives `Summer Party` - and a sub-folder's photo
   and left; the dashboard counts it under "event agrees with the folder".
 - **A photo in no event folder** gets nothing.
 - It runs before Folders, so an event renamed in its photos moves under its new name.
+
+## Redundant Tags
+
+Once a fact has a field of its own, the tag that repeats it can go
+([tag roles](tools.md#tag-roles)). One fix per role that is not kept as tags, the tags it takes off
+counted, and below it why the others stay, with how many photos each. Each deepest tag of the role
+on each photo is proved on its own:
+
+| Role | Proven when | Kept, with why |
+|------|-------------|----------------|
+| Year | the date's year is the tag's | no date; another year; not a year |
+| Events | the event field names the tag's event, but for case, in the tag's year as the date or the folder says it | no event field; another event; another year |
+| People | the photo names the tag's last level as a person, but for case | the photo does not name the person |
+| Places, a town | the photo has a position, and its city word is the town or the town the place data is sure of lies within 25 km | no position; far from where it was taken; the place data is not sure of it |
+| Places, a country | a position in that country | no position; another country |
+| Places, finer | the sublocation is the tag's last level | (as a town, when not) |
+
+A tag with levels below it is decided by them: a branch goes when every tag below it went. A tag of
+no role is never touched. Ticking a fix writes each photo's tags without the proven ones, in every
+tag field, and nothing else - no date, position, person or event is written here. The kept ones are
+listed on the dashboard, per role, to be opened and fixed. It runs after every finder that writes a
+field, so a tag whose field a fix of the same apply writes goes the next time.
 
 ## Folders
 

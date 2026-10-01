@@ -43,7 +43,7 @@ impl Remedy {
             Kind::Issue(_) => None,
             Kind::Checked(Check::GpsSure) => fixes("places-from-tags"),
             Kind::Checked(Check::GpsAsks | Check::GpsEvent | Check::GpsNothing) => tool(Edit::SetPlace),
-            Kind::Checked(Check::PlaceDisagrees) => None,
+            Kind::Checked(Check::PlaceDisagrees | Check::Kept(_)) => None,
         }
     }
 

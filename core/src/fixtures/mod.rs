@@ -20,7 +20,8 @@
 //! photos stand on the centre a places tag gave, or on nothing at all. A photo tagged with a person
 //! who has a box in another photo names nobody itself; a located photo carries a places tag finer
 //! than its town, and another the tag of a town far from where it stands. One photo names its
-//! event in its own field as its folder does, and one names another event than its folder.
+//! event in its own field as its folder does, and one names another event than its folder. A
+//! photo without a date carries a year tag, which is then the only record of its year.
 //!
 //! Only for tests and for looking at the application without touching real photos.
 
@@ -119,6 +120,7 @@ const PHOTOS: &[Photo] = &[
     Photo {
         path: "China/2008-01-00 Holiday SOUTHTOUR/IMG_0001.JPG",
         metadata: &[
+            "-TagsList=timeline/2008",
             "-TagsList=places/inChina",
             "-TagsList=mixed/food",
             "-TagsList=mixed/funny",

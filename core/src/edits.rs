@@ -82,10 +82,12 @@ pub enum Value {
         to: String,
     },
     Generated(Generated),
-    /// The photos of a tag and the name they are given: a person, or a sublocation.
+    /// The photos of a tag and the name they are given: a person, or a sublocation; with `untag`,
+    /// the tag goes in the same write.
     Named {
         tag: String,
         name: String,
+        untag: bool,
     },
     Folder(String),
     /// The name of an event, without its date.
@@ -165,8 +167,9 @@ impl Edit {
     }
 
     /// A value as the `win.run-edit` action writes it: a place as an answer, a shift as a JSON
-    /// object of cameras, the neighbours as a JSON object of an event and its groups, a rename, a
-    /// person or a sublocation of a tag as `tag -> name`, the rest as plain text.
+    /// object of cameras, the neighbours as a JSON object of an event and its groups, a rename as
+    /// `from -> to`, a person or a sublocation of a tag as `tag -> name`, or `tag => name` to take
+    /// the tag off in the same write, the rest as plain text.
     pub fn read(self, text: &str) -> Result<Value, String> {
         let text = text.trim();
         match self {
@@ -205,9 +208,13 @@ impl Edit {
                 })
             }
             Edit::TagToPerson | Edit::PlacesTagToSublocation => {
-                let (tag, name) = text
-                    .split_once("->")
-                    .ok_or_else(|| format!("{text} does not say which tag and which name"))?;
+                let (tag, name, untag) = match text.split_once("=>") {
+                    Some((tag, name)) => (tag, name, true),
+                    None => text
+                        .split_once("->")
+                        .map(|(tag, name)| (tag, name, false))
+                        .ok_or_else(|| format!("{text} does not say which tag and which name"))?,
+                };
                 let tag = tags::path(tag)?;
                 let name = name.trim();
                 if name.is_empty() {
@@ -216,18 +223,11 @@ impl Edit {
                         _ => "type the name of the place".to_string(),
                     });
                 }
-                match self {
-                    Edit::TagToPerson if !people_from_tags::is_people(&tag) => {
-                        Err(format!("{tag} is not a tag below people"))
-                    }
-                    Edit::PlacesTagToSublocation if !place_words::is_below_a_country(&tag) => {
-                        Err(format!("{tag} is not a place below a country's places tag"))
-                    }
-                    _ => Ok(Value::Named {
-                        tag,
-                        name: name.to_string(),
-                    }),
-                }
+                Ok(Value::Named {
+                    tag,
+                    name: name.to_string(),
+                    untag,
+                })
             }
             Edit::TidyTags => Generated::named(text)
                 .map(Value::Generated)
@@ -291,19 +291,24 @@ impl Edit {
                 format!("Rename {from} to {to}"),
                 tag_vocabulary::renamed(cache, scope, &Rules(vec![Rule::rename(from, to)?]), false).map_err(failed)?,
             ),
-            (Edit::TagToPerson, Value::Named { tag, name }) => {
+            (Edit::TagToPerson, Value::Named { tag, name, untag }) => {
                 if people_from_tags::is_group(cache, tag).map_err(failed)? {
                     return Err(format!("{tag} has tags below it: a group, not a person"));
                 }
                 let named = BTreeMap::from([(tag.clone(), name.clone())]);
                 (
                     format!("Name {name} in the photos tagged {tag}"),
-                    people_from_tags::wanted(cache, &named, scope).map_err(failed)?,
+                    people_from_tags::wanted(cache, &named, scope, *untag).map_err(failed)?,
                 )
             }
-            (Edit::PlacesTagToSublocation, Value::Named { tag, name }) => (
+            (Edit::PlacesTagToSublocation, Value::Named { tag, .. })
+                if !place_words::is_below_a_country(tag, &cache.roles()) =>
+            {
+                return Err(format!("{tag} is not a place below a country's places tag"));
+            }
+            (Edit::PlacesTagToSublocation, Value::Named { tag, name, untag }) => (
                 format!("Keep {name} as the sublocation of {tag}"),
-                place_words::sublocation(cache, scope, tag, name).map_err(failed)?,
+                place_words::sublocation(cache, scope, tag, name, *untag).map_err(failed)?,
             ),
             (Edit::TidyTags, Value::Generated(generated)) => (
                 "Tidy the tags".to_string(),
@@ -653,6 +658,65 @@ mod tests {
     }
 
     #[test]
+    fn one_write_names_the_person_and_takes_the_tag_off_or_neither() {
+        const TAGGED: &str = "Germany/2019-07-13 Sommerfest/IMAG0001.jpg";
+        let whole = Scope::Filter(Filter::all());
+        let value = Edit::TagToPerson.read("people/me => Sam").unwrap();
+        assert!(matches!(value, Value::Named { untag: true, .. }));
+
+        let mut library = Library::new("edit-tag-to-person-untag");
+        let set = Edit::TagToPerson
+            .change_set(&value, &library.cache, None, &whole)
+            .unwrap();
+        assert_eq!(set.rows.len(), 1);
+        assert_eq!(library.apply(&set).written, 1);
+        library.rescan();
+        let said = library.cache.stated(&[TAGGED.to_string()]).unwrap()[TAGGED]
+            .said
+            .clone();
+        let named: Vec<String> = said
+            .regions
+            .unwrap()
+            .named()
+            .into_iter()
+            .map(|(name, _)| name)
+            .collect();
+        assert!(named.contains(&"Sam".to_string()), "{named:?}");
+        assert!(!said.tags.contains(&"people/me".to_string()), "{:?}", said.tags);
+        assert!(
+            said.tags.contains(&"people/family/Anna".to_string()),
+            "the other tags stay"
+        );
+
+        let mut refused = Library::new("edit-tag-to-person-untag-refused");
+        let set = Edit::TagToPerson
+            .change_set(&value, &refused.cache, None, &whole)
+            .unwrap();
+        let file = refused.root.join(TAGGED);
+        assert!(
+            std::process::Command::new("exiftool")
+                .args(["-q", "-overwrite_original", "-XMP-iptcExt:PersonInImage+=Zoe"])
+                .arg(&file)
+                .status()
+                .unwrap()
+                .success()
+        );
+        let summary = refused.apply(&set);
+        assert_eq!(
+            summary.written, 0,
+            "the file names someone the list leaves out: {summary:?}"
+        );
+        refused.rescan();
+        let said = refused.cache.stated(&[TAGGED.to_string()]).unwrap()[TAGGED]
+            .said
+            .clone();
+        assert!(
+            said.tags.contains(&"people/me".to_string()),
+            "a refused write keeps its tag"
+        );
+    }
+
+    #[test]
     fn a_people_tag_names_its_person_in_exactly_the_photos_that_do_not_yet() {
         let mut library = Library::new("edit-tag-to-person");
         const TAGGED: &str = "Germany/2019-07-13 Sommerfest/IMAG0001.jpg";
@@ -661,10 +725,14 @@ mod tests {
             value,
             Value::Named {
                 tag: "people/me".to_string(),
-                name: "Sam".to_string()
+                name: "Sam".to_string(),
+                untag: false,
             }
         );
-        assert!(Edit::TagToPerson.read("places/inChina -> Sam").is_err());
+        assert!(
+            Edit::TagToPerson.read("Sam Lee -> Sam").is_ok(),
+            "any tag, a flat keyword too"
+        );
         assert!(Edit::TagToPerson.read("people/me -> ").is_err());
         let group = Edit::TagToPerson.read("people/family -> Sam").unwrap();
         assert!(
@@ -714,19 +782,28 @@ mod tests {
 
     #[test]
     fn a_sublocation_is_read_below_a_country_only() {
+        let library = Library::new("edit-sublocation-read");
+        let refused = |text: &str| {
+            Edit::PlacesTagToSublocation
+                .change_set(
+                    &Edit::PlacesTagToSublocation.read(text).unwrap(),
+                    &library.cache,
+                    None,
+                    &Scope::Filter(Filter::all()),
+                )
+                .is_err()
+        };
         assert_eq!(
             Edit::PlacesTagToSublocation.read("places/inGermany/Harbourside -> Harbour Side"),
             Ok(Value::Named {
                 tag: "places/inGermany/Harbourside".to_string(),
-                name: "Harbour Side".to_string()
+                name: "Harbour Side".to_string(),
+                untag: false,
             })
         );
-        assert!(
-            Edit::PlacesTagToSublocation
-                .read("places/inGermany -> Harbour Side")
-                .is_err()
-        );
-        assert!(Edit::PlacesTagToSublocation.read("people/me -> Harbour Side").is_err());
+        assert!(refused("places/inGermany -> Harbour Side"));
+        assert!(refused("people/me -> Harbour Side"));
+        assert!(!refused("places/inGermany/Harbourside -> Harbour Side"));
     }
 
     #[test]

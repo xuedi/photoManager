@@ -8,7 +8,7 @@
 
 use std::collections::{BTreeMap, HashMap};
 
-use super::gps_from_places::{deepest, names_a_country};
+use super::gps_from_places::deepest;
 use super::{Answer, Answers, Located, Offer, Question, Tool};
 use crate::cache::{self, Cache};
 use crate::changeset::Wanted;
@@ -91,6 +91,7 @@ fn asked(cache: &Cache, scope: &Scope) -> cache::Result<BTreeMap<String, Vec<Str
     let paths = scope.paths(cache)?;
     let stated = cache.stated(&paths)?;
     let events = cache.event_dirs(&paths)?;
+    let roles = cache.roles();
     let mut asked: BTreeMap<String, Vec<String>> = BTreeMap::new();
     for rel_path in paths {
         let (Some(stated), Some(event_dir)) = (stated.get(&rel_path), events.get(&rel_path)) else {
@@ -100,7 +101,10 @@ fn asked(cache: &Cache, scope: &Scope) -> cache::Result<BTreeMap<String, Vec<Str
         if said.gps_lat.is_some() && said.gps_lon.is_some() {
             continue;
         }
-        if deepest(&said.tags).iter().any(|tag| !names_a_country(tag)) {
+        if deepest(&said.tags, &roles)
+            .iter()
+            .any(|tag| !roles.names_a_country(tag))
+        {
             continue;
         }
         asked.entry(event_dir.clone()).or_default().push(rel_path);

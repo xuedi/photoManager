@@ -13,6 +13,7 @@ pub mod panel;
 pub mod photo;
 pub mod preferences;
 pub mod preview;
+pub mod roles_editor;
 pub mod secrets;
 pub mod suggestions;
 pub mod thumbnails;

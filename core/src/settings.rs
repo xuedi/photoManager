@@ -35,6 +35,10 @@ pub const IMMICH_PREFIX: &str = "immich-prefix";
 /// How the folders above an event are laid out, as [`Layout`] keeps it as text.
 pub const FOLDER_LAYOUT: &str = "folder-layout";
 
+/// The tag roles the person kept, as [`crate::roles::Roles`] writes them. Without it the roles are
+/// proposed from the roots the tags have.
+pub const TAG_ROLES: &str = "tag-roles";
+
 /// What older versions remembered for their tools and suggestions: answers, tag rules and the
 /// dismissed suggestions. Moved out on open into [`LEFT_OVER_FILE`] beside `app.db`, for a person
 /// to read; what they said that was written is in the photos, and what was not is found again.
@@ -199,6 +203,16 @@ pub fn layout(settings: &Settings) -> Layout {
             Layout::default()
         }),
         _ => Layout::default(),
+    }
+}
+
+/// The tag roles the person kept, if they kept any that still read.
+pub fn roles(settings: &Settings) -> Option<crate::roles::Roles> {
+    match settings.get(TAG_ROLES) {
+        Ok(Some(text)) => crate::roles::Roles::read(&text)
+            .map_err(|why| tracing::warn!(%why, "the kept tag roles do not read, using the proposal"))
+            .ok(),
+        _ => None,
     }
 }
 
