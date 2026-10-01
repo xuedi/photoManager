@@ -127,6 +127,10 @@ never written.
   already has of them on the same face stays as it is: the person is written already.
 - **One person at a time.** A photo of two persons gets the one ticked; the other stays for their
   own fix.
+- **Two persons on one face.** When Immich names two persons on the same face, writing either
+  would take the other's box, and the other's fix would take it back. That photo is refused for
+  both persons, and their fixes count it as left, until it is set right in Immich and fetched
+  again.
 - **The boxes.** Immich measures a face on its preview, turned the way the photo is shown. The
   file wants the box on the stored picture, before any turn, so every box is turned back by the
   photo's orientation - each of the eight - and clamped to the picture, and the stored size is

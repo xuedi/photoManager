@@ -266,6 +266,12 @@ fn person_fix(found: people::Found) -> Fix {
     if let Some(why) = found.refused {
         lines.push(("Refused".to_string(), why));
     }
+    if found.clashed > 0 {
+        lines.push((
+            "Left".to_string(),
+            format!("{}, Immich names someone else on the same face", counted(found.clashed)),
+        ));
+    }
     Fix {
         key: format!("people:{}", found.id),
         finder: "people",

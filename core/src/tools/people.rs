@@ -102,6 +102,8 @@ pub struct Found {
     pub photos: usize,
     /// Why nothing can be written for them, when nothing can.
     pub refused: Option<String>,
+    /// Photos left alone because Immich names someone else on the same face.
+    pub clashed: usize,
 }
 
 /// Why a person cannot be written at all: another person in Immich has the same name, and the
@@ -154,15 +156,18 @@ pub fn sure(cache: &Cache) -> Result<Vec<Found>, String> {
         };
         let refused = ambiguous(&known, person);
         let chosen = BTreeSet::from([id.to_string()]);
-        let changed = rel_paths
-            .iter()
-            .filter(|rel_path| {
-                let said = stated.get(*rel_path).and_then(|stated| stated.said.regions.as_ref());
-                let shape = shapes.get(*rel_path).copied().unwrap_or_default();
-                let asset = &known.assets[*rel_path];
-                matches!(merged(&known, asset, said, shape, &chosen), Some(Ok(_)))
-            })
-            .count();
+        let mut changed = 0;
+        let mut clashed = 0;
+        for rel_path in &rel_paths {
+            let said = stated.get(rel_path).and_then(|stated| stated.said.regions.as_ref());
+            let shape = shapes.get(rel_path).copied().unwrap_or_default();
+            let asset = &known.assets[rel_path];
+            if clash(&known, asset, shape, &chosen).is_some() {
+                clashed += 1;
+            } else if matches!(merged(&known, asset, said, shape, &chosen), Some(Ok(_))) {
+                changed += 1;
+            }
+        }
         let photos = match refused {
             Some(_) => rel_paths.len(),
             None => changed,
@@ -173,6 +178,7 @@ pub fn sure(cache: &Cache) -> Result<Vec<Found>, String> {
                 name: person.name.trim().to_string(),
                 photos,
                 refused,
+                clashed,
             });
         }
     }
@@ -275,6 +281,9 @@ fn merged(
         return None;
     }
     if let Some(why) = refusal(asset, shape, &found) {
+        return Some(Err(why));
+    }
+    if let Some(why) = clash(known, asset, shape, persons) {
         return Some(Err(why));
     }
     let (Some(width), Some(height)) = (shape.width, shape.height) else {
@@ -383,6 +392,41 @@ pub fn untold(cache: &Cache, rel_paths: &[String]) -> Result<Option<BTreeMap<Str
         }
     }
     Ok(Some(untold))
+}
+
+/// Why a chosen person cannot be written into the photo: Immich names them and someone else on
+/// the same face. Writing either would take the other's box, and the next fix would take it
+/// back, so the photo waits until Immich is set right.
+fn clash(known: &Known, asset: &Asset, shape: cache::Shape, persons: &BTreeSet<String>) -> Option<String> {
+    let boxed: Vec<(&Person, write::Face)> = known
+        .named(asset)
+        .filter_map(|(face, person)| {
+            let area = boxes::stored(face, shape.orientation)?;
+            Some((
+                person,
+                write::Face {
+                    name: person.name.trim().to_string(),
+                    x: area.x,
+                    y: area.y,
+                    width: area.w,
+                    height: area.h,
+                },
+            ))
+        })
+        .collect();
+    boxed
+        .iter()
+        .filter(|(person, _)| persons.contains(&person.id))
+        .find_map(|(person, face)| {
+            let other = boxed
+                .iter()
+                .find(|(other, theirs)| fold(&other.name) != fold(&person.name) && shared(face, theirs) >= SAME_FACE)?;
+            Some(format!(
+                "Immich names {} and {} on the same face",
+                person.name.trim(),
+                other.0.name.trim()
+            ))
+        })
 }
 
 /// Why a box would land somewhere else than the face, if it would: the photo is offline in

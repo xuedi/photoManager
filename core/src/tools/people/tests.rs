@@ -407,3 +407,32 @@ fn two_persons_held_twice_each_get_one_box_each() {
     assert_eq!(names(&two), ["Ann", "Tom", "Ben"]);
     assert_eq!(two.persons, ["Ann", "Tom", "Ben"]);
 }
+
+#[test]
+fn a_face_immich_names_two_persons_on_is_left_alone_for_either() {
+    let (library, immich) = fetched("people-clash");
+    immich.change(|data| data.add_face(fake::LENA, Some("p-ann"), 0.26, 0.25, 0.75, 0.76));
+    fetch_again(&library, &immich);
+    assert!(
+        found(&library).iter().all(|(id, ..)| id != "p-lena"),
+        "{:?}",
+        found(&library)
+    );
+    let ann = sure(&library.cache)
+        .unwrap()
+        .into_iter()
+        .find(|found| found.id == "p-ann")
+        .unwrap();
+    assert_eq!(ann.clashed, 1);
+    for (id, why) in [
+        ("p-lena", "Immich names Lena Park and Ann on the same face"),
+        ("p-ann", "Immich names Ann and Lena Park on the same face"),
+    ] {
+        let set = built(&library, &[id]);
+        assert!(
+            verdicts(&set).contains(&(fake::LENA, format!("refused: {why}"))),
+            "{:?}",
+            verdicts(&set)
+        );
+    }
+}
