@@ -83,9 +83,10 @@ pub fn people(cache: &Cache) -> Result<Vec<Person>> {
     rows.collect()
 }
 
-/// How many photos each entry of each sidebar would show combined with the parts of the filter
-/// the other sidebars and the gap own: a place counted without the folder, a tag without the tag,
-/// a person without the person. An entry that is not here would show none.
+/// How many photos each entry of each sidebar would show with the filter: a place counted
+/// without the folder, as one place is chosen instead of another; a tag or a person with the
+/// tags and people already chosen, as another is chosen beside them. An entry that is not here
+/// would show none.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct Following {
     /// By folder, a top folder and an event alike.
@@ -120,7 +121,7 @@ pub fn following(cache: &Cache, filter: &Filter) -> Result<Following> {
         }
     }
 
-    let (ids, params) = filter.clone().with_tag(None).ids();
+    let (ids, params) = filter.ids();
     let mut statement = connection.prepare(&format!(
         "SELECT photo_id, path FROM tag WHERE photo_id IN ({ids}) ORDER BY photo_id"
     ))?;
@@ -142,7 +143,7 @@ pub fn following(cache: &Cache, filter: &Filter) -> Result<Following> {
         .map(|(path, count)| (path.to_string(), count))
         .collect();
 
-    let (ids, params) = filter.clone().with_person(None).ids();
+    let (ids, params) = filter.ids();
     let mut statement = connection.prepare(&format!(
         "SELECT name, count(DISTINCT photo_id) FROM person WHERE photo_id IN ({ids}) GROUP BY name"
     ))?;
@@ -451,27 +452,68 @@ mod fixture_tests {
         assert_eq!(narrowed.places.get("Germany"), Some(&1));
         assert_eq!(narrowed.places.get("China"), None, "a country without Tom shows none");
         assert_eq!(
-            narrowed.people.get("Mia"),
-            Some(&1),
-            "the person is counted without the person"
+            narrowed.people.get("Tom"),
+            Some(&chosen.count(&cache).unwrap()),
+            "the chosen person counts the photos shown"
         );
-        assert_eq!(narrowed.people.get("Tom"), Some(&1));
         for (folder, count) in &narrowed.places {
             assert_eq!(chosen.clone().within(folder).count(&cache).unwrap(), *count, "{folder}");
         }
         for (path, count) in &narrowed.tags {
             assert_eq!(
-                chosen.clone().with_tag(Some(path)).count(&cache).unwrap(),
+                chosen
+                    .clone()
+                    .and(Kind::Tagged(vec![path.clone()]))
+                    .count(&cache)
+                    .unwrap(),
                 *count,
                 "{path}"
             );
         }
         for (name, count) in &narrowed.people {
             assert_eq!(
-                chosen.clone().with_person(Some(name)).count(&cache).unwrap(),
+                chosen
+                    .clone()
+                    .and(Kind::Person(vec![name.clone()]))
+                    .count(&cache)
+                    .unwrap(),
                 *count,
                 "{name}"
             );
+        }
+    }
+
+    #[test]
+    fn with_a_person_chosen_the_people_are_those_in_their_photos() {
+        let cache = scanned("browse-together");
+        let alone = following(&cache, &Filter::all()).unwrap();
+        for name in alone.people.keys() {
+            let chosen = Filter::all().toggle_person(name);
+            let with = following(&cache, &chosen).unwrap();
+            let shown = chosen.paths(&cache).unwrap();
+            for (other, count) in &with.people {
+                let together = chosen.clone().toggle_person(other);
+                let expected = match other == name {
+                    true => shown.len() as i64,
+                    false => together.count(&cache).unwrap(),
+                };
+                assert_eq!(*count, expected, "{name} with {other}");
+                assert!(*count > 0, "{name} with {other}: an entry here shows photos");
+            }
+            for (other, _) in alone
+                .people
+                .iter()
+                .filter(|(other, _)| !with.people.contains_key(*other))
+            {
+                assert_eq!(
+                    chosen.clone().toggle_person(other).count(&cache).unwrap(),
+                    0,
+                    "{other} is left out only when never with {name}"
+                );
+            }
+            for (path, count) in &with.tags {
+                assert_eq!(chosen.clone().toggle_tag(path).count(&cache).unwrap(), *count, "{path}");
+            }
         }
     }
 

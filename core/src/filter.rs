@@ -4,6 +4,10 @@
 //! Written out as `no-gps`, `no-gps@Germany`, `no-gps@Germany/2019-07-13 Sommerfest`,
 //! `tag:mixed/food`, `tag:mixed/funny|mixed/Funny`, `person:Anna`, `issue:sidecar`. What follows the `@` is a
 //! folder inside the library. Parts joined by `+` must all hold: `no-gps+tag:mixed@China`.
+//!
+//! Tags and people may be asked for together: `person:Anna&Ben` is the photos naming both, and
+//! `tag:mixed/food&places/inChina` the photos carrying both. Each of them is a part of its own,
+//! and `|` inside one still means any of: `tag:mixed/funny|mixed/Funny&mixed/food`.
 
 use rusqlite::params_from_iter;
 
@@ -129,7 +133,8 @@ pub enum Kind {
 }
 
 impl Kind {
-    /// Where the kind sits in the written form. A filter holds at most one kind of each sort.
+    /// Where the kind sits in the written form. A filter holds at most one kind of each sort,
+    /// but for tags and people, which may be asked for together.
     fn sort(&self) -> u8 {
         match self {
             Kind::Missing(_) => 0,
@@ -142,6 +147,10 @@ impl Kind {
             Kind::Issue(_) => 7,
             Kind::Checked(_) => 8,
         }
+    }
+
+    fn repeats(&self) -> bool {
+        matches!(self, Kind::Tagged(_) | Kind::Person(_))
     }
 
     /// Whether the kind is of files that may not be photos at all, asked of the issues.
@@ -179,8 +188,26 @@ impl Kind {
         }
     }
 
-    fn parse(text: &str) -> std::result::Result<Kind, String> {
-        Ok(match text {
+    /// A part as written, as the kinds it is: more than one for tags or people asked for together.
+    fn parse(text: &str) -> std::result::Result<Vec<Kind>, String> {
+        let groups = |text: &str, empty: &str| -> std::result::Result<Vec<Vec<String>>, String> {
+            text.split('&')
+                .map(|group| {
+                    let each: Vec<String> = group.split('|').map(str::to_string).collect();
+                    match each.iter().any(|one| one.trim().is_empty()) {
+                        true => Err(empty.to_string()),
+                        false => Ok(each),
+                    }
+                })
+                .collect()
+        };
+        if let Some(paths) = text.strip_prefix("tag:") {
+            return Ok(groups(paths, "an empty tag")?.into_iter().map(Kind::Tagged).collect());
+        }
+        if let Some(names) = text.strip_prefix("person:") {
+            return Ok(groups(names, "an empty name")?.into_iter().map(Kind::Person).collect());
+        }
+        Ok(vec![match text {
             "sub-folder" => Kind::SubFolder,
             "off-name" => Kind::OffName,
             "loose" => Kind::Loose,
@@ -188,18 +215,6 @@ impl Kind {
             _ => {
                 if let Some(gap) = Gap::ALL.into_iter().find(|gap| gap.key() == text) {
                     Kind::Missing(gap)
-                } else if let Some(paths) = text.strip_prefix("tag:") {
-                    let paths: Vec<String> = paths.split('|').map(str::to_string).collect();
-                    if paths.iter().any(String::is_empty) {
-                        return Err("an empty tag".to_string());
-                    }
-                    Kind::Tagged(paths)
-                } else if let Some(names) = text.strip_prefix("person:") {
-                    let names: Vec<String> = names.split('|').map(str::to_string).collect();
-                    if names.iter().any(|name| name.trim().is_empty()) {
-                        return Err("an empty name".to_string());
-                    }
-                    Kind::Person(names)
                 } else if let Some(key) = text.strip_prefix("check:") {
                     Kind::Checked(Check::named(key).ok_or("no such check")?)
                 } else if let Some(name) = text.strip_prefix("issue:") {
@@ -212,7 +227,7 @@ impl Kind {
                     return Err("not a set of photos".to_string());
                 }
             }
-        })
+        }])
     }
 
     /// The condition on one row, and the parameters it binds, numbered on from `params`.
@@ -261,6 +276,26 @@ impl Kind {
             }
         }
     }
+}
+
+/// Each kind as part of a title, the tags and the people asked for together each in one phrase:
+/// "tagged food and Beijing", "of Anna and Ben".
+fn phrases<'a>(kinds: impl Iterator<Item = &'a Kind>) -> Vec<String> {
+    let mut phrases: Vec<String> = Vec::new();
+    let mut last: Option<&Kind> = None;
+    for kind in kinds {
+        let together = match (last, kind) {
+            (Some(Kind::Tagged(_)), Kind::Tagged(paths)) => Some(paths.join(" or ")),
+            (Some(Kind::Person(_)), Kind::Person(names)) => Some(names.join(" or ")),
+            _ => None,
+        };
+        match (together, phrases.last_mut()) {
+            (Some(more), Some(phrase)) => phrase.push_str(&format!(" and {more}")),
+            _ => phrases.push(kind.phrase()),
+        }
+        last = Some(kind);
+    }
+    phrases
 }
 
 /// The same test as `names::plan`, in SQL: a real date, and a name that is not `YYYY-MM-DD_HHMMSS`
@@ -350,10 +385,22 @@ impl Filter {
     }
 
     /// Adds a kind, replacing the one of the same sort.
+    /// Sets the part of this sort to `kind`, taking out every part of that sort there was.
     pub fn with(mut self, kind: Kind) -> Filter {
         self.kinds.retain(|each| each.sort() != kind.sort());
-        self.kinds.push(kind);
-        self.kinds.sort_by_key(Kind::sort);
+        self.and(kind)
+    }
+
+    /// Adds a part beside those there are. Only tags and people repeat; any other replaces its
+    /// sort as [`Filter::with`] does.
+    pub fn and(mut self, kind: Kind) -> Filter {
+        if !kind.repeats() {
+            self.kinds.retain(|each| each.sort() != kind.sort());
+        }
+        if !self.kinds.contains(&kind) {
+            self.kinds.push(kind);
+            self.kinds.sort_by_key(Kind::sort);
+        }
         self
     }
 
@@ -374,27 +421,45 @@ impl Filter {
         }
     }
 
-    /// Sets the tag part to one tag and everything below it, or clears it.
-    pub fn with_tag(self, tag: Option<&str>) -> Filter {
-        let filter = match self.tags().map(<[String]>::to_vec) {
-            Some(old) => self.without(&Kind::Tagged(old)),
-            None => self,
-        };
+    /// Sets the tags to one tag and everything below it, or clears them.
+    pub fn with_tag(mut self, tag: Option<&str>) -> Filter {
+        self.kinds.retain(|kind| !matches!(kind, Kind::Tagged(_)));
         match tag {
-            Some(tag) => filter.with(Kind::Tagged(vec![tag.to_string()])),
-            None => filter,
+            Some(tag) => self.and(Kind::Tagged(vec![tag.to_string()])),
+            None => self,
         }
     }
 
-    /// Sets the person part to one person, or clears it.
-    pub fn with_person(self, name: Option<&str>) -> Filter {
-        let filter = match self.persons().map(<[String]>::to_vec) {
-            Some(old) => self.without(&Kind::Person(old)),
-            None => self,
-        };
+    /// Sets the people to one person, or clears them.
+    pub fn with_person(mut self, name: Option<&str>) -> Filter {
+        self.kinds.retain(|kind| !matches!(kind, Kind::Person(_)));
         match name {
-            Some(name) => filter.with(Kind::Person(vec![name.to_string()])),
-            None => filter,
+            Some(name) => self.and(Kind::Person(vec![name.to_string()])),
+            None => self,
+        }
+    }
+
+    /// Adds a tag to those asked for together, or takes it out when it is one of them. A tag
+    /// above or below one asked for takes its place, as the two together say no more than the
+    /// narrower one.
+    pub fn toggle_tag(mut self, tag: &str) -> Filter {
+        let one = Kind::Tagged(vec![tag.to_string()]);
+        if self.kinds.contains(&one) {
+            return self.without(&one);
+        }
+        let related = |other: &str| other.starts_with(&format!("{tag}/")) || tag.starts_with(&format!("{other}/"));
+        self.kinds.retain(
+            |kind| !matches!(kind, Kind::Tagged(paths) if matches!(paths.as_slice(), [other] if related(other))),
+        );
+        self.and(one)
+    }
+
+    /// Adds a person to those asked for together, or takes them out when they are one of them.
+    pub fn toggle_person(self, name: &str) -> Filter {
+        let one = Kind::Person(vec![name.to_string()]);
+        match self.kinds.contains(&one) {
+            true => self.without(&one),
+            false => self.and(one),
         }
     }
 
@@ -409,18 +474,26 @@ impl Filter {
         })
     }
 
-    pub fn tags(&self) -> Option<&[String]> {
-        self.kinds.iter().find_map(|kind| match kind {
-            Kind::Tagged(paths) => Some(paths.as_slice()),
-            _ => None,
-        })
+    /// The tags asked for together, each a group any of which will do.
+    pub fn tags(&self) -> Vec<&[String]> {
+        self.kinds
+            .iter()
+            .filter_map(|kind| match kind {
+                Kind::Tagged(paths) => Some(paths.as_slice()),
+                _ => None,
+            })
+            .collect()
     }
 
-    pub fn persons(&self) -> Option<&[String]> {
-        self.kinds.iter().find_map(|kind| match kind {
-            Kind::Person(names) => Some(names.as_slice()),
-            _ => None,
-        })
+    /// The people asked for together, each a group any of whom will do.
+    pub fn persons(&self) -> Vec<&[String]> {
+        self.kinds
+            .iter()
+            .filter_map(|kind| match kind {
+                Kind::Person(names) => Some(names.as_slice()),
+                _ => None,
+            })
+            .collect()
     }
 
     /// What a person would call this set of photos.
@@ -431,11 +504,7 @@ impl Filter {
             kinds => {
                 // The files a set is of come first: "Loose files, without GPS".
                 let noun = kinds.iter().find(|kind| kind.is_of_files());
-                let rest: Vec<String> = kinds
-                    .iter()
-                    .filter(|kind| Some(*kind) != noun)
-                    .map(Kind::phrase)
-                    .collect();
+                let rest = phrases(kinds.iter().filter(|kind| Some(*kind) != noun));
                 match noun {
                     Some(noun) => format!("{}, {}", noun.title(), rest.join(", ")),
                     None => format!("Photos {}", rest.join(", ")),
@@ -538,9 +607,18 @@ impl std::fmt::Display for Filter {
         if self.kinds.is_empty() {
             write!(f, "all")?;
         }
+        let mut last: Option<&Kind> = None;
         for (at, kind) in self.kinds.iter().enumerate() {
-            if at > 0 {
-                write!(f, "+")?;
+            match (last, kind) {
+                (Some(Kind::Tagged(_)), Kind::Tagged(paths)) => write!(f, "&{}", paths.join("|"))?,
+                (Some(Kind::Person(_)), Kind::Person(names)) => write!(f, "&{}", names.join("|"))?,
+                _ if at > 0 => write!(f, "+")?,
+                _ => {}
+            }
+            let repeated = last.is_some_and(|last| last.repeats() && last.sort() == kind.sort());
+            last = Some(kind);
+            if repeated {
+                continue;
             }
             match kind {
                 Kind::Missing(gap) => write!(f, "{}", gap.key())?,
@@ -579,11 +657,16 @@ impl std::str::FromStr for Filter {
             return Ok(filter);
         }
         for part in kinds.split('+') {
-            let kind = Kind::parse(part).map_err(|why| format!("{text}: {why}"))?;
-            if filter.kinds.iter().any(|each| each.sort() == kind.sort()) {
+            let parsed = Kind::parse(part).map_err(|why| format!("{text}: {why}"))?;
+            if filter.kinds.iter().any(|each| each.sort() == parsed[0].sort()) {
                 return Err(format!("{text}: two parts of the same sort"));
             }
-            filter = filter.with(kind);
+            for kind in parsed {
+                if filter.kinds.contains(&kind) {
+                    return Err(format!("{text}: the same part twice"));
+                }
+                filter = filter.and(kind);
+            }
         }
         Ok(filter)
     }
@@ -639,6 +722,8 @@ pub(crate) mod tests {
             "person:Anna",
             "person:Anna Maria|Tom@Germany",
             "no-gps+tag:mixed+person:Anna",
+            "person:Anna&Tom",
+            "tag:mixed/funny|mixed/Funny&mixed/food+person:Anna Maria|Tom&Mia@Germany",
             "sub-folder",
             "off-name",
             "no-gps+off-name@Greece",
@@ -672,7 +757,7 @@ pub(crate) mod tests {
             "no-gps+tag:mixed@China/2008-01-00 Holiday SOUTHTOUR"
         );
         assert_eq!(combined.gap(), Some(Gap::Gps));
-        assert_eq!(combined.tags(), Some(&["mixed".to_string()][..]));
+        assert_eq!(combined.tags(), [&["mixed".to_string()][..]]);
         assert_eq!(
             filter("tag:mixed+no-gps"),
             filter("no-gps+tag:mixed"),
@@ -701,6 +786,67 @@ pub(crate) mod tests {
     }
 
     #[test]
+    fn tags_and_people_asked_for_together_must_all_hold() {
+        let cache = scanned("filter-together");
+        let paths = |text: &str| filter(text).paths(&cache).unwrap();
+        for (one, other) in [("person:Anna", "person:Tom"), ("tag:people", "tag:mixed")] {
+            let (prefix, first) = one.split_once(':').unwrap();
+            let second = other.split_once(':').unwrap().1;
+            let both = paths(&format!("{prefix}:{first}&{second}"));
+            let expected: Vec<String> = paths(one)
+                .into_iter()
+                .filter(|path| paths(other).contains(path))
+                .collect();
+            assert_eq!(both, expected, "{one} and {other}");
+            let either = paths(&format!("{prefix}:{first}|{second}"));
+            assert!(
+                either.len() >= paths(one).len().max(paths(other).len()),
+                "| still means any of"
+            );
+        }
+
+        let chosen = Filter::all().toggle_person("Anna").toggle_person("Tom");
+        assert_eq!(chosen.to_string(), "person:Anna&Tom", "in the order chosen");
+        assert_eq!(chosen.title(), "Photos of Anna and Tom");
+        assert_eq!(chosen.clone().toggle_person("Anna").to_string(), "person:Tom");
+        assert_eq!(
+            chosen.clone().with_person(None).to_string(),
+            "all",
+            "with_person clears every person"
+        );
+        assert_eq!(
+            chosen.without(&Kind::Person(vec!["Tom".into()])).to_string(),
+            "person:Anna",
+            "a chip takes out one person"
+        );
+
+        let tags = Filter::all().toggle_tag("mixed/food").toggle_tag("people");
+        assert_eq!(tags.to_string(), "tag:mixed/food&people");
+        assert_eq!(tags.title(), "Photos tagged mixed/food and people");
+        assert_eq!(
+            tags.clone().toggle_tag("mixed").to_string(),
+            "tag:people&mixed",
+            "a tag above a chosen one takes its place"
+        );
+        assert_eq!(
+            tags.clone().toggle_tag("people/family").to_string(),
+            "tag:mixed/food&people/family",
+            "and so does one below"
+        );
+        assert_eq!(
+            tags.toggle_tag("mixed/food").to_string(),
+            "tag:people",
+            "a chosen tag again is taken out"
+        );
+        let twins = filter("tag:mixed/funny|mixed/Funny").toggle_tag("people");
+        assert_eq!(
+            twins.to_string(),
+            "tag:mixed/funny|mixed/Funny&people",
+            "a group of any of is left as it is"
+        );
+    }
+
+    #[test]
     fn refuses_what_it_cannot_name() {
         for text in [
             "",
@@ -711,6 +857,9 @@ pub(crate) mod tests {
             "person:",
             "person:Anna| ",
             "person:Anna+person:Tom",
+            "person:Anna&",
+            "person:Anna&Anna",
+            "tag:a&|b",
             "issue:nonsense",
             "issue:off the layout",
             "no-gps+no-date",
@@ -902,7 +1051,7 @@ pub(crate) mod tests {
 
         let chosen = Filter::all().with_tag(Some("people")).with_person(Some("Tom"));
         assert_eq!(chosen.to_string(), "tag:people+person:Tom");
-        assert_eq!(chosen.persons(), Some(&["Tom".to_string()][..]));
+        assert_eq!(chosen.persons(), [&["Tom".to_string()][..]]);
         assert_eq!(chosen.title(), "Photos tagged people, of Tom");
         assert_eq!(
             chosen.clone().with_person(Some("Mia")).to_string(),

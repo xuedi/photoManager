@@ -852,9 +852,9 @@ fn browses_the_gallery(window: &Window, opened: &Rc<Library>) {
     selects_and_hands_on_a_scope(window, opened);
 }
 
-/// The People sidebar lists who the photos name and narrows to one of them; every part of the
-/// filter is a chip above the grid whichever sidebar is open, and each tab that narrows the grid
-/// carries a dot.
+/// The People sidebar lists who the photos name and narrows to them, several together; a
+/// sidebar lists only what would still show photos; every part of the filter is a chip above the
+/// grid whichever sidebar is open, and each tab that narrows the grid carries a dot.
 fn browses_by_person(window: &Window) {
     let gallery = window.gallery();
     let act = |name: &str, target: &str| {
@@ -866,6 +866,7 @@ fn browses_by_person(window: &Window) {
     act("win.show-photos", "all");
     gallery.browse_by("people");
     settle(window);
+    until(|| !gallery.is_recounting(), "the sidebars counted again");
     assert_eq!(
         gallery.people_listed(),
         ["Anna", "Mia", "Tom"],
@@ -882,15 +883,16 @@ fn browses_by_person(window: &Window) {
     until(|| !gallery.is_recounting(), "the sidebars counted again");
     assert_eq!(
         gallery.count_shown("places", "Germany"),
-        Some((0, true)),
-        "a country Mia is not in shows none, dimmed"
+        Some((0, false)),
+        "a country Mia is not in is not listed"
     );
-    assert_eq!(gallery.count_shown("places", "Denmark"), Some((1, false)));
+    assert_eq!(gallery.count_shown("places", "Denmark"), Some((1, true)));
     assert_eq!(
         gallery.count_shown("people", "Tom"),
-        Some((1, false)),
-        "a person is counted without the person chosen"
+        Some((0, false)),
+        "a person never with Mia is not listed"
     );
+    assert_eq!(gallery.people_listed(), ["Mia"]);
     assert_eq!(
         window.gallery().listed(),
         ["Denmark/2018-10-00 Wedding Trip to Copenhagen/DSCF0002.JPG"]
@@ -901,17 +903,58 @@ fn browses_by_person(window: &Window) {
     until(|| !gallery.is_recounting(), "the sidebars counted again");
     assert_eq!(
         gallery.count_shown("places", "Germany"),
-        Some((25, false)),
+        Some((25, true)),
         "with nothing chosen, the library's count"
     );
+    assert_eq!(gallery.people_listed(), ["Anna", "Mia", "Tom"], "everyone again");
     for quick in ["person:Mia", "person:Tom"] {
         WidgetExt::activate_action(window, "win.show-photos", Some(&quick.to_variant())).unwrap();
     }
     until(|| !gallery.is_recounting(), "the sidebars counted again");
     assert_eq!(
         gallery.count_shown("places", "Germany"),
-        Some((1, false)),
+        Some((1, true)),
         "only the newest recount is shown"
+    );
+    act("win.show-photos", "all");
+
+    act("win.gallery-person", "Tom");
+    until(|| !gallery.is_recounting(), "the sidebars counted again");
+    assert_eq!(
+        gallery.people_listed(),
+        ["Tom", "Anna"],
+        "the chosen first, then those in photos with them"
+    );
+    act("win.gallery-person", "Anna");
+    assert_eq!(filter(), "person:Tom&Anna");
+    assert_eq!(
+        window.gallery().listed(),
+        ["Germany/2019-07-13 Sommerfest/IMAG0001.jpg"],
+        "the photos they are in together"
+    );
+    assert_eq!(gallery.chips(), ["Tom", "Anna"], "a chip for each person");
+    until(|| !gallery.is_recounting(), "the sidebars counted again");
+    assert_eq!(gallery.count_shown("tags", "people"), Some((1, true)));
+    assert_eq!(gallery.count_shown("tags", "mixed"), Some((0, false)));
+    assert!(gallery.close_chip("Tom"));
+    settle(window);
+    assert_eq!(filter(), "person:Anna", "the chip took out one person");
+    act("win.show-photos", "all");
+
+    act("win.gallery-tag", "people");
+    act("win.gallery-tag", "places/inGermany");
+    assert_eq!(filter(), "tag:people&places/inGermany");
+    assert_eq!(gallery.chips(), ["tag: people", "tag: places/inGermany"]);
+    assert_eq!(
+        window.gallery().listed(),
+        ["Germany/2019-07-13 Sommerfest/IMAG0001.jpg"],
+        "the photos carrying both"
+    );
+    act("win.gallery-tag", "places");
+    assert_eq!(
+        filter(),
+        "tag:people&places",
+        "a tag above a chosen one takes its place"
     );
     act("win.show-photos", "all");
 

@@ -1,6 +1,7 @@
 //! Finding the photos a tool should work on. The page shows exactly `Filter::photos` of one
 //! filter, and each control owns one part of it: the place sidebar the folder, the tag sidebar
-//! the tag, the people sidebar the person, the dropdown the gap. Every part, and whatever else the
+//! the tags, the people sidebar the people, the dropdown the gap. Several tags or people are
+//! asked for together, and a sidebar lists only the entries that would still show photos. Every part, and whatever else the
 //! dashboard handed over, is also a chip above the grid, so what narrows the grid is in sight
 //! whichever sidebar is open or when none is. Every change ends in `show`, so a click here and a
 //! click on the dashboard end up in the same place.
@@ -56,15 +57,21 @@ impl Side {
         }
     }
 
-    /// The row of this sidebar the filter has chosen, by its key.
-    fn chosen(self, filter: &Filter) -> Option<String> {
+    /// The rows of this sidebar the filter has chosen, by their keys, in the order chosen.
+    fn chosen(self, filter: &Filter) -> Vec<String> {
+        let single = |groups: Vec<&[String]>| -> Vec<String> {
+            groups
+                .into_iter()
+                .filter_map(|group| match group {
+                    [one] => Some(one.clone()),
+                    _ => None,
+                })
+                .collect()
+        };
         match self {
-            Side::Places => filter.within.clone(),
-            Side::Tags => chosen_tag(filter),
-            Side::People => match filter.persons() {
-                Some([one]) => Some(one.clone()),
-                _ => None,
-            },
+            Side::Places => filter.within.clone().into_iter().collect(),
+            Side::Tags => single(filter.tags()),
+            Side::People => single(filter.persons()),
         }
     }
 
@@ -82,8 +89,8 @@ impl Side {
     fn narrows(self, filter: &Filter) -> bool {
         match self {
             Side::Places => filter.within.is_some(),
-            Side::Tags => filter.tags().is_some(),
-            Side::People => filter.persons().is_some(),
+            Side::Tags => !filter.tags().is_empty(),
+            Side::People => !filter.persons().is_empty(),
         }
     }
 }
@@ -371,6 +378,10 @@ mod imp {
         pub tags: OnceCell<gio::ListStore>,
         pub people: OnceCell<gio::ListStore>,
         pub people_found: OnceCell<gtk::CustomFilter>,
+        /// Each sidebar's filter of the entries that would still show photos.
+        pub reachable: RefCell<Vec<gtk::CustomFilter>>,
+        /// The chosen people first, then the most photos.
+        pub people_order: OnceCell<gtk::CustomSorter>,
         pub place_tree: OnceCell<gtk::TreeListModel>,
         pub tag_tree: OnceCell<gtk::TreeListModel>,
         /// The dot on each sidebar's tab that says it narrows the grid.
@@ -514,24 +525,16 @@ impl Gallery {
         self.show(filter);
     }
 
-    /// Narrows to a tag and everything below it; the one already chosen widens back.
+    /// Narrows to a tag and everything below it, together with the tags chosen; a chosen one
+    /// again widens back.
     pub fn choose_tag(&self, path: &str) {
-        let filter = self.filter();
-        let filter = match chosen_tag(&filter).as_deref() == Some(path) {
-            true => filter.with_tag(None),
-            false => filter.with_tag(Some(path)),
-        };
-        self.show(filter);
+        self.show(self.filter().toggle_tag(path));
     }
 
-    /// Narrows to the photos naming a person; the one already chosen widens back.
+    /// Narrows to the photos naming a person, together with the people chosen; a chosen one
+    /// again widens back.
     pub fn choose_person(&self, name: &str) {
-        let filter = self.filter();
-        let filter = match Side::People.chosen(&filter).as_deref() == Some(name) {
-            true => filter.with_person(None),
-            false => filter.with_person(Some(name)),
-        };
-        self.show(filter);
+        self.show(self.filter().toggle_person(name));
     }
 
     /// Takes one part of the filter out, and nothing else.
@@ -594,12 +597,26 @@ impl Gallery {
         self.imp().recounting.get()
     }
 
-    /// What the sidebar shows for an entry: its count, and whether it is dimmed for showing none.
+    /// What the sidebar shows for an entry: its count, and whether it is listed at all.
     pub fn count_shown(&self, side: &str, key: &str) -> Option<(i64, bool)> {
         let side = Side::ALL.into_iter().find(|each| each.name() == side)?;
+        let count = side.counted(self.imp().following.borrow().as_ref()?, key);
+        Some((count, self.reachable(side, key)))
+    }
+
+    /// Whether an entry is listed: the counts are not in yet, it would show photos, or it or one
+    /// below it is chosen.
+    fn reachable(&self, side: Side, key: &str) -> bool {
         let following = self.imp().following.borrow();
-        let count = side.counted(following.as_ref()?, key);
-        Some((count, count == 0))
+        let Some(following) = following.as_ref() else {
+            return true;
+        };
+        let below = format!("{key}/");
+        side.counted(following, key) > 0
+            || side
+                .chosen(&self.filter())
+                .iter()
+                .any(|chosen| chosen == key || chosen.starts_with(&below))
     }
 
     /// `grid`, `files` or `empty`.
@@ -816,6 +833,7 @@ impl Gallery {
                 Ok(following) => *imp.following.borrow_mut() = Some(following),
                 Err(why) => tracing::error!(why, "the sidebars could not be counted"),
             }
+            gallery.relist();
             gallery.mark_rows();
         });
     }
@@ -1007,17 +1025,30 @@ impl Gallery {
         imp.selected.set_label(&format!("{selected} selected"));
     }
 
-    /// Sets each sidebar row's mark to whether it is the chosen place, tag or person, and opens
-    /// the rows above the chosen one so it can be seen.
+    /// Lists again only the entries that would still show photos, the chosen people first.
+    fn relist(&self) {
+        let imp = self.imp();
+        for reachable in imp.reachable.borrow().iter() {
+            reachable.changed(gtk::FilterChange::Different);
+        }
+        if let Some(order) = imp.people_order.get() {
+            order.changed(gtk::SorterChange::Different);
+        }
+        self.show_people_empty();
+    }
+
+    /// Sets each sidebar row's mark to whether it is a chosen place, tag or person, and opens
+    /// the rows above the chosen ones so they can be seen.
     fn mark_rows(&self) {
         let filter = self.filter();
-        let place = Side::Places.chosen(&filter);
-        let tag = Side::Tags.chosen(&filter);
         let imp = self.imp();
-        for (tree, chosen) in [(imp.place_tree.get(), &place), (imp.tag_tree.get(), &tag)] {
-            if let (Some(tree), Some(chosen)) = (tree, chosen) {
+        for (tree, side) in [(imp.place_tree.get(), Side::Places), (imp.tag_tree.get(), Side::Tags)] {
+            let Some(tree) = tree else {
+                continue;
+            };
+            for chosen in side.chosen(&filter) {
                 let roots = (0..tree.model().n_items()).filter_map(|at| tree.child_row(at));
-                reveal(roots.collect(), chosen);
+                reveal(roots.collect(), &chosen);
             }
         }
         let following = imp.following.borrow();
@@ -1025,7 +1056,7 @@ impl Gallery {
             let Some(item) = item.upgrade() else {
                 return false;
             };
-            mark(&item, *side, side.chosen(&filter).as_ref(), following.as_ref());
+            mark(&item, *side, &side.chosen(&filter), following.as_ref());
             true
         });
     }
@@ -1208,8 +1239,9 @@ impl Gallery {
         }
     }
 
-    /// The people list, narrowed by the search above it.
-    fn build_people(&self) -> gtk::FilterListModel {
+    /// The people list: those the filter still reaches, narrowed by the search above it, the
+    /// chosen ones first in the order chosen, then the most photos.
+    fn build_people(&self) -> gtk::SortListModel {
         let imp = self.imp();
         let search = imp.people_search.downgrade();
         let found = gtk::CustomFilter::new(move |item| {
@@ -1223,14 +1255,56 @@ impl Gallery {
                     .downcast_ref::<Node>()
                     .is_some_and(|node| node.name().to_lowercase().contains(text))
         });
-        let model = gtk::FilterListModel::new(Some(self.people_store().clone()), Some(found.clone()));
+        let both = gtk::EveryFilter::new();
+        both.append(found.clone());
+        both.append(self.reachable_filter(Side::People));
+        let model = gtk::FilterListModel::new(Some(self.people_store().clone()), Some(both));
+        let gallery = self.downgrade();
+        let order = gtk::CustomSorter::new(move |one, other| {
+            let (Some(gallery), Some(one), Some(other)) = (
+                gallery.upgrade(),
+                one.downcast_ref::<Node>(),
+                other.downcast_ref::<Node>(),
+            ) else {
+                return gtk::Ordering::Equal;
+            };
+            let chosen = Side::People.chosen(&gallery.filter());
+            let at = |node: &Node| chosen.iter().position(|name| *name == node.key()).unwrap_or(usize::MAX);
+            let following = gallery.imp().following.borrow();
+            let photos = |node: &Node| {
+                following
+                    .as_ref()
+                    .map_or(node.photos(), |following| Side::People.counted(following, &node.key()))
+            };
+            at(one)
+                .cmp(&at(other))
+                .then(photos(other).cmp(&photos(one)))
+                .then(one.name().cmp(&other.name()))
+                .into()
+        });
+        let sorted = gtk::SortListModel::new(Some(model), Some(order.clone()));
         imp.people_search.connect_search_changed(glib::clone!(
             #[weak(rename_to = gallery)]
             self,
             move |_| gallery.refilter_people()
         ));
         let _ = imp.people_found.set(found);
-        model
+        let _ = imp.people_order.set(order);
+        sorted
+    }
+
+    /// A filter of the entries of a side that would still show photos, refiltered as the counts
+    /// come in.
+    fn reachable_filter(&self, side: Side) -> gtk::CustomFilter {
+        let gallery = self.downgrade();
+        let reachable = gtk::CustomFilter::new(move |item| {
+            let (Some(gallery), Some(node)) = (gallery.upgrade(), item.downcast_ref::<Node>()) else {
+                return true;
+            };
+            gallery.reachable(side, &node.key())
+        });
+        self.imp().reachable.borrow_mut().push(reachable.clone());
+        reachable
     }
 
     fn refilter_people(&self) {
@@ -1240,31 +1314,37 @@ impl Gallery {
         self.show_people_empty();
     }
 
-    /// The status page instead of an empty list: no people at all, or none the search finds.
+    /// The status page instead of an empty list: no people at all, none the search finds, or
+    /// none in the photos the filter shows.
     fn show_people_empty(&self) {
         let imp = self.imp();
         let searched = !imp.people_search.text().trim().is_empty();
         let none = self.people_listed().is_empty();
         imp.people_empty.set_visible(none);
         imp.people_list.set_visible(!none);
-        match searched {
-            true => {
-                imp.people_empty.set_title("No Match");
-                imp.people_empty
-                    .set_description(Some("No person has that in their name."));
-            }
-            false => {
-                imp.people_empty.set_title("No People");
-                imp.people_empty.set_description(Some("No photo names a person yet."));
-            }
-        }
+        let (title, description) = match (searched, self.people_store().n_items()) {
+            (true, _) => ("No Match", "No person has that in their name."),
+            (false, 0) => ("No People", "No photo names a person yet."),
+            (false, _) => ("No People Here", "None of the photos shown names a person."),
+        };
+        imp.people_empty.set_title(title);
+        imp.people_empty.set_description(Some(description));
     }
 
+    /// A sidebar's tree. Places and tags list only the entries that would still show photos, at
+    /// every level; people come filtered already.
     fn build_tree(&self, list: &gtk::ListView, roots: &gio::ListModel, side: Side) -> gtk::TreeListModel {
-        let tree = gtk::TreeListModel::new(roots.clone(), false, false, |item| {
-            item.downcast_ref::<Node>()
-                .and_then(Node::children)
-                .map(|store| store.upcast())
+        let reachable = (side != Side::People).then(|| self.reachable_filter(side));
+        let roots: gio::ListModel = match &reachable {
+            Some(reachable) => gtk::FilterListModel::new(Some(roots.clone()), Some(reachable.clone())).upcast(),
+            None => roots.clone(),
+        };
+        let tree = gtk::TreeListModel::new(roots, false, false, move |item| {
+            let children = item.downcast_ref::<Node>().and_then(Node::children)?;
+            Some(match &reachable {
+                Some(reachable) => gtk::FilterListModel::new(Some(children), Some(reachable.clone())).upcast(),
+                None => children.upcast(),
+            })
         });
         list.set_model(Some(&gtk::NoSelection::new(Some(tree.clone()))));
 
@@ -1315,7 +1395,7 @@ impl Gallery {
                     name.set_tooltip_text(Some(&node.key()));
                 }
                 let following = gallery.imp().following.borrow();
-                mark(&item, side, side.chosen(&gallery.filter()).as_ref(), following.as_ref());
+                mark(&item, side, &side.chosen(&gallery.filter()), following.as_ref());
             }
         ));
         list.set_factory(Some(&factory));
@@ -1378,14 +1458,6 @@ pub enum Part {
     Within,
 }
 
-/// The one tag the tag sidebar owns, when the filter has exactly one.
-fn chosen_tag(filter: &Filter) -> Option<String> {
-    match filter.tags() {
-        Some([one]) => Some(one.clone()),
-        _ => None,
-    }
-}
-
 /// Expands every row above `chosen`: `China` for `China/2006-09-00 Besuch Ben`.
 fn reveal(rows: Vec<gtk::TreeListRow>, chosen: &str) {
     for row in rows {
@@ -1409,9 +1481,9 @@ fn row_parts(expander: &gtk::TreeExpander) -> Option<(gtk::Label, gtk::Image, gt
     Some((name, check, count))
 }
 
-/// Shows the check on the row that is the chosen place, tag or person, and how many photos the
-/// row would show with the other parts; a row that would show none is dimmed.
-fn mark(item: &gtk::ListItem, side: Side, chosen: Option<&String>, following: Option<&Following>) {
+/// Shows the check on a row that is a chosen place, tag or person, and how many photos the row
+/// would show with the filter.
+fn mark(item: &gtk::ListItem, side: Side, chosen: &[String], following: Option<&Following>) {
     let Some(expander) = item.child().and_downcast::<gtk::TreeExpander>() else {
         return;
     };
@@ -1423,17 +1495,11 @@ fn mark(item: &gtk::ListItem, side: Side, chosen: Option<&String>, following: Op
     else {
         return;
     };
-    let is_chosen = chosen == Some(&node.key());
+    let is_chosen = chosen.contains(&node.key());
     let photos = following.map_or(node.photos(), |following| side.counted(following, &node.key()));
-    if let Some((name, check, count)) = row_parts(&expander) {
+    if let Some((_, check, count)) = row_parts(&expander) {
         check.set_visible(is_chosen);
         count.set_label(&photos.to_string());
-        for label in [&name, &count] {
-            match photos == 0 && !is_chosen {
-                true => label.add_css_class("dimmed"),
-                false => label.remove_css_class("dimmed"),
-            }
-        }
     }
     let mut label = format!("{}, {photos} photos", node.name());
     if is_chosen {

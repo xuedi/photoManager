@@ -15,8 +15,8 @@ filter is set, the controls follow it, the grid is filled again.
 | Control | Owns | Written as |
 |---------|------|------------|
 | Places sidebar | a top folder or an event folder | `@Germany`, `@Germany/2019-07-13 Sommerfest` |
-| Tags sidebar | one tag, everything below it included | `tag:people` |
-| People sidebar | one person the photos name | `person:Anna` |
+| Tags sidebar | tags, each with everything below it, all of them together | `tag:people`, `tag:people&places` |
+| People sidebar | people the photos name, all of them together | `person:Anna`, `person:Anna&Ben` |
 | missing field dropdown | one gap, or none | `no-gps` |
 
 Whatever else the dashboard hands over - a folder finding, an issue, a pair of tags spelled alike
@@ -26,11 +26,19 @@ So `no-gps+tag:people+person:Anna@Germany/2019-07-13 Sommerfest` is the photos o
 tagged under `people`, naming Anna, without GPS. Selecting the chosen place, tag or person again
 widens back.
 
+A place is one choice: a photo is in one folder, so two places together would show nothing, and
+choosing another replaces it. Tags and people add up instead: a second person chosen means the
+photos naming both, a second tag the photos carrying both. A tag chosen above or below a chosen
+one takes its place, as the two together say no more than the narrower one. `&` joins what must
+all hold, `|` inside one part still means any of, as in the dashboard's pair of tags spelled alike
+(`tag:mixed/funny|mixed/Funny`).
+
 ## The active filter, in sight
 
 The three sidebars share one pane, so a part chosen on one is out of sight on the others. Every
 part of the filter is therefore also a chip in one strip above the grid: the missing field, the
-tag, the person, the folder, and whatever the dashboard handed over. Closing a chip takes its part
+tags, the people, the folder, and whatever the dashboard handed over, one chip for each tag and
+each person. Closing a chip takes its part
 out and nothing else, and the control that owns it follows; **Clear All** goes back to the whole
 library. The strip wraps to another line only when it has to, and is not there when nothing is
 chosen. It sits above the grid rather than in the sidebar because the sidebar folds away on a
@@ -63,9 +71,14 @@ with a face box or without ([cache.md](cache.md#face-regions)), the most photos 
 search above it. It comes from the files, not from Immich: a person no photo names yet is not
 there.
 
-Each entry counts the photos it would show combined with the parts the other controls own: with
-a person chosen, a country counts only that person's photos in it, and one they are never in
-counts none and is dimmed. With nothing else chosen, that is the library's own count. The counts
+Each entry counts the photos it would show with the filter. A place is counted without the
+chosen place, as choosing it replaces that one: an event's siblings stay listed, so switching is
+one click. A tag or a person is counted with the tags and people already chosen, as choosing it
+adds to them: with Anna chosen, the People list is the people in photos with Anna, each with how
+many. An entry that would show nothing is not listed at all, so every list shrinks as parts are
+added; a chosen entry, and the rows above it, always stay so it can be taken back. Chosen people
+are pinned at the top in the order chosen, the rest follow by count. With nothing chosen, every
+entry is listed with the library's own count. The counts
 are worked out again off the main thread whenever the filter changes, and only the answer to the
 newest filter is shown; measured over a large real library, all three lists are counted again in
 well under a tenth of a second.
@@ -156,7 +169,8 @@ switch. A scope only describes photos: a tool still goes through the change set,
 |--------|------|
 | `win.show-photos` | show a filter, named in its written form |
 | `win.gallery-place` | choose a top folder or an event folder, or widen back from the chosen one |
-| `win.gallery-tag` | choose a tag, or widen back from the chosen one |
+| `win.gallery-tag` | add a tag to those chosen, or take a chosen one out |
+| `win.gallery-person` | add a person to those chosen, or take a chosen one out |
 | `win.gallery-gap` | set the missing field, a gap's key or `none` |
 | `win.gallery-sort` | `date` or `name` |
 | `win.gallery-select-all`, `win.gallery-select-none` | select every photo, or none |
