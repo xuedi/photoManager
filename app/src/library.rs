@@ -51,7 +51,26 @@ pub enum Event {
     Applied(Applied),
     /// The ticked fixes were applied, a pass for each finder that had any.
     Fixed(Vec<FixPass>),
+    /// A pass left photos whose maker note ExifTool doubts; the writing waits for the answer.
+    Doubted(changeset::Asked, Reply),
     Failed(String),
+}
+
+/// Where the answer about doubted photos goes back to the writing that waits for it. Dropped
+/// without an answer, the photos are left as they were.
+#[derive(Debug)]
+pub struct Reply(std::sync::mpsc::Sender<changeset::Anyway>);
+
+impl Reply {
+    pub fn answer(self, anyway: changeset::Anyway) {
+        let _ = self.0.send(anyway);
+    }
+
+    /// A reply no writing waits for.
+    #[cfg(feature = "devtools")]
+    pub fn dropped() -> Reply {
+        Reply(std::sync::mpsc::channel().0)
+    }
 }
 
 #[derive(Debug, Clone, Copy, Default)]
@@ -829,6 +848,13 @@ impl Library {
             let told = |done: usize, total: usize| {
                 let _ = progress.send_blocking(Message::Done(done, total));
             };
+            let mut ask = |asked: &changeset::Asked| {
+                let (answer, answered) = std::sync::mpsc::channel();
+                if progress.send_blocking(Message::Doubted(asked.clone(), answer)).is_err() {
+                    return changeset::Anyway::Skip;
+                }
+                answered.recv().unwrap_or(changeset::Anyway::Skip)
+            };
             if let Job::Fixes(ticked) = &job {
                 let geo = Geo::read_only(&geo_db).ok().flatten();
                 let mut rescan = |cache: &mut Cache| -> Result<(), String> {
@@ -848,6 +874,7 @@ impl Library {
                             &mut rescan,
                             &told,
                             &cancel,
+                            &mut ask,
                         )
                     });
                 let _ = sender.send_blocking(Message::Fixed(outcome, cache));
@@ -856,7 +883,9 @@ impl Library {
             let outcome = match Engine::new(&library) {
                 Ok(mut engine) => match &job {
                     Job::Fixes(_) => unreachable!("the fixes are applied above"),
-                    Job::Apply(set) => changeset::apply(set, &mut engine, &mut cache, &told, &cancel),
+                    Job::Apply(set) => {
+                        changeset::apply_asking(set, &mut engine, &mut cache, &told, &cancel, false, &mut ask)
+                    }
                 },
                 Err(error) => Err(error),
             };
@@ -869,6 +898,7 @@ impl Library {
                 let event = match message {
                     Message::Done(done, total) => Event::Done(done, total),
                     Message::Note(note) => Event::Note(note),
+                    Message::Doubted(asked, answer) => Event::Doubted(asked, Reply(answer)),
                     Message::Fixed(outcome, cache) => {
                         *this.cache.borrow_mut() = Some(cache);
                         this.working.set(false);
@@ -1083,5 +1113,6 @@ enum Message {
     Previewed(std::result::Result<ChangeSet, String>, Cache),
     Applied(std::result::Result<Applied, String>, Cache),
     Fixed(std::result::Result<Vec<FixPass>, String>, Cache),
+    Doubted(changeset::Asked, std::sync::mpsc::Sender<changeset::Anyway>),
     Failed(String, Cache),
 }

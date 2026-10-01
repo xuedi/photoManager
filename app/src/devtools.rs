@@ -73,7 +73,33 @@ pub fn install(app: &adw::Application, window: &Window, paths: &Paths, library: 
             window.gallery().photo().point_at(name);
         })
         .build();
-    window.add_action_entries([rating, immich_key, point_at]);
+    // Photos ExifTool doubts need a camera that wrote a maker note it doubts; this shows the
+    // question about them with invented ones, and drops the answer.
+    let doubted = gio::ActionEntry::builder("show-doubted")
+        .activate(|window: &Window, _, _| {
+            use photomanager_core::changeset::{Asked, Doubted};
+            let asked = Asked {
+                doubted: vec![
+                    Doubted {
+                        camera: Some("OLYMPUS X1".to_string()),
+                        why: "Truncated MakerNotes directory".to_string(),
+                        photos: vec![
+                            "Atlantis/2024-05-01 Picnic/P1000001.JPG".to_string(),
+                            "Atlantis/2024-05-01 Picnic/P1000002.JPG".to_string(),
+                        ],
+                    },
+                    Doubted {
+                        camera: Some("EXAMPLE Z1".to_string()),
+                        why: "MakerNotes offsets may be incorrect (fix or ignore?)".to_string(),
+                        photos: vec!["Atlantis/2024-06-02 Harbour/DSC_0001.JPG".to_string()],
+                    },
+                ],
+                more_to_come: true,
+            };
+            crate::confirm::write_anyway(window, &asked, crate::library::Reply::dropped());
+        })
+        .build();
+    window.add_action_entries([rating, immich_key, point_at, doubted]);
 }
 
 fn state(window: &Window, paths: &Paths, library: Option<&Library>) -> String {

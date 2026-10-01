@@ -10,6 +10,14 @@
 //! same, is ExifTool's `ImageDataHash` the same, and does every field we set read back as what we
 //! asked for. The first two are what "never lose a byte of the original image data" means in code.
 //!
+//! Some cameras wrote a maker note ExifTool doubts, and it rewrites such a photo only when told to
+//! ignore that minor problem. The engine never tells it on its own: the photo comes back
+//! [`Outcome::Doubted`], and only a write the user asked to go ahead anyway passes `-m`. That
+//! write has a fourth question to answer: does every value of the maker note, and every preview
+//! and thumbnail picture in the file, read back exactly as before, and is the maker note as long
+//! as it was. ExifTool drops a part of a maker note it cannot read rather than move it, so a
+//! maker note that would come out shorter is no write: not a byte of it is lost.
+//!
 //! The modification time is deliberately not preserved: Nextcloud and Immich both notice a changed
 //! file only by its mtime, and a write nothing notices is worse than no write at all.
 
@@ -68,6 +76,9 @@ pub enum Outcome {
     Refused(String),
     /// We tried, it did not work out, and the photo is as it was.
     Failed(String),
+    /// ExifTool would write it only if told to ignore a minor problem with the camera's maker
+    /// note, and why. The photo is as it was; it can be written anyway, on the user's word.
+    Doubted(String),
 }
 
 /// One photo and what it should say.
@@ -85,6 +96,7 @@ pub struct Summary {
     pub skipped: usize,
     pub refused: usize,
     pub failed: usize,
+    pub doubted: usize,
     pub cancelled: bool,
     pub seconds: u64,
     /// Every photo and what became of it, in the order they were done.
@@ -98,13 +110,90 @@ impl Summary {
             Outcome::Skipped => self.skipped += 1,
             Outcome::Refused(_) => self.refused += 1,
             Outcome::Failed(_) => self.failed += 1,
+            Outcome::Doubted(_) => self.doubted += 1,
         }
         self.outcomes.push((rel_path.to_string(), outcome));
     }
 
     pub fn photos(&self) -> usize {
-        self.written + self.skipped + self.refused + self.failed
+        self.written + self.skipped + self.refused + self.failed + self.doubted
     }
+
+    /// The photos it doubted, each with why.
+    pub fn doubts(&self) -> impl Iterator<Item = (&str, &str)> {
+        self.outcomes.iter().filter_map(|(rel_path, outcome)| match outcome {
+            Outcome::Doubted(why) => Some((rel_path.as_str(), why.as_str())),
+            _ => None,
+        })
+    }
+
+    /// This pass with what a second one over some of its photos made of them.
+    pub fn and_then(mut self, again: Summary) -> Summary {
+        let mut redone: Vec<(String, Outcome)> = Vec::new();
+        for (rel_path, outcome) in self.outcomes.drain(..) {
+            let later = again.outcomes.iter().find(|(path, _)| *path == rel_path);
+            redone.push(later.cloned().unwrap_or((rel_path, outcome)));
+        }
+        let mut summary = Summary {
+            cancelled: self.cancelled || again.cancelled,
+            seconds: self.seconds + again.seconds,
+            ..Summary::default()
+        };
+        for (rel_path, outcome) in redone {
+            summary.note(&rel_path, outcome);
+        }
+        summary
+    }
+}
+
+/// Whether ExifTool's complaint is a minor problem with a maker note, the only one a photo is
+/// ever written anyway for.
+fn doubted(complaint: &str) -> bool {
+    let lower = complaint.to_lowercase();
+    complaint.starts_with("[minor]") && (lower.contains("makernote") || lower.contains("maker note"))
+}
+
+/// ExifTool's complaint without the `[minor]` and the file it names.
+fn reason(complaint: &str) -> String {
+    let said = complaint.trim_start_matches("[minor]").trim();
+    said.rsplit_once(" - ")
+        .map_or(said, |(said, _)| said)
+        .trim()
+        .to_string()
+}
+
+/// Every maker note value and every embedded picture that is not where it is but what it is:
+/// the tags that only say where a block sits move with it.
+fn kept(fields: &Map<String, Value>) -> Map<String, Value> {
+    fields
+        .iter()
+        .filter(|(key, _)| {
+            let tag = key.rsplit(':').next().unwrap_or(key);
+            !(tag.ends_with("Start") || tag.ends_with("Offset") || tag.ends_with("Offsets"))
+        })
+        .map(|(key, value)| (key.clone(), value.clone()))
+        .collect()
+}
+
+/// How many bytes a base64 text holds.
+fn decoded_length(encoded: &str) -> usize {
+    let encoded = encoded.trim();
+    let padding = encoded.chars().rev().take_while(|letter| *letter == '=').count();
+    (encoded.len() / 4 * 3).saturating_sub(padding)
+}
+
+/// What differs between two readings of the maker note and the pictures, by tag.
+fn differs(before: &Map<String, Value>, after: &Map<String, Value>) -> Vec<String> {
+    let (before, after) = (kept(before), kept(after));
+    let mut tags: Vec<String> = before
+        .keys()
+        .chain(after.keys())
+        .filter(|key| before.get(*key) != after.get(*key))
+        .cloned()
+        .collect();
+    tags.sort();
+    tags.dedup();
+    tags
 }
 
 /// What a photo says, as ExifTool reads it back.
@@ -148,7 +237,7 @@ impl Engine {
 
     /// One photo on its own.
     pub fn write_one(&mut self, cache: &mut Cache, target: &Target) -> Result<Outcome> {
-        self.one(cache, &target.path, &target.content_id, &target.change)
+        self.one(cache, &target.path, &target.content_id, &target.change, false)
     }
 
     /// Photos one after another on one process. A refusal on one does not stop the others.
@@ -161,6 +250,32 @@ impl Engine {
         progress: &(dyn Fn(usize, usize) + Sync),
         cancel: &AtomicBool,
     ) -> Result<Summary> {
+        self.pass(cache, title, targets, false, progress, cancel)
+    }
+
+    /// Photos the user said to write anyway: ExifTool ignores a minor problem with the maker
+    /// note, and each copy has to prove that the maker note and the pictures in it read back as
+    /// they were.
+    pub fn write_anyway(
+        &mut self,
+        cache: &mut Cache,
+        title: &str,
+        targets: &[Target],
+        progress: &(dyn Fn(usize, usize) + Sync),
+        cancel: &AtomicBool,
+    ) -> Result<Summary> {
+        self.pass(cache, title, targets, true, progress, cancel)
+    }
+
+    fn pass(
+        &mut self,
+        cache: &mut Cache,
+        title: &str,
+        targets: &[Target],
+        anyway: bool,
+        progress: &(dyn Fn(usize, usize) + Sync),
+        cancel: &AtomicBool,
+    ) -> Result<Summary> {
         let started = Instant::now();
         let mut summary = Summary::default();
 
@@ -169,7 +284,7 @@ impl Engine {
                 summary.cancelled = true;
                 break;
             }
-            let outcome = self.one(cache, &target.path, &target.content_id, &target.change)?;
+            let outcome = self.one(cache, &target.path, &target.content_id, &target.change, anyway)?;
             summary.note(&self.name(&target.path), outcome);
             progress(done + 1, targets.len());
         }
@@ -181,6 +296,8 @@ impl Engine {
             skipped = summary.skipped,
             refused = summary.refused,
             failed = summary.failed,
+            doubted = summary.doubted,
+            anyway,
             cancelled = summary.cancelled,
             "write pass done"
         );
@@ -188,8 +305,15 @@ impl Engine {
     }
 
     /// A refusal is about this photo alone, so it never comes back as an error.
-    fn one(&mut self, cache: &mut Cache, path: &Path, expected: &str, change: &Change) -> Result<Outcome> {
-        match self.attempt(cache, path, expected, change) {
+    fn one(
+        &mut self,
+        cache: &mut Cache,
+        path: &Path,
+        expected: &str,
+        change: &Change,
+        anyway: bool,
+    ) -> Result<Outcome> {
+        match self.attempt(cache, path, expected, change, anyway) {
             Err(Error::Refusing(why)) => {
                 tracing::debug!(photo = %path.display(), why, "not written");
                 Ok(Outcome::Refused(why))
@@ -232,16 +356,23 @@ impl Engine {
         })
     }
 
-    fn attempt(&mut self, cache: &mut Cache, path: &Path, expected: &str, change: &Change) -> Result<Outcome> {
+    fn attempt(
+        &mut self,
+        cache: &mut Cache,
+        path: &Path,
+        expected: &str,
+        change: &Change,
+        anyway: bool,
+    ) -> Result<Outcome> {
         let intent = self.intent(path, expected, change)?;
         if intent.want.is_empty() {
             return Ok(Outcome::Skipped);
         }
-        self.put(cache, path, intent)
+        self.put(cache, path, intent, anyway)
     }
 
     /// Writes what the intent still wants, on a copy that has to prove itself first.
-    fn put(&mut self, cache: &mut Cache, path: &Path, intent: Intent) -> Result<Outcome> {
+    fn put(&mut self, cache: &mut Cache, path: &Path, intent: Intent, anyway: bool) -> Result<Outcome> {
         let Intent {
             rel_path,
             content_id: found,
@@ -249,12 +380,13 @@ impl Engine {
             want,
         } = intent;
         let temp = beside(path)?;
-        let attempt = self.write_copy(&temp, path, &want, &before, &found);
+        let attempt = self.write_copy(&temp, path, &want, &before, &found, anyway);
         if !matches!(attempt, Ok(None)) {
             let _ = std::fs::remove_file(&temp);
         }
         let outcome = match attempt? {
             None => Outcome::Written,
+            Some(why) if !anyway && doubted(&why) => Outcome::Doubted(reason(&why)),
             Some(why) => Outcome::Failed(why),
         };
         if outcome == Outcome::Written {
@@ -274,6 +406,7 @@ impl Engine {
         want: &[Assign],
         before: &Snapshot,
         content: &str,
+        anyway: bool,
     ) -> Result<Option<String>> {
         if let Err(error) = std::fs::copy(original, temp) {
             return Ok(Some(format!("no copy could be made beside it: {error}")));
@@ -284,6 +417,9 @@ impl Engine {
             "-charset".to_string(),
             "iptc=UTF8".to_string(),
         ];
+        if anyway {
+            args.push("-m".to_string());
+        }
         args.extend(change::arguments(want));
         args.push(tool::as_argument(temp)?);
         let reply = self.tool.run(&args)?;
@@ -293,6 +429,27 @@ impl Engine {
 
         if let Some(why) = self.unproven(temp, want, before, content)? {
             return Ok(Some(why));
+        }
+        if anyway {
+            let (before, after) = (self.maker_note(original)?, self.maker_note(temp)?);
+            let changed = differs(&before, &after);
+            let block = changed
+                .iter()
+                .find(|key| key.rsplit(':').next().is_some_and(|tag| tag.starts_with("MakerNote")));
+            if let Some(block) = block {
+                let length = |reading: &Map<String, Value>| reading.get(block).and_then(Value::as_u64).unwrap_or(0);
+                return Ok(Some(format!(
+                    "written anyway, the maker note would lose {} of its {} bytes, the part ExifTool cannot read",
+                    length(&before).saturating_sub(length(&after)),
+                    length(&before)
+                )));
+            }
+            if !changed.is_empty() {
+                return Ok(Some(format!(
+                    "written anyway, {} did not read back as before",
+                    changed.join(", ")
+                )));
+            }
         }
 
         let mode = match std::fs::metadata(original) {
@@ -339,6 +496,45 @@ impl Engine {
             true => Ok(None),
             false => Ok(Some(format!("{} did not read back", missed.join(", ")))),
         }
+    }
+
+    /// Every value of the maker note, and every picture the file carries besides the image, the
+    /// pictures as their bytes.
+    fn maker_note(&mut self, path: &Path) -> Result<Map<String, Value>> {
+        let args = [
+            "-j",
+            "-n",
+            "-b",
+            "-G1",
+            "-MakerNotes:All",
+            "-MakerNotes",
+            "-PreviewImage",
+            "-ThumbnailImage",
+            "-OtherImage",
+        ]
+        .iter()
+        .map(|arg| (*arg).to_string())
+        .chain([tool::as_argument(path)?])
+        .collect::<Vec<String>>();
+        let reply = self.tool.run(&args)?;
+        let unreadable = || Error::Refusing(format!("exiftool cannot read its maker note: {}", reply.complaint()));
+        let parsed: Value = serde_json::from_str(reply.out.trim()).map_err(|_| unreadable())?;
+        let mut fields = parsed
+            .get(0)
+            .and_then(|entry| entry.as_object())
+            .ok_or_else(unreadable)?
+            .clone();
+        fields.retain(|key, _| key != "SourceFile");
+        // The whole maker note moves, so its bytes differ where it says where its parts are; how
+        // many there are must not.
+        for (key, value) in fields.iter_mut() {
+            if key.rsplit(':').next().is_some_and(|tag| tag.starts_with("MakerNote"))
+                && let Some(encoded) = value.as_str().and_then(|text| text.strip_prefix("base64:"))
+            {
+                *value = Value::from(decoded_length(encoded));
+            }
+        }
+        Ok(fields)
     }
 
     /// Everything the file says, plus ExifTool's hash of the image data alone.

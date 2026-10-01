@@ -8,7 +8,7 @@ How the parts of photoManager work. One file per subsystem, added when the subsy
 | [cache.md](cache.md) | what the application remembers about the photos, how a scan fills it and follows a renamed file, what an issue is, the place check, the face regions and the persons, what Immich knows |
 | [thumbnails.md](thumbnails.md) | the small pictures a grid draws, keyed by the image rather than the path |
 | [places.md](places.md) | turning place names into coordinates and back, without the network |
-| [writing.md](writing.md) | the only part that changes a photo: how one write works, what is proved, moving a folder, why there is no undo |
+| [writing.md](writing.md) | the only part that changes a photo: how one write works, what is proved, a photo written anyway, moving a folder, why there is no undo |
 | [preview.md](preview.md) | what a tool would change, on screen: the change set, the estimate, the confirmation |
 | [tools.md](tools.md) | the edits the person drives: what a tool is, the scope, Set Place, the offset of a date, Shift Dates, Set Date, Set Time Zone, the tags and Tag to Person, Places Tag to Sublocation, Move Event |
 | [suggestions.md](suggestions.md) | the fixes the app is sure of, ticked and applied finder by finder: the tag tree, people from Immich and from tags, places from tags and from events, place words from GPS, folders, file names |

@@ -367,6 +367,7 @@ impl Preview {
 
     fn report(&self, event: Event) {
         match event {
+            Event::Doubted(asked, reply) => crate::confirm::write_anyway(self, &asked, reply),
             Event::Done(done, total) => {
                 let progress = &self.imp().progress;
                 progress.set_fraction(done as f64 / total.max(1) as f64);
@@ -466,6 +467,7 @@ impl Preview {
         for (title, count) in [
             (if moves { "Moved" } else { "Written" }, counts.written),
             ("Failed", counts.failed),
+            ("Left as they were", counts.doubted),
             ("Already right", counts.nothing),
             ("Refused", counts.refused),
         ] {
@@ -671,6 +673,7 @@ fn told(summary: &Summary, moves: bool) -> String {
         (summary.skipped, "already right"),
         (summary.refused, "refused"),
         (summary.failed, "failed"),
+        (summary.doubted, "left as they were"),
     ] {
         if count > 0 {
             parts.push(format!("{count} {name}"));

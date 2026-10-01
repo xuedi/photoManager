@@ -293,7 +293,7 @@ impl Dashboard {
                 );
             }
             Event::Note(line) => progress.set_text(Some(&line)),
-            Event::Previewed(_) | Event::Applied(_) | Event::Fixed(_) => {}
+            Event::Previewed(_) | Event::Applied(_) | Event::Fixed(_) | Event::Doubted(..) => {}
             Event::Places(imported) => {
                 self.stop();
                 self.show_upkeep();

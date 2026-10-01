@@ -598,6 +598,61 @@ pub fn build(root: &Path) -> Result<()> {
 }
 
 /// ExifTool reads the thumbnail from a file, so the image goes through one outside the library.
+/// A photo whose camera wrote a maker note ExifTool doubts: an Olympus-style maker note whose
+/// focus directory announces more entries than it holds. ExifTool reads it, but rewrites the file
+/// only when told to ignore that minor problem, as it does with some real cameras. The maker note
+/// goes into `jpeg`, which must not carry EXIF yet; without one, into one of the invented
+/// pictures. Every byte of it is made up here.
+pub fn with_doubted_maker_note(jpeg: Option<&[u8]>) -> Vec<u8> {
+    fn directory(entries: &[(u16, u16, u32, [u8; 4])]) -> Vec<u8> {
+        let mut bytes = (entries.len() as u16).to_le_bytes().to_vec();
+        for (tag, kind, count, value) in entries {
+            bytes.extend(tag.to_le_bytes());
+            bytes.extend(kind.to_le_bytes());
+            bytes.extend(count.to_le_bytes());
+            bytes.extend(value);
+        }
+        bytes.extend(0u32.to_le_bytes());
+        bytes
+    }
+    let make = b"OLYMPUS\0";
+    let make_at = 8 + 2 + 3 * 12 + 4;
+    let exif_at = make_at + make.len() as u32;
+    let note_at = exif_at + 2 + 12 + 4;
+    let values_at = note_at + 8 + 2 + 2 * 12 + 4;
+    let special: Vec<u8> = [0u32, 0, 100].iter().flat_map(|value| value.to_le_bytes()).collect();
+    let focus_at = values_at + special.len() as u32;
+    let mut focus = 40u16.to_le_bytes().to_vec();
+    focus.extend(directory(&[(0x0209, 3, 1, 7u32.to_le_bytes())]));
+    focus.extend([0u8; 4]);
+    let mut note = b"OLYMP\0\x01\0".to_vec();
+    note.extend(directory(&[
+        (0x0200, 4, 3, values_at.to_le_bytes()),
+        (0x2050, 7, focus.len() as u32, focus_at.to_le_bytes()),
+    ]));
+    note.extend(special);
+    note.extend(focus);
+    let mut tiff = b"II*\0".to_vec();
+    tiff.extend(8u32.to_le_bytes());
+    tiff.extend(directory(&[
+        (0x010f, 2, make.len() as u32, make_at.to_le_bytes()),
+        (0x0110, 2, 4, *b"X1\0\0"),
+        (0x8769, 4, 1, exif_at.to_le_bytes()),
+    ]));
+    tiff.extend(make);
+    tiff.extend(directory(&[(0x927c, 7, note.len() as u32, note_at.to_le_bytes())]));
+    tiff.extend(note);
+    let mut app1 = b"Exif\0\0".to_vec();
+    app1.extend(tiff);
+    let image = jpeg.unwrap_or(IMAGES[0]);
+    let mut jpeg = image[..2].to_vec();
+    jpeg.extend([0xff, 0xe1]);
+    jpeg.extend(((app1.len() + 2) as u16).to_be_bytes());
+    jpeg.extend(app1);
+    jpeg.extend(&image[2..]);
+    jpeg
+}
+
 fn embed_thumbnail(file: &Path, image: &[u8]) -> Result<()> {
     static MADE: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
     let made = MADE.fetch_add(1, std::sync::atomic::Ordering::Relaxed);

@@ -627,6 +627,41 @@ impl Cache {
         Ok(found)
     }
 
+    /// The camera each of these photos was taken with, as a person names it: the model, with the
+    /// maker in front when the model does not say it already.
+    pub fn cameras(&self, rel_paths: &[String]) -> Result<std::collections::HashMap<String, String>> {
+        let mut found = std::collections::HashMap::new();
+        for chunk in rel_paths.chunks(CHUNK) {
+            let sql = format!(
+                "SELECT rel_path, trim(coalesce(camera_make, '')), trim(coalesce(camera_model, '')) FROM photo
+                 WHERE rel_path IN ({})",
+                holes(chunk.len())
+            );
+            let mut statement = self.connection.prepare(&sql)?;
+            let rows = statement.query_map(rusqlite::params_from_iter(chunk), |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, String>(1)?,
+                    row.get::<_, String>(2)?,
+                ))
+            })?;
+            for row in rows {
+                let (rel_path, make, model) = row?;
+                let maker = make.split_whitespace().next().unwrap_or_default();
+                let camera = match (make.is_empty(), model.is_empty()) {
+                    (_, true) => make,
+                    (true, false) => model,
+                    _ if model.to_lowercase().starts_with(&maker.to_lowercase()) => model,
+                    _ => format!("{maker} {model}"),
+                };
+                if !camera.is_empty() {
+                    found.insert(rel_path, camera);
+                }
+            }
+        }
+        Ok(found)
+    }
+
     /// The place words of each of these photos that says any, part by part, the XMP spelling
     /// before the IPTC one.
     pub fn place_words(&self, rel_paths: &[String]) -> Result<std::collections::HashMap<String, crate::write::Place>> {

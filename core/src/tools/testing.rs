@@ -50,6 +50,26 @@ impl Library {
         library
     }
 
+    /// Puts a photo whose maker note ExifTool doubts at `rel_path`, carrying these tags, and
+    /// reads the library again. The tags go in before the maker note does.
+    pub fn add_doubted(&mut self, rel_path: &str, tags: &[&str]) {
+        let file = self.root.join(rel_path);
+        std::fs::create_dir_all(file.parent().unwrap()).unwrap();
+        std::fs::write(&file, crate::fixtures::with_doubted_maker_note(None)).unwrap();
+        let bare = std::fs::read(&file).unwrap();
+        let start = 4 + u16::from_be_bytes([bare[4], bare[5]]) as usize;
+        std::fs::write(&file, [&bare[..2], &bare[start..]].concat()).unwrap();
+        let mut command = std::process::Command::new("exiftool");
+        command.args(["-q", "-overwrite_original"]);
+        for tag in tags {
+            command.arg(format!("-XMP-digiKam:TagsList={tag}"));
+        }
+        assert!(command.arg(&file).status().unwrap().success());
+        let tagged = std::fs::read(&file).unwrap();
+        std::fs::write(&file, crate::fixtures::with_doubted_maker_note(Some(&tagged))).unwrap();
+        self.rescan();
+    }
+
     pub fn rescan(&mut self) {
         let thumbs = Thumbs::new(self.base.join("cache/thumbs"));
         scan::run(

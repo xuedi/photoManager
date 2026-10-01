@@ -256,6 +256,7 @@ impl Suggestions {
                 self.show();
                 self.check();
             }
+            Event::Doubted(asked, reply) => crate::confirm::write_anyway(self, &asked, reply),
             Event::Failed(why) => {
                 self.running(false);
                 self.say(&format!("Did not work: {why}"));
@@ -540,6 +541,7 @@ fn told(passes: &[Pass]) -> String {
     let written: usize = passes.iter().map(|pass| pass.summary.written).sum();
     let refused: usize = passes.iter().map(|pass| pass.summary.refused).sum();
     let failed: usize = passes.iter().map(|pass| pass.summary.failed).sum();
+    let doubted: usize = passes.iter().map(|pass| pass.summary.doubted).sum();
     let cancelled = passes.iter().any(|pass| pass.summary.cancelled);
     let mut said = match passes.len() {
         0 => "Nothing was left to write".to_string(),
@@ -551,6 +553,9 @@ fn told(passes: &[Pass]) -> String {
     }
     if failed > 0 {
         said.push_str(&format!(", {failed} failed"));
+    }
+    if doubted > 0 {
+        said.push_str(&format!(", {doubted} left as they were"));
     }
     if cancelled {
         said.push_str(", then stopped");

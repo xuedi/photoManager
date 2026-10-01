@@ -102,6 +102,7 @@ impl Verdict {
             Verdict::Done(Outcome::Skipped) => "nothing to do".to_string(),
             Verdict::Done(Outcome::Refused(why)) => format!("refused: {why}"),
             Verdict::Done(Outcome::Failed(why)) => format!("failed: {why}"),
+            Verdict::Done(Outcome::Doubted(why)) => format!("left as it was: {why}"),
         }
     }
 }
@@ -190,6 +191,8 @@ pub struct Counts {
     pub refused: usize,
     pub written: usize,
     pub failed: usize,
+    /// Left as they were: ExifTool doubted their maker note, and they were not written anyway.
+    pub doubted: usize,
     pub selected: usize,
     /// Nextcloud re-uploads the whole file for every edit, so this is the sum of the file sizes of
     /// the selected rows that would actually change, not a guess at the size of the difference.
@@ -271,6 +274,7 @@ impl ChangeSet {
                 Verdict::Refused(_) | Verdict::Done(Outcome::Refused(_)) => counts.refused += 1,
                 Verdict::Done(Outcome::Written) => counts.written += 1,
                 Verdict::Done(Outcome::Failed(_)) => counts.failed += 1,
+                Verdict::Done(Outcome::Doubted(_)) => counts.doubted += 1,
             }
             if row.selected && row.would_change() {
                 counts.selected += 1;
@@ -356,9 +360,129 @@ impl ChangeSet {
     }
 }
 
+/// Photos of one camera that ExifTool doubted for one reason.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Doubted {
+    /// `None` when the photo does not say.
+    pub camera: Option<String>,
+    /// ExifTool's reason, without the file.
+    pub why: String,
+    pub photos: Vec<String>,
+}
+
+/// What the user says about photos ExifTool doubted.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Anyway {
+    /// Leave them as they are.
+    Skip,
+    /// Write them anyway, proved.
+    Write,
+    /// Write them anyway, and every one doubted later in the same apply too, without asking.
+    WriteAll,
+}
+
+/// What is asked when a pass doubted photos: them, by camera and reason, and whether more
+/// passes of the same apply follow.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Asked {
+    pub doubted: Vec<Doubted>,
+    pub more_to_come: bool,
+}
+
+impl Asked {
+    pub fn photos(&self) -> usize {
+        self.doubted.iter().map(|doubted| doubted.photos.len()).sum()
+    }
+}
+
+/// The photos a pass doubted, by camera and reason, the most photos first.
+pub fn doubted(cache: &Cache, summary: &Summary) -> Vec<Doubted> {
+    let doubts: Vec<(&str, &str)> = summary.doubts().collect();
+    let paths: Vec<String> = doubts.iter().map(|(rel_path, _)| rel_path.to_string()).collect();
+    let cameras = cache.cameras(&paths).unwrap_or_default();
+    let mut grouped: Vec<Doubted> = Vec::new();
+    for (rel_path, why) in doubts {
+        let camera = cameras.get(rel_path).cloned();
+        match grouped
+            .iter_mut()
+            .find(|group| group.camera == camera && group.why == why)
+        {
+            Some(group) => group.photos.push(rel_path.to_string()),
+            None => grouped.push(Doubted {
+                camera,
+                why: why.to_string(),
+                photos: vec![rel_path.to_string()],
+            }),
+        }
+    }
+    grouped.sort_by(|one, other| {
+        other
+            .photos
+            .len()
+            .cmp(&one.photos.len())
+            .then(one.camera.cmp(&other.camera))
+    });
+    grouped
+}
+
 /// Applies the rows the user kept. Every write is the engine's; all this does is choose which
-/// photos it is handed.
+/// photos it is handed. Photos ExifTool doubts are left as they were.
 pub fn apply(
+    set: &ChangeSet,
+    engine: &mut Engine,
+    cache: &mut Cache,
+    progress: &(dyn Fn(usize, usize) + Sync),
+    cancel: &AtomicBool,
+) -> write::Result<Summary> {
+    apply_asking(set, engine, cache, progress, cancel, false, &mut |_| Anyway::Skip)
+}
+
+/// Applies the rows the user kept, and when ExifTool doubted some of them, asks once whether to
+/// write those anyway; on yes they are written again, anyway and proved. `more_to_come` says
+/// whether other passes of the same apply follow this one.
+pub fn apply_asking(
+    set: &ChangeSet,
+    engine: &mut Engine,
+    cache: &mut Cache,
+    progress: &(dyn Fn(usize, usize) + Sync),
+    cancel: &AtomicBool,
+    more_to_come: bool,
+    ask: &mut dyn FnMut(&Asked) -> Anyway,
+) -> write::Result<Summary> {
+    let summary = apply_once(set, engine, cache, progress, cancel)?;
+    if summary.doubted == 0 || summary.cancelled {
+        return Ok(summary);
+    }
+    let asked = Asked {
+        doubted: doubted(cache, &summary),
+        more_to_come,
+    };
+    if ask(&asked) == Anyway::Skip {
+        tracing::info!(
+            title = set.title,
+            photos = asked.photos(),
+            "doubted photos left as they were"
+        );
+        return Ok(summary);
+    }
+    let again: std::collections::HashSet<&str> = summary.doubts().map(|(rel_path, _)| rel_path).collect();
+    let targets: Vec<Target> = set
+        .targets(engine.library())
+        .into_iter()
+        .filter(|target| {
+            target
+                .path
+                .strip_prefix(engine.library())
+                .ok()
+                .and_then(|rel_path| rel_path.to_str())
+                .is_some_and(|rel_path| again.contains(rel_path))
+        })
+        .collect();
+    let anyway = engine.write_anyway(cache, &set.title, &targets, progress, cancel)?;
+    Ok(summary.and_then(anyway))
+}
+
+fn apply_once(
     set: &ChangeSet,
     engine: &mut Engine,
     cache: &mut Cache,

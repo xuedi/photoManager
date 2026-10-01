@@ -176,7 +176,7 @@ fn a_write_that_cannot_be_proved_leaves_the_original_alone() {
         .intent(&file, &id, &Change::of([Field::Rating(Some(3))]))
         .unwrap();
     intent.want = vec![wrong];
-    let outcome = setup.engine.put(&mut setup.cache, &file, intent).unwrap();
+    let outcome = setup.engine.put(&mut setup.cache, &file, intent, false).unwrap();
 
     match &outcome {
         Outcome::Failed(why) => assert!(why.contains("did not read back"), "{why}"),
@@ -871,4 +871,106 @@ fn the_old_parent_goes_when_the_move_left_it_empty() {
         setup.path("Netherlands/2008-10-03 Galway/Kira/IMG_0002.JPG").is_file(),
         "sub-folders go with it"
     );
+}
+
+// A maker note ExifTool doubts
+
+const DOUBTED: &str = "Germany/2019-07-13 Sommerfest/doubted.jpg";
+const SOMEWHERE: Gps = Gps {
+    lat: 53.55,
+    lon: 9.99,
+    altitude: None,
+    derived: None,
+};
+
+fn with_doubted(name: &str) -> Setup {
+    let setup = Setup::new(name);
+    std::fs::write(setup.path(DOUBTED), crate::fixtures::with_doubted_maker_note(None)).unwrap();
+    setup
+}
+
+#[test]
+fn a_doubted_maker_note_is_left_as_it_was_and_said_so() {
+    let mut setup = with_doubted("doubted");
+    let before = std::fs::read(setup.path(DOUBTED)).unwrap();
+    let outcome = setup.write(DOUBTED, Change::of([Field::Gps(Some(SOMEWHERE))]));
+    assert_eq!(outcome, Outcome::Doubted("Truncated MakerNotes directory".to_string()));
+    assert_eq!(
+        std::fs::read(setup.path(DOUBTED)).unwrap(),
+        before,
+        "not a byte changed"
+    );
+    assert!(setup.leftovers().is_empty());
+}
+
+#[test]
+fn written_anyway_a_maker_note_that_would_lose_bytes_is_left_as_it_was() {
+    let mut setup = with_doubted("anyway");
+    let path = setup.path(DOUBTED);
+    let before = std::fs::read(&path).unwrap();
+    let note = setup.engine.maker_note(&path).unwrap();
+    assert!(note.keys().any(|key| key.ends_with("SpecialMode")), "{note:?}");
+    assert!(
+        note.iter()
+            .any(|(key, value)| key.ends_with("MakerNoteOlympus") && value.as_u64().is_some()),
+        "the whole maker note is read as its length: {note:?}"
+    );
+    let target = setup.target(DOUBTED, Change::of([Field::Gps(Some(SOMEWHERE))]));
+    let summary = setup
+        .engine
+        .write_anyway(&mut setup.cache, "anyway", &[target], &quiet(), &AtomicBool::new(false))
+        .unwrap();
+    let [(_, Outcome::Failed(why))] = summary.outcomes.as_slice() else {
+        panic!("{:?}", summary.outcomes);
+    };
+    assert!(why.contains("the maker note would lose"), "{why}");
+    assert_eq!(std::fs::read(&path).unwrap(), before, "not a byte changed");
+    assert!(setup.leftovers().is_empty());
+}
+
+#[test]
+fn only_a_minor_maker_note_problem_is_doubted() {
+    assert!(doubted("[minor] Truncated MakerNotes directory - a.jpg"));
+    assert!(doubted(
+        "[minor] MakerNotes offsets may be incorrect (fix or ignore?) - a.jpg"
+    ));
+    assert!(doubted("[minor] Maker notes could not be parsed - a.jpg"));
+    assert!(!doubted("Truncated MakerNotes directory - a.jpg"), "not minor");
+    assert!(
+        !doubted("[minor] Bad format (16) for IFD0 entry 5 - a.jpg"),
+        "not the maker note"
+    );
+    assert!(!doubted("Error opening file - a.jpg"));
+    assert_eq!(
+        reason("[minor] MakerNotes offsets may be incorrect (fix or ignore?) - /x/.a.jpg.writing-1"),
+        "MakerNotes offsets may be incorrect (fix or ignore?)"
+    );
+}
+
+#[test]
+fn the_proof_ignores_where_a_block_sits_and_nothing_else() {
+    let reading = |pairs: &[(&str, Value)]| -> Map<String, Value> {
+        pairs
+            .iter()
+            .map(|(key, value)| (key.to_string(), value.clone()))
+            .collect()
+    };
+    let before = reading(&[
+        ("Casio:PreviewImageStart", Value::from(7034)),
+        ("Casio:PreviewImage", Value::from("base64:AAAA")),
+        ("Casio:ISO", Value::from(800)),
+    ]);
+    let moved = reading(&[
+        ("Casio:PreviewImageStart", Value::from(13676)),
+        ("Casio:PreviewImage", Value::from("base64:AAAA")),
+        ("Casio:ISO", Value::from(800)),
+    ]);
+    assert!(differs(&before, &moved).is_empty());
+    assert_eq!(decoded_length("UVZDAAAA"), 6);
+    assert_eq!(decoded_length("UVZDAA=="), 4);
+    let changed = reading(&[
+        ("Casio:PreviewImageStart", Value::from(13676)),
+        ("Casio:PreviewImage", Value::from("base64:AAAB")),
+    ]);
+    assert_eq!(differs(&before, &changed), ["Casio:ISO", "Casio:PreviewImage"]);
 }

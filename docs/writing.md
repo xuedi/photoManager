@@ -43,11 +43,49 @@ Every photo ends as one of four things, and only the first one touched the file:
 | skipped | it already said it, so nothing was written |
 | refused | we would not try: not in the library, not a JPEG, image data moved under us, an intent that cannot be written |
 | failed | we tried, it did not work out, and the photo is exactly as it was |
+| doubted | ExifTool would write it only if told to ignore a minor problem with the camera's maker note; the photo is exactly as it was |
 
 A refusal or a failure on one photo never stops the rest of a pass. A failure says ExifTool's own
-reason, its error before any warning printed ahead of it. A file ExifTool will only write when told
-to ignore a minor error - camera MakerNotes whose offsets it doubts - fails with that reason and is
-never forced.
+reason, its error before any warning printed ahead of it.
+
+## Written anyway
+
+Some cameras store their maker note - their own part of the photo's data, settings and a small
+preview - in a way ExifTool doubts: a directory cut short, or parts that are not where its table
+says. To add anything to the EXIF, the maker note has to move inside the file, and ExifTool will
+only move one it doubts when told to ignore that minor problem. The engine never tells it on its
+own. Such a photo comes back **doubted**, and only a minor problem with the maker note is; every
+other error stays a failure.
+
+When a pass doubted photos, the user is asked once, at the end of the pass and before the next
+one: the photos by camera and reason, what the maker note is, and what writing anyway does. On
+**Write Anyway** those photos are written again with ExifTool told to ignore the problem, and the
+copy has a fourth question to answer before it may take the original's place: does every value of
+the maker note read back the same, less the ones that only say where a part sits, are the preview
+and the thumbnail the same bytes, and is the maker note as long as it was. ExifTool leaves out a
+part of a maker note it cannot read rather than move it, so a maker note that would come out
+shorter fails, and the photo stays exactly as it was. A maker note is never repaired and never
+dropped. **Skip** leaves them, and their fix is offered again.
+
+While applying several suggestions, the answer can be given for the rest of that apply: the passes
+that follow write their doubted photos anyway without asking. It is kept nowhere and ends with
+the apply.
+
+```mermaid
+flowchart TD
+    pass[a pass] --> doubted{photos doubted?}
+    doubted -- no --> next[the next pass]
+    doubted -- yes --> always{answered for the rest<br/>of this apply?}
+    always -- yes --> anyway
+    always -- no --> ask[asked once, by camera and reason]
+    ask -- Skip --> next
+    ask -- Write Anyway --> anyway[written again, minor problem ignored]
+    anyway --> proof{maker note values, previews,<br/>image data and length the same?}
+    proof -- yes --> written[written]
+    proof -- no --> failed[failed, the photo as it was]
+    written --> next
+    failed --> next
+```
 
 The same intent can be asked about without doing any of it: a **dry run** goes down this path as
 far as the copy and then stops, and answers with every tag the write would set and the value

@@ -575,6 +575,7 @@ impl PhotoPage {
 
     fn report(&self, event: Event) {
         match event {
+            Event::Doubted(asked, reply) => crate::confirm::write_anyway(self, &asked, reply),
             Event::Applied(summary) => {
                 let path = self.path().unwrap_or_default();
                 let outcome = summary
@@ -587,6 +588,7 @@ impl PhotoPage {
                     Some(Outcome::Skipped) => "The photo already says all of that.".to_string(),
                     Some(Outcome::Refused(why)) => format!("Not changed: {why}"),
                     Some(Outcome::Failed(why)) => format!("Did not work: {why}"),
+                    Some(Outcome::Doubted(why)) => format!("Left as it was: {why}"),
                     None => "Nothing was written.".to_string(),
                 };
                 let written = summary.written > 0;

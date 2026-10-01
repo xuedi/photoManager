@@ -475,6 +475,22 @@ pub fn change_set(finder: &Finder, fixes: &[&Fix], cache: &Cache, geo: Option<&G
     ChangeSet::build(cache, finder.pass, &wanted).map_err(failed)
 }
 
+/// The question through one apply: once the answer is to write anyway every one that follows,
+/// it is not asked again, and the answer goes when the apply does.
+fn for_this_apply(
+    ask: &mut dyn FnMut(&changeset::Asked) -> changeset::Anyway,
+) -> impl FnMut(&changeset::Asked) -> changeset::Anyway + '_ {
+    let mut always = false;
+    move |asked| {
+        if always {
+            return changeset::Anyway::Write;
+        }
+        let answer = ask(asked);
+        always = answer == changeset::Anyway::WriteAll;
+        answer
+    }
+}
+
 /// What one finder's pass came to.
 #[derive(Debug, Clone)]
 pub struct Pass {
@@ -485,6 +501,9 @@ pub struct Pass {
 /// Writes the ticked fixes, finder by finder, each as one pass, and reads the library again after
 /// each pass that another one follows: the next finder works on what the photos say now. A
 /// cancel stops after the pass it came in.
+///
+/// A pass whose photos ExifTool doubted asks about them before the next pass. An answer to write
+/// anyway for every one that follows holds for the rest of this apply and no longer.
 #[allow(clippy::too_many_arguments)]
 pub fn apply(
     fixes: &[Fix],
@@ -494,12 +513,15 @@ pub fn apply(
     rescan: &mut dyn FnMut(&mut Cache) -> Result<(), String>,
     progress: &(dyn Fn(usize, usize) + Sync),
     cancel: &AtomicBool,
+    ask: &mut dyn FnMut(&changeset::Asked) -> changeset::Anyway,
 ) -> Result<Vec<Pass>, String> {
     let ticked: BTreeSet<&str> = fixes.iter().map(|fix| fix.finder).collect();
     let chosen: Vec<&Finder> = FINDERS.iter().filter(|finder| ticked.contains(finder.key)).collect();
     let mut passes = Vec::new();
     let mut stale = false;
-    for finder in chosen {
+    let mut asking = for_this_apply(ask);
+    let last = chosen.len().saturating_sub(1);
+    for (at, finder) in chosen.into_iter().enumerate() {
         if cancel.load(Ordering::Relaxed) {
             break;
         }
@@ -514,7 +536,8 @@ pub fn apply(
             tracing::info!(finder = finder.key, "nothing left to write");
             continue;
         }
-        let summary = changeset::apply(&set, engine, cache, progress, cancel).map_err(|error| error.to_string())?;
+        let summary = changeset::apply_asking(&set, engine, cache, progress, cancel, at < last, &mut asking)
+            .map_err(|error| error.to_string())?;
         stale = summary.written > 0;
         passes.push(Pass {
             finder: finder.key,
@@ -566,6 +589,7 @@ mod tests {
             &mut rescan,
             &|_, _| {},
             &AtomicBool::new(false),
+            &mut |_| changeset::Anyway::Skip,
         )
         .unwrap()
     }
@@ -671,6 +695,126 @@ mod tests {
         let again = find(&library.cache, Some(&geo()));
         assert!(keys(&again, "people-from-tags").is_empty());
         assert!(!keys(&again, "place-words").contains(&"place-words:DE".to_string()));
+    }
+
+    const DOUBTED: &str = "China/2006-09-00 Besuch Ben/doubted.jpg";
+
+    /// Applies the Beijing places tag to a library with a photo whose maker note ExifTool doubts,
+    /// answering with `answer`: the questions, the pass and the library after.
+    fn apply_doubted(name: &str, answer: changeset::Anyway) -> (Vec<changeset::Asked>, Pass, Library) {
+        let mut library = Library::new(name);
+        library.add_doubted(DOUBTED, &["places/inChina/Beijing"]);
+        let ticked: Vec<Fix> = find(&library.cache, Some(&geo()))
+            .into_iter()
+            .filter(|fix| fix.key == "places-from-tags:places/inChina/Beijing")
+            .collect();
+        assert_eq!(ticked.len(), 1);
+        assert_eq!(ticked[0].photos, 3, "the two of the fixture and the doubted one");
+        let geo = geo();
+        let mut engine = Engine::new(&library.root).unwrap();
+        let mut asked = Vec::new();
+        let passes = apply(
+            &ticked,
+            &mut library.cache,
+            Some(&geo),
+            &mut engine,
+            &mut |_| Ok(()),
+            &|_, _| {},
+            &AtomicBool::new(false),
+            &mut |question| {
+                asked.push(question.clone());
+                answer
+            },
+        )
+        .unwrap();
+        library.rescan();
+        let [pass] = passes.as_slice() else {
+            panic!("one pass: {passes:?}");
+        };
+        (asked, pass.clone(), library)
+    }
+
+    fn doubted_says(library: &Library) -> crate::cache::Said {
+        library.cache.stated(&[DOUBTED.to_string()]).unwrap()[DOUBTED]
+            .said
+            .clone()
+    }
+
+    #[test]
+    fn a_doubted_photo_is_asked_about_once_by_camera_and_left_on_skip() {
+        let (asked, pass, library) = apply_doubted("fixes-doubted-skip", changeset::Anyway::Skip);
+        let [question] = asked.as_slice() else {
+            panic!("asked once: {asked:?}");
+        };
+        assert_eq!(
+            question.doubted,
+            [changeset::Doubted {
+                camera: Some("OLYMPUS X1".to_string()),
+                why: "Truncated MakerNotes directory".to_string(),
+                photos: vec![DOUBTED.to_string()],
+            }]
+        );
+        assert!(!question.more_to_come, "the only pass");
+        assert_eq!(
+            (pass.summary.written, pass.summary.doubted),
+            (2, 1),
+            "the others are written"
+        );
+        assert!(doubted_says(&library).gps_lat.is_none(), "left as it was");
+    }
+
+    #[test]
+    fn a_doubted_photo_written_anyway_is_written_only_if_nothing_is_lost() {
+        let (asked, pass, library) = apply_doubted("fixes-doubted-write", changeset::Anyway::Write);
+        assert_eq!(asked.len(), 1);
+        let left = pass
+            .summary
+            .outcomes
+            .iter()
+            .find(|(rel_path, _)| rel_path == DOUBTED)
+            .map(|(_, outcome)| outcome.clone());
+        assert!(
+            matches!(&left, Some(crate::write::Outcome::Failed(why)) if why.contains("would lose")),
+            "this maker note would come out shorter: {left:?}"
+        );
+        assert_eq!((pass.summary.written, pass.summary.doubted), (2, 0));
+        assert!(doubted_says(&library).gps_lat.is_none());
+    }
+
+    #[test]
+    fn write_anyway_for_the_rest_holds_for_this_apply_only() {
+        let question = changeset::Asked {
+            doubted: Vec::new(),
+            more_to_come: true,
+        };
+        let mut asked = 0;
+        let mut answers = [changeset::Anyway::Write, changeset::Anyway::WriteAll].into_iter();
+        let mut ask = |_: &changeset::Asked| {
+            asked += 1;
+            answers.next().unwrap()
+        };
+        let mut through = for_this_apply(&mut ask);
+        let said: Vec<changeset::Anyway> = (0..4).map(|_| through(&question)).collect();
+        drop(through);
+        assert_eq!(asked, 2, "asked until the answer was every one that follows");
+        assert_eq!(
+            said,
+            [
+                changeset::Anyway::Write,
+                changeset::Anyway::WriteAll,
+                changeset::Anyway::Write,
+                changeset::Anyway::Write
+            ]
+        );
+        let mut again = 0;
+        let mut ask = |_: &changeset::Asked| {
+            again += 1;
+            changeset::Anyway::Skip
+        };
+        let mut next = for_this_apply(&mut ask);
+        next(&question);
+        drop(next);
+        assert_eq!(again, 1, "a new apply asks again");
     }
 
     #[test]
