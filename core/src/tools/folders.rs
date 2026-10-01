@@ -11,6 +11,10 @@
 //! agree. A photo in a folder but in no event is asked about too, offered the events nearest to
 //! its date.
 //!
+//! The event's name is the one its photos give in their own field, when every photo gives the same
+//! one, and the folder's name part otherwise: an event renamed in its photos is asked about even
+//! when its folder is in the layout, and its folder follows the new name.
+//!
 //! An event moves as a whole, with its sub-folders, by one rename; only the folder changes, never
 //! a photo. Moves never run together with a tool that writes.
 
@@ -231,6 +235,22 @@ struct Event {
     photos: Vec<Tagged>,
     /// The folders inside it, which move with it.
     subs: BTreeSet<String>,
+    /// The name every photo gives in its own field, when it is not the folder's.
+    renamed: Option<String>,
+}
+
+/// The event folders whose photos all name one event in their own field, and another than the
+/// folder's name part, with that name.
+pub fn renamed_events(cache: &Cache) -> cache::Result<BTreeMap<String, String>> {
+    let mut statement = cache.connection().prepare(
+        "SELECT event_dir, min(trim(event_field)) FROM photo
+         WHERE event_dir IS NOT NULL
+         GROUP BY event_dir
+         HAVING count(*) = count(nullif(trim(event_field), ''))
+            AND min(trim(event_field)) = max(trim(event_field))
+            AND min(trim(event_field)) != min(trim(coalesce(event_name, '')))",
+    )?;
+    statement.query_map([], |row| Ok((row.get(0)?, row.get(1)?)))?.collect()
 }
 
 /// One way to fill an event's place levels, before the tag, the year and the month are added.
@@ -431,6 +451,7 @@ impl<'a> Survey<'a> {
         let layout = cache.layout().clone();
         let paths = scope.paths(cache)?;
         let folders = cache.event_folders()?;
+        let renamed = renamed_events(cache)?;
         let mut dirs: BTreeSet<String> = BTreeSet::new();
         let mut settled: BTreeSet<String> = BTreeSet::new();
         // Events in the layout by their folders' shape, and whose folders agree with the photos.
@@ -438,7 +459,7 @@ impl<'a> Survey<'a> {
         for rel_path in &paths {
             let placement = Placement::parse(rel_path, &layout);
             match &placement.event_dir {
-                Some(dir) if asks(&placement, &layout) => {
+                Some(dir) if asks(&placement, &layout) || renamed.contains_key(dir) => {
                     dirs.insert(dir.clone());
                 }
                 Some(dir) => {
@@ -502,6 +523,7 @@ impl<'a> Survey<'a> {
                 country_sure,
                 photos,
                 subs,
+                renamed: renamed.get(dir).cloned(),
             });
         }
         let mut positions: HashMap<String, Vec<(f64, f64)>> = HashMap::new();
@@ -827,7 +849,10 @@ impl<'a> Survey<'a> {
             let placement = Placement::of_folder(&event.dir, &layout);
             (event.dir.clone(), placement.event_text.unwrap_or_default())
         };
-        let name = event_name(&dir).to_string();
+        let name = match &self.events[at].renamed {
+            Some(renamed) if !date.is_empty() => format!("{date} {renamed}"),
+            _ => event_name(&dir).to_string(),
+        };
         let dated = !((layout.has(&Component::Year) || layout.has(&Component::Month)) && date.starts_with("0000"))
             && !(layout.has(&Component::Month) && date.get(5..7) == Some("00"));
 

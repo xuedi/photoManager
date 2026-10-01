@@ -96,6 +96,7 @@ pub fn present(tools: &Tools, library: &Rc<Library>, edit: Edit, scope: &Scope) 
             dialog(tools, edit, &[group.upcast_ref()], make, None);
         }
         Edit::MoveEvent => folder(tools, library, edit, scope),
+        Edit::RenameEvent => rename_event(tools, library, edit, scope),
         Edit::PositionFromNeighbour => tools.open_neighbour_of_scope(library),
         #[cfg(feature = "devtools")]
         Edit::Rating => {
@@ -817,4 +818,36 @@ fn folder(tools: &Tools, library: &Rc<Library>, edit: Edit, scope: &Scope) {
         make,
         focus.as_ref(),
     );
+}
+
+/// The event's name, as its photos give it or as its folder does. The folder follows on the
+/// Suggestions tab once the photos say the new name.
+fn rename_event(tools: &Tools, library: &Rc<Library>, edit: Edit, scope: &Scope) {
+    let (event, name) = match library.event_name(scope) {
+        Ok(found) => found,
+        Err(why) => {
+            tools.say(&format!("Rename Event: {why}"));
+            return;
+        }
+    };
+    let group = described(
+        "Written into the event field of every photo of the event. Folders in Suggestions then offers its folder under the new name.",
+    );
+    let folder = adw::ActionRow::builder()
+        .title("Event")
+        .subtitle(glib::markup_escape_text(&event))
+        .subtitle_lines(3)
+        .subtitle_selectable(true)
+        .build();
+    let entry = adw::EntryRow::builder().title("Name").text(&name).build();
+    group.add(&folder);
+    group.add(&entry);
+    let make: Make = Rc::new(glib::clone!(
+        #[weak]
+        entry,
+        #[upgrade_or]
+        Err("the form is closed".to_string()),
+        move || edit.read(entry.text().as_str())
+    ));
+    dialog(tools, edit, &[group.upcast_ref()], make, Some(entry.upcast_ref()));
 }

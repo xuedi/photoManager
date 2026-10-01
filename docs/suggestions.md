@@ -21,7 +21,8 @@ refused for good is no fix and is not listed.
 | People | one person Immich names | no other person in Immich has the name |
 | Places from Tags | one places tag of photos without GPS | the place data knows the name exactly |
 | Places from Events | one event with photos without GPS | every located photo of the event stands in one town |
-| Folders | one event off the folder layout | every level of its folder is sure |
+| Events from Folders | one event folder whose photos do not name it in their own field | its folder has a name |
+| Folders | one event off the folder layout, or renamed in its photos | every level of its folder is sure |
 | File Names | one folder whose photos are not named by their date | the photo has a date |
 
 ## The tab
@@ -213,14 +214,30 @@ country, the towns it holds named.
 - **A position with no town near** in the place data is left, and so is everything when there is
   no place data.
 
+## Events from Folders
+
+The event a photo belongs to goes into its own field, `Event`
+([writing.md](writing.md#the-canonical-field-set)), so a photo that leaves its folder keeps it.
+One fix per event folder: the name is the folder's name part as the layout reads it, without the
+date - `2019-07-13 Summer Party` gives `Summer Party` - and a sub-folder's photos are its event's.
+
+- **Never over another name.** A photo whose field names another event is refused with both names
+  and left; the dashboard counts it under "event agrees with the folder".
+- **A photo in no event folder** gets nothing.
+- It runs before Folders, so an event renamed in its photos moves under its new name.
+
 ## Folders
 
-Every event of the library off the [folder layout](cache.md#folder-names) is looked at, level by
+Every event of the library off the [folder layout](cache.md#folder-names), and every event whose
+photos all name another event in their own field than its folder does, is looked at, level by
 level, from what its photos already say: the country from its folders or places tags, the city
 from the city folder it is in or the places tag of every photo, the region from that city, the
 year and month from the event's date, a tag level from the one tag below its root every photo
 carries. A city is spelled the way the library already spells it, so folders and tags agree.
 
+- **The name** is the one the photos give, when all of them give the same one, else the folder's.
+  So an event renamed with [Rename Event](tools.md#rename-event) is offered its folder under the
+  new name, its date kept.
 - **Sure** is a folder whose every level is sure. Several cities, a city on only some photos, an
   event without a year are not: Move Event moves them by hand.
 - **The people gate.** An event whose photos Immich names people in that the files do not say is

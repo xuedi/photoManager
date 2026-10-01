@@ -112,8 +112,8 @@ pub fn renamed(cache: &Cache, scope: &Scope, rules: &Rules, untidy: bool) -> cac
 }
 
 /// Each generated root replaced by what the data says, where it says anything: the year of the
-/// date, the city and country of the place words, the event of the folder. A photo the data says
-/// nothing about keeps what it has.
+/// date, the city and country of the place words, the event the photo's own field names, else its
+/// folder's. A photo the data says nothing about keeps what it has.
 fn derived(tags: Vec<String>, photo: &Tagged) -> Vec<String> {
     let mut made: Vec<(&str, String)> = Vec::new();
     if let Some(year) = photo.taken_at.as_deref().and_then(|at| at.get(..4)) {
@@ -130,9 +130,11 @@ fn derived(tags: Vec<String>, photo: &Tagged) -> Vec<String> {
             made.push((PLACES, place.join("/")));
         }
     }
-    if photo.event_dir.is_some()
-        && let Some(name) = photo.event_name.as_deref().map(level).filter(|name| !name.is_empty())
-    {
+    let event = match photo.event_dir {
+        Some(_) => photo.event_field.as_deref().or(photo.event_name.as_deref()),
+        None => photo.event_field.as_deref(),
+    };
+    if let Some(name) = event.map(level).filter(|name| !name.is_empty()) {
         made.push((
             EVENTS,
             match photo.event_year.filter(|year| *year > 0) {
@@ -269,6 +271,16 @@ mod unit_tests {
             tags_of(&bare, &Rules::default(), Generated::Derived, &tree),
             ["places/inChina/Beijing"],
             "without a date, place words or an event there is nothing to derive"
+        );
+
+        let renamed = Tagged {
+            event_field: Some("Summer Party".to_string()),
+            ..tagged.clone()
+        };
+        assert!(
+            tags_of(&renamed, &Rules::default(), Generated::Derived, &tree)
+                .contains(&"events/2019 Summer Party".to_string()),
+            "the event the photo names comes before its folder's"
         );
     }
 }

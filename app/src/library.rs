@@ -358,6 +358,13 @@ impl Library {
         edits::proposal(cache, geo.as_ref(), scope)
     }
 
+    /// The scope's one event, and the name Rename Event starts from.
+    pub fn event_name(&self, scope: &Scope) -> Result<(String, String), String> {
+        let cache = self.cache.borrow();
+        let cache = cache.as_ref().ok_or("the cache is busy")?;
+        edits::event_name(cache, scope)
+    }
+
     /// The countries, the events, the tags and the people, with their counts.
     pub fn sidebars<F: FnOnce(Result<Sidebars, String>) + 'static>(&self, done: F) {
         self.read_off_thread(

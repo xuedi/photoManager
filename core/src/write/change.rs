@@ -136,6 +136,8 @@ pub enum Field {
     /// The whole list of persons the photo names, a name without a box as well as each box's.
     /// The face regions stay as they are, and a name the photo had is never left out.
     Persons(Vec<String>),
+    /// The name of the event the photo belongs to, in IPTC's `Event`, without its date.
+    Event(Option<String>),
     /// Old Shotwell leaked a keyword into the label field; this takes it back out.
     DropLabel,
     /// An iView leftover nothing in this library reads.
@@ -261,6 +263,7 @@ const PLACE_TAGS: [(&str, &str); 10] = [
 
 const REGION_INFO: &str = "XMP-mwg-rs:RegionInfo";
 const PERSON_IN_IMAGE: &str = "XMP-iptcExt:PersonInImage";
+const EVENT: &str = "XMP-iptcExt:Event";
 const LABEL: &str = "XMP-xmp:Label";
 const CATALOG_SETS: &str = "XMP-mediapro:CatalogSets";
 
@@ -274,6 +277,7 @@ impl Field {
             Field::Taken(taken) => taken_assigns(taken.as_ref()),
             Field::Faces(faces) => face_assigns(faces.as_ref()),
             Field::Persons(names) => person_assigns(names),
+            Field::Event(name) => event_assigns(name.as_deref()),
             Field::DropLabel => Ok(vec![gone(LABEL, LABEL)]),
             Field::DropCatalogSets => Ok(vec![gone(CATALOG_SETS, CATALOG_SETS)]),
         }
@@ -422,6 +426,17 @@ fn place_assigns(place: Option<&Place>) -> Vec<Assign> {
             _ => gone(tag, key),
         })
         .collect()
+}
+
+/// The name alone, on one line: a name with nothing in it is no event, and one that is to go is
+/// `None`.
+fn event_assigns(name: Option<&str>) -> Result<Vec<Assign>, String> {
+    match name.map(str::trim) {
+        None => Ok(vec![gone(EVENT, EVENT)]),
+        Some("") => Err("an event without a name is no event".to_string()),
+        Some(name) if name.contains(['\n', '\r']) => Err(format!("{name:?} is more than one line")),
+        Some(name) => Ok(vec![set(EVENT, EVENT, Value::from(name))]),
+    }
 }
 
 /// EXIF is what every reader believes, so it leads; the XMP and IPTC dates are made to agree with

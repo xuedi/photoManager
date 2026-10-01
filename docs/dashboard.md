@@ -75,6 +75,8 @@ connection to the cache, so it can run while the cache itself is busy with somet
 | tags | it has no tag at all |
 | people | it names no person, in a face region or in the IPTC persons; a `people` tag is a tag, not a person |
 | location text | no city in the IPTC or XMP location fields |
+| event | it is in an event folder with a name, and its own event field is empty |
+| event agrees with the folder | its event field names another event than its folder's name part. Photos without the field, or in no named event folder, are not counted either way |
 
 A day either side still agrees because photos taken after midnight, or with the camera still on
 the time zone of home, are not wrong.
@@ -133,6 +135,8 @@ those photos are fixed. What is fixed where is decided from the row's filter alo
 | date disagrees with the folder | Shift Dates, scoped |
 | no tag | Add Tag, scoped |
 | no people | the People fixes |
+| no event | the Events from Folders fixes |
+| event disagrees with the folder | nothing: the photo or the folder is renamed by hand, with Rename Event or Move Event |
 | `mixed`, case twins, tags that look alike | the Tag Tree fixes |
 | loose files, sub-folders, off the layout | the Folders fixes |
 | not named by their date | the File Names fixes |

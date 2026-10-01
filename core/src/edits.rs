@@ -39,6 +39,7 @@ pub enum Edit {
     TagToPerson,
     TidyTags,
     MoveEvent,
+    RenameEvent,
     PositionFromNeighbour,
     /// A rating over the whole scope, so the way from an edit to a photo can be driven.
     /// Development builds only.
@@ -59,6 +60,7 @@ pub const ALL: &[Edit] = &[
     Edit::TagToPerson,
     Edit::TidyTags,
     Edit::MoveEvent,
+    Edit::RenameEvent,
     Edit::PositionFromNeighbour,
     #[cfg(feature = "demo")]
     Edit::Rating,
@@ -86,6 +88,8 @@ pub enum Value {
         name: String,
     },
     Folder(String),
+    /// The name of an event, without its date.
+    EventName(String),
     /// The photos of one event and the measured photo each borrows its position from.
     Neighbours(Neighbours),
     Rating(i64),
@@ -110,6 +114,7 @@ impl Edit {
             Edit::TagToPerson => "tag-to-person",
             Edit::TidyTags => "tidy-tags",
             Edit::MoveEvent => "move-event",
+            Edit::RenameEvent => "rename-event",
             Edit::PositionFromNeighbour => "position-from-a-neighbour",
             #[cfg(feature = "demo")]
             Edit::Rating => "demo-rating",
@@ -129,6 +134,7 @@ impl Edit {
             Edit::TagToPerson => "Tag to Person",
             Edit::TidyTags => "Tidy Tags",
             Edit::MoveEvent => "Move Event",
+            Edit::RenameEvent => "Rename Event",
             Edit::PositionFromNeighbour => "Position from a Neighbour",
             #[cfg(feature = "demo")]
             Edit::Rating => "Demo Rating",
@@ -151,6 +157,7 @@ impl Edit {
             Edit::TagToPerson => "Names a person in every photo of a people tag, without a face box",
             Edit::TidyTags => "Writes every tag field the same, the generated tags made, dropped or kept",
             Edit::MoveEvent => "Moves one event into another folder",
+            Edit::RenameEvent => "Writes a new name into the event field of every photo of one event",
             Edit::PositionFromNeighbour => "Gives photos of one event the position a photo taken beside them measured",
             #[cfg(feature = "demo")]
             Edit::Rating => "Sets one rating on every photo",
@@ -226,6 +233,13 @@ impl Edit {
                 .map(Value::Generated)
                 .ok_or_else(|| format!("{text} is not derived, dropped or kept")),
             Edit::MoveEvent => Ok(Value::Folder(folders::event_folder(text)?)),
+            Edit::RenameEvent => match text {
+                "" => Err("type the event's name".to_string()),
+                name if name.contains(['/', '\\']) => {
+                    Err(format!("{name} has a / or a \\ in it, which a folder cannot"))
+                }
+                name => Ok(Value::EventName(name.to_string())),
+            },
             Edit::PositionFromNeighbour => Ok(Value::Neighbours(Neighbours::read(text)?)),
             #[cfg(feature = "demo")]
             Edit::Rating => match text.parse::<i64>() {
@@ -300,6 +314,18 @@ impl Edit {
                 (
                     format!("Move {event} to {folder}"),
                     folders::moves(cache, &[(event, folder.clone())]).map_err(failed)?,
+                )
+            }
+            (Edit::RenameEvent, Value::EventName(name)) => {
+                let event = event_of(cache, scope)?;
+                (
+                    format!("Rename {} to {name}", event.rsplit('/').next().unwrap_or(&event)),
+                    cache
+                        .under(&event)
+                        .map_err(failed)?
+                        .into_iter()
+                        .map(|rel_path| Wanted::new(rel_path, Change::of([Field::Event(Some(name.clone()))])))
+                        .collect(),
                 )
             }
             (Edit::PositionFromNeighbour, Value::Neighbours(neighbours)) => (
@@ -491,6 +517,21 @@ pub fn event_of(cache: &Cache, scope: &Scope) -> Result<String, String> {
         (None, _) => Err("the scope is in no event: choose one event as the scope".to_string()),
         (Some(_), Some(_)) => Err("the scope is in several events: choose one event as the scope".to_string()),
     }
+}
+
+/// What Rename Event starts from for the scope's event: the event folder, and the name its photos
+/// give when they all give one, else the folder's name part.
+pub fn event_name(cache: &Cache, scope: &Scope) -> Result<(String, String), String> {
+    let failed = |error: rusqlite::Error| error.to_string();
+    let event = event_of(cache, scope)?;
+    let renamed = folders::renamed_events(cache).map_err(failed)?;
+    let name = match renamed.get(&event) {
+        Some(name) => name.clone(),
+        None => crate::layout::Placement::of_folder(&event, cache.layout())
+            .event_name
+            .unwrap_or_default(),
+    };
+    Ok((event, name))
 }
 
 /// What Move Event starts from for the scope's event: the folder Folder Migration would offer it,
@@ -755,5 +796,68 @@ mod tests {
             .unwrap();
         assert!(set.moves());
         assert_eq!(set.title, format!("Move China/2006-09-00 Besuch Ben to {folder}"));
+    }
+
+    #[test]
+    fn rename_event_writes_the_event_and_the_folder_follows() {
+        const EVENT: &str = "Germany/Hamburg/2014-08-00 Wedding";
+        let mut library = Library::new("edit-rename-event");
+        let scope = Scope::Filter(Filter::all().within(EVENT));
+        assert_eq!(
+            event_name(&library.cache, &scope).unwrap(),
+            (EVENT.to_string(), "Wedding".to_string())
+        );
+        assert!(Edit::RenameEvent.read(" ").is_err());
+        assert!(Edit::RenameEvent.read("a/b").is_err());
+
+        let value = Edit::RenameEvent.read(" Summer Wedding ").unwrap();
+        let set = Edit::RenameEvent
+            .change_set(&value, &library.cache, None, &scope)
+            .unwrap();
+        let under = library.cache.under(EVENT).unwrap();
+        assert_eq!(
+            set.rows.iter().map(|row| row.rel_path.clone()).collect::<Vec<_>>(),
+            under,
+            "exactly the event's photos"
+        );
+        library.apply(&set);
+        library.rescan();
+        assert_eq!(event_name(&library.cache, &scope).unwrap().1, "Summer Wedding");
+
+        let asked = folders::FolderMigration
+            .questions(&library.cache, Some(&geo()), &scope, &Default::default())
+            .unwrap();
+        let question = asked
+            .iter()
+            .find(|question| question.key == EVENT)
+            .expect("asked again");
+        assert!(
+            question.offers.iter().all(|offer| matches!(&offer.answer,
+                Answer::Folder(to) if to.ends_with("/2014-08-00 Summer Wedding"))),
+            "{question:?}"
+        );
+        assert!(!question.offers.is_empty());
+        let fixes = crate::fixes::find(&library.cache, Some(&geo()));
+        let fix = fixes.iter().find(|fix| fix.key == format!("folders:{EVENT}"));
+        assert!(
+            fix.is_some_and(|fix| fix
+                .lines
+                .iter()
+                .any(|(_, to)| to == "Germany/Hamburg/2014-08-00 Summer Wedding")),
+            "{fix:?} {question:?}"
+        );
+    }
+
+    #[test]
+    fn photos_that_disagree_keep_the_folder_name() {
+        const EVENT: &str = "Denmark/2018-10-00 Wedding Trip to Copenhagen";
+        let library = Library::new("edit-event-disagree");
+        let scope = Scope::Filter(Filter::all().within(EVENT));
+        assert_eq!(
+            event_name(&library.cache, &scope).unwrap().1,
+            "Wedding Trip to Copenhagen",
+            "one photo names another event, the other none"
+        );
+        assert!(!folders::renamed_events(&library.cache).unwrap().contains_key(EVENT));
     }
 }

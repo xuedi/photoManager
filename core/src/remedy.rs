@@ -34,6 +34,8 @@ impl Remedy {
             Kind::Missing(Gap::DateOffFolder) => tool(Edit::ShiftDates),
             Kind::Missing(Gap::Tags) => tool(Edit::AddTag),
             Kind::Missing(Gap::People) => fixes("people"),
+            Kind::Missing(Gap::Event) => fixes("events-from-folders"),
+            Kind::Missing(Gap::EventOffFolder) => None,
             Kind::Tagged(_) => fixes("tags"),
             Kind::Person(_) => None,
             Kind::SubFolder | Kind::Loose | Kind::OffLayout => fixes("folders"),

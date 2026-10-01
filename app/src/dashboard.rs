@@ -514,6 +514,10 @@ impl Dashboard {
                     "disagrees on {} of {} dated photos in a dated folder",
                     measure.missing, measure.of
                 ),
+                Gap::EventOffFolder => format!(
+                    "disagrees on {} of {} photos that name their event",
+                    measure.missing, measure.of
+                ),
                 _ => format!("missing on {} of {}", measure.missing, measure.of),
             };
             let row = adw::ActionRow::builder().title(gap.title()).subtitle(subtitle).build();
@@ -767,8 +771,11 @@ fn by_gap(places: &[Place], gap: Gap) -> Vec<&Place> {
 fn so_far(gap: Gap, measure: Measure) -> String {
     match (gap, measure.missing) {
         (Gap::DateOffFolder, 0) if measure.of == 0 => "no dated photo in a dated folder".to_string(),
+        (Gap::EventOffFolder, 0) if measure.of == 0 => "no photo names its event".to_string(),
         (_, 0) => "nothing missing".to_string(),
-        (Gap::DateOffFolder, missing) => format!("{missing} of {} disagree with the folder", measure.of),
+        (Gap::DateOffFolder | Gap::EventOffFolder, missing) => {
+            format!("{missing} of {} disagree with the folder", measure.of)
+        }
         (_, missing) => format!("{missing} of {} {}", measure.of, gap.lacking()),
     }
 }

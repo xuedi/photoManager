@@ -668,6 +668,11 @@ fn difference(field: &Field, known: Option<(&Said, &write::Place)>) -> Differenc
                 after: shown_people(faces, names),
             }
         }
+        Field::Event(name) => Difference {
+            what: "event",
+            before: said.map(|said| said.event.clone().unwrap_or_else(|| NONE.to_string())),
+            after: name.as_deref().map(str::trim).unwrap_or(NONE).to_string(),
+        },
         Field::DropLabel => Difference {
             what: "label",
             before: said.filter(|said| !said.tags_untidy).map(|_| NONE.to_string()),

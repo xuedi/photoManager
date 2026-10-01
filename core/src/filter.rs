@@ -26,16 +26,26 @@ pub enum Gap {
     Tags,
     People,
     Location,
+    /// The event in the photo's own field, for a photo in a named event folder.
+    Event,
+    /// Not missing as such: the event the photo's field names is not its folder's.
+    EventOffFolder,
 }
 
+/// A photo in an event folder whose name part says something.
+const NAMED_EVENT: &str = "p.event_dir IS NOT NULL AND trim(coalesce(p.event_name, '')) != ''";
+
 impl Gap {
-    pub const ALL: [Gap; 6] = [
+    pub const COUNT: usize = 8;
+    pub const ALL: [Gap; Gap::COUNT] = [
         Gap::Gps,
         Gap::Date,
         Gap::DateOffFolder,
         Gap::Tags,
         Gap::People,
         Gap::Location,
+        Gap::Event,
+        Gap::EventOffFolder,
     ];
 
     pub fn key(self) -> &'static str {
@@ -46,6 +56,8 @@ impl Gap {
             Gap::Tags => "no-tag",
             Gap::People => "no-people",
             Gap::Location => "no-location",
+            Gap::Event => "no-event",
+            Gap::EventOffFolder => "event-off-folder",
         }
     }
 
@@ -57,6 +69,8 @@ impl Gap {
             Gap::Tags => "Tags",
             Gap::People => "People",
             Gap::Location => "Location text",
+            Gap::Event => "Event",
+            Gap::EventOffFolder => "Event agrees with the folder",
         }
     }
 
@@ -69,15 +83,20 @@ impl Gap {
             Gap::Tags => "without any tag",
             Gap::People => "without people",
             Gap::Location => "without location text",
+            Gap::Event => "without the event in their own field",
+            Gap::EventOffFolder => "whose event disagrees with the folder",
         }
     }
 
-    /// The photos the gap can be asked about at all. Only the folder date needs both a date and
-    /// a folder that states a year.
-    pub(crate) fn measured(self) -> &'static str {
+    /// The photos the gap can be asked about at all. The folder date needs both a date and a
+    /// folder that states a year, the event a named event folder, and the event against the
+    /// folder both names.
+    pub(crate) fn measured(self) -> String {
         match self {
-            Gap::DateOffFolder => "p.taken_at IS NOT NULL AND p.event_year IS NOT NULL",
-            _ => "1",
+            Gap::DateOffFolder => "p.taken_at IS NOT NULL AND p.event_year IS NOT NULL".to_string(),
+            Gap::Event => NAMED_EVENT.to_string(),
+            Gap::EventOffFolder => format!("p.event_field IS NOT NULL AND {NAMED_EVENT}"),
+            _ => "1".to_string(),
         }
     }
 
@@ -102,6 +121,8 @@ impl Gap {
             Gap::Tags => "p.id NOT IN (SELECT photo_id FROM tag)",
             Gap::People => "p.id NOT IN (SELECT photo_id FROM person)",
             Gap::Location => "p.location_city IS NULL",
+            Gap::Event => "p.event_field IS NULL",
+            Gap::EventOffFolder => "trim(p.event_field) != trim(p.event_name)",
         }
     }
 
@@ -881,6 +902,8 @@ pub(crate) mod tests {
             "no-tag",
             "no-people",
             "no-location",
+            "no-event",
+            "event-off-folder",
             "no-gps@Germany",
             "tag:mixed",
             "tag:people",
@@ -995,6 +1018,15 @@ pub(crate) mod tests {
         assert_eq!(count("loose"), 1);
         assert_eq!(count("loose@China"), 1);
         assert_eq!(count("off-layout"), 0);
+        assert_eq!(
+            count("no-event"),
+            all - 1 - 2,
+            "every photo but the loose one and the two that name an event"
+        );
+        assert_eq!(
+            filter("event-off-folder").paths(&cache).unwrap(),
+            ["Denmark/2018-10-00 Wedding Trip to Copenhagen/DSCF0001.JPG"]
+        );
     }
 
     #[test]

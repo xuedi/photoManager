@@ -24,7 +24,7 @@ use crate::tools::folders::{self, FolderMigration};
 use crate::tools::gps_from_event::GpsFromEvent;
 use crate::tools::gps_from_places::{self, GpsFromPlacesTag};
 use crate::tools::{Answer, Answers, Question, Tool, tag_vocabulary};
-use crate::tools::{duplicate_people, people, people_from_tags, place_words};
+use crate::tools::{duplicate_people, events_from_folders, people, people_from_tags, place_words};
 use crate::write::{self, Engine};
 
 /// One kind of fix, and the pass its ticked fixes are written as.
@@ -39,7 +39,7 @@ pub struct Finder {
 }
 
 /// Every finder, in the order its fixes are applied.
-pub const FINDERS: [Finder; 9] = [
+pub const FINDERS: [Finder; 10] = [
     Finder {
         key: "tags",
         title: "Tag Tree",
@@ -81,6 +81,12 @@ pub const FINDERS: [Finder; 9] = [
         title: "Place Words from GPS",
         fixes: "Photos with a position and no place in words, given the town, the state and the country",
         pass: "Write the place from the position",
+    },
+    Finder {
+        key: "events-from-folders",
+        title: "Events from Folders",
+        fixes: "Photos in an event folder whose own field does not name the event yet",
+        pass: "Write the event from the folder",
     },
     Finder {
         key: "folders",
@@ -135,6 +141,8 @@ enum What {
     },
     /// The country, by code, whose photos get the words of their position.
     Country(String),
+    /// The event folder whose photos get its event in their own field.
+    EventDir(String),
 }
 
 /// Every fix there is in the library, finder by finder. A finder that cannot look is left out,
@@ -201,6 +209,27 @@ fn find_one(key: &str, cache: &Cache, geo: Option<&Geo>) -> Result<Vec<Fix>, Str
                     photos: country.photos,
                     lines: vec![("Towns".to_string(), towns)],
                     what: What::Country(country.code),
+                }
+            })
+            .collect(),
+        "events-from-folders" => events_from_folders::sure(cache)?
+            .into_iter()
+            .map(|found| {
+                let mut lines = Vec::new();
+                if found.refused > 0 {
+                    lines.push((
+                        "Left".to_string(),
+                        format!("{}, their field names another event", counted(found.refused)),
+                    ));
+                }
+                Fix {
+                    key: format!("events-from-folders:{}", found.dir),
+                    finder: "events-from-folders",
+                    title: found.dir.clone(),
+                    detail: found.name,
+                    photos: found.photos,
+                    lines,
+                    what: What::EventDir(found.dir),
                 }
             })
             .collect(),
@@ -428,6 +457,7 @@ pub fn change_set(finder: &Finder, fixes: &[&Fix], cache: &Cache, geo: Option<&G
     let mut doubled = BTreeSet::new();
     let mut tagged = std::collections::BTreeMap::new();
     let mut countries = BTreeSet::new();
+    let mut events = BTreeSet::new();
     for fix in fixes.iter().filter(|fix| fix.finder == finder.key) {
         match &fix.what {
             What::Rule(rule) => {
@@ -452,6 +482,9 @@ pub fn change_set(finder: &Finder, fixes: &[&Fix], cache: &Cache, geo: Option<&G
             What::Country(code) => {
                 countries.insert(code.clone());
             }
+            What::EventDir(dir) => {
+                events.insert(dir.clone());
+            }
         }
     }
     let wanted: Vec<Wanted> = match finder.key {
@@ -464,6 +497,7 @@ pub fn change_set(finder: &Finder, fixes: &[&Fix], cache: &Cache, geo: Option<&G
             .map_err(failed)?,
         "places-from-events" => GpsFromEvent.wanted(cache, geo, &whole(), &answers).map_err(failed)?,
         "place-words" => place_words::wanted(cache, geo, &countries, &whole()).map_err(failed)?,
+        "events-from-folders" => events_from_folders::wanted(cache, &events, &whole()).map_err(failed)?,
         "folders" => FolderMigration.wanted(cache, geo, &whole(), &answers).map_err(failed)?,
         "file-names" => names::folders(cache)?
             .into_iter()

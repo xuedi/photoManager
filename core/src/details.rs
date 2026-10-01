@@ -36,6 +36,8 @@ pub struct Details {
     pub country: Option<String>,
     pub city: Option<String>,
     pub event: Option<String>,
+    /// The event the photo's own field names.
+    pub event_field: Option<String>,
     pub gps: Option<(f64, f64)>,
     /// How the position was worked out, when the photo says.
     pub gps_method: Option<String>,
@@ -146,7 +148,7 @@ impl Details {
             "SELECT id, size, mtime_ns, content_id, country, city, event_name, event_year, event_month,
                 event_day, taken_at, taken_offset, xmp_taken_at, gps_lat, gps_lon, camera_make,
                 camera_model, orientation, rating, width, height, raw,
-                CASE WHEN {} THEN ({}) END, gps_method, regions
+                CASE WHEN {} THEN ({}) END, gps_method, regions, event_field
              FROM photo p WHERE rel_path = ?1",
             gap.measured(),
             gap.missing()
@@ -178,6 +180,7 @@ impl Details {
                     height: row.get(20)?,
                     agrees: off.map(|off| !off),
                     gps_method: row.get(23)?,
+                    event_field: row.get(25)?,
                     ..Details::default()
                 };
                 Ok((

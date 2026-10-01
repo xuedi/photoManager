@@ -187,6 +187,7 @@ fn suggests_fixes_to_tick(window: &Window, opened: &Rc<Library>) {
         "tags:tidy",
         BEIJING,
         "places-from-events:Germany/2016-06-00 Harbour Walk",
+        "events-from-folders:Germany/2019-07-13 Sommerfest",
         FOLDER,
         "file-names:Denmark/2018-10-00 Wedding Trip to Copenhagen",
     ] {
@@ -202,6 +203,7 @@ fn suggests_fixes_to_tick(window: &Window, opened: &Rc<Library>) {
         "Tag Tree",
         "Places from Tags",
         "Places from Events",
+        "Events from Folders",
         "Folders",
         "File Names",
     ] {
@@ -609,6 +611,19 @@ fn fills_in_the_forms_of_the_edits(window: &Window, opened: &Rc<Library>) {
         "Move China/2006-09-00 Besuch Ben to China/Beijing/2006-09-00 Besuch Ben",
     );
     assert_eq!(counts.change, 1, "the event moves as one folder");
+
+    act("win.run-edit", "rename-event");
+    assert_eq!(form().as_deref(), Some("Rename Event"));
+    let dialog = window.visible_dialog().expect("the name form");
+    assert!(
+        headed(dialog.upcast_ref())
+            .iter()
+            .any(|(title, said)| title == "Event" && said == "China/2006-09-00 Besuch Ben"),
+        "it names the event"
+    );
+    dialog.force_close();
+    let counts = previewed("rename-event:Ben Visits", "Rename 2006-09-00 Besuch Ben to Ben Visits");
+    assert_eq!(counts.change, 2, "every photo of the event, its sub-folder too");
     window.show_view("dashboard");
 }
 
@@ -1191,6 +1206,8 @@ fn reads_the_panel(window: &Window) {
     has(&texts, "Taken: 2019-07-13 20:41:00");
     has(&texts, "Folder date: 2019-07-13");
     has(&texts, "Folder date agrees");
+    has(&texts, "Event: Sommerfest");
+    has(&texts, "Event agrees");
     has(&texts, "Tag: people/family/Anna");
     has(&texts, "Tag: places/inGermany");
     has(&texts, "Person: Anna");
@@ -1238,6 +1255,8 @@ fn reads_the_panel(window: &Window) {
     let texts = open("Denmark/2018-10-00 Wedding Trip to Copenhagen/DSCF0001.JPG");
     has(&texts, "Camera: FUJIFILM X100S");
     has(&texts, "Folder date: 2018-10");
+    has(&texts, "Event: Wedding Trip");
+    has(&texts, "Event disagrees");
     has(&texts, "No people");
 
     let texts = open(LOCATED);

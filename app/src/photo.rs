@@ -1218,6 +1218,7 @@ fn field_name(field: &Field) -> &'static str {
         Field::Place(_) => "place",
         Field::Taken(_) => "date",
         Field::Faces(_) | Field::Persons(_) => "people",
+        Field::Event(_) => "event",
         Field::DropLabel => "label",
         Field::DropCatalogSets => "catalog sets",
     }

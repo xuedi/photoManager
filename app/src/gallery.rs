@@ -1521,6 +1521,8 @@ fn short(gap: Gap) -> &'static str {
         Gap::Tags => "No Tags",
         Gap::People => "No People",
         Gap::Location => "No Location Text",
+        Gap::Event => "No Event",
+        Gap::EventOffFolder => "Event Off Folder",
     }
 }
 

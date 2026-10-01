@@ -974,3 +974,37 @@ fn the_proof_ignores_where_a_block_sits_and_nothing_else() {
     ]);
     assert_eq!(differs(&before, &changed), ["Casio:ISO", "Casio:PreviewImage"]);
 }
+
+#[test]
+fn an_event_is_written_read_back_by_both_readers_and_taken_away() {
+    let mut setup = Setup::new("event");
+    let name = "Summer Party, the garden (late)";
+    let change = || Change::of([Field::Event(Some(name.to_string()))]);
+    assert_eq!(setup.write(BARE, change()), Outcome::Written);
+    assert_eq!(setup.field(BARE, "XMP-iptcExt:Event"), Some(Value::from(name)));
+
+    let bytes = std::fs::read(setup.path(BARE)).unwrap();
+    let fast = crate::metadata::Exiv2.read(&setup.path(BARE), &bytes).unwrap();
+    let reference = crate::metadata::ExifTool.read(&setup.path(BARE), &bytes).unwrap();
+    assert_eq!(fast.event.as_deref(), Some(name), "the scan strips the language");
+    assert_eq!(reference.event, fast.event);
+
+    assert_eq!(
+        setup.write(BARE, change()),
+        Outcome::Skipped,
+        "a second write is settled"
+    );
+
+    assert_eq!(setup.write(BARE, Change::of([Field::Event(None)])), Outcome::Written);
+    assert_eq!(setup.field(BARE, "XMP-iptcExt:Event"), None);
+}
+
+#[test]
+fn an_event_without_a_name_is_refused() {
+    for name in ["", "  ", "one\ntwo"] {
+        assert!(
+            Change::of([Field::Event(Some(name.to_string()))]).assigns().is_err(),
+            "{name:?}"
+        );
+    }
+}

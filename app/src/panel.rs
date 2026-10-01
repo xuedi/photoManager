@@ -227,6 +227,20 @@ impl Panel {
                 self.texts.push(format!("Folder date {said}"));
             }
         }
+        if let Some(event) = &details.event_field {
+            let row = self.row(&group, "Event", event);
+            if let Some(folder) = &details.event {
+                let (icon, said) = match folder == event {
+                    true => ("object-select-symbolic", "agrees"),
+                    false => ("dialog-warning-symbolic", "disagrees"),
+                };
+                let mark = gtk::Image::from_icon_name(icon);
+                mark.set_tooltip_text(Some(&format!("The event {said} with the folder, {folder}")));
+                mark.update_property(&[gtk::accessible::Property::Label(said)]);
+                row.add_suffix(&mark);
+                self.texts.push(format!("Event {said}"));
+            }
+        }
         group
     }
 

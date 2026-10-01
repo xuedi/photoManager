@@ -32,6 +32,8 @@ pub struct Metadata {
     pub location_city: Option<String>,
     /// The face regions and the persons it names, when it says anything about either.
     pub regions: Option<Regions>,
+    /// The event it says it belongs to, in IPTC's `Event`.
+    pub event: Option<String>,
     pub raw: String,
 }
 
@@ -201,6 +203,7 @@ impl Reader for Exiv2 {
             tags_untidy,
             location_city: string("Xmp.photoshop.City").or_else(|| string("Iptc.Application2.City")),
             regions: exiv2_regions(&source),
+            event: string("Xmp.iptcExt.Event").and_then(|value| lang_default(&value)),
             raw: raw_json(&source),
         })
     }
@@ -386,9 +389,21 @@ impl Reader for ExifTool {
             tags_untidy,
             location_city: string("City").filter(|city| !city.is_empty()),
             regions: exiftool_regions(fields),
+            event: string("Event").and_then(|value| lang_default(&value)),
             raw: serde_json::Value::Object(fields.clone()).to_string(),
         })
     }
+}
+
+/// exiv2 puts the language in front of a language alternative: `lang="x-default" Summer Party`.
+fn lang_default(value: &str) -> Option<String> {
+    let value = value.trim();
+    let text = match value.strip_prefix("lang=\"") {
+        Some(rest) => rest.split_once("\" ").map(|(_, text)| text).unwrap_or_default(),
+        None => value,
+    };
+    let text = text.trim();
+    (!text.is_empty()).then(|| text.to_string())
 }
 
 /// exiv2 puts the character set in front of a comment-like text: `charset=Ascii GPS`.

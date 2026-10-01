@@ -11,7 +11,7 @@ It lives in `$XDG_CACHE_HOME/org.beijingcode.PhotoManager/cache.db` (SQLite, wri
 
 | Table | Holds |
 |-------|-------|
-| `photo` | one row per JPEG: where it is, what the filesystem says (size, mtime, inode), its content id, what the folders say (country, city, event date and name, the event's folder, sub-folder), what the metadata says (dates, GPS and how the position was worked out, the city in the location text, camera, orientation, rating, size, whether its tag fields are tidy, the face regions and persons it names), and the raw metadata as JSON |
+| `photo` | one row per JPEG: where it is, what the filesystem says (size, mtime, inode), its content id, what the folders say (country, city, event date and name, the event's folder, sub-folder), what the metadata says (dates, GPS and how the position was worked out, the city in the location text, camera, orientation, rating, size, whether its tag fields are tidy, the face regions and persons it names, the event its own field names), and the raw metadata as JSON |
 | `tag` | one row per tag path per photo, from every tag field, plus its leaf |
 | `person` | one row per person a photo names, and whether a face box says where they are |
 | `issue` | one row per thing worth looking at, with its kind and a detail |
@@ -186,6 +186,11 @@ What the folders above the event say is read as the layout's levels. When they d
 event keeps its date and name and is **off the layout**; a file in a folder of the layout but in
 no event is **loose**. A layout that could read one path in two ways - an optional country next
 to an optional city, both plain names - is refused before it is kept.
+
+The folder's name part is what the folder says; the photo's own event field is read beside it, and
+once the photos say a name, the folder is the copy ([writing.md](writing.md#the-canonical-field-set)).
+Where every photo of an event gives one name and the folder another, the folder is the one to
+follow.
 
 The layout is a setting, not photo information, so it lives in `app.db`. The cache remembers
 which layout its rows were placed with; when it changes, every row is placed again from its path,

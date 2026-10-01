@@ -9,7 +9,7 @@ use crate::layout::{Layout, Placement};
 use crate::metadata::{Metadata, Regions};
 use crate::scan::Issue;
 
-const SCHEMA_VERSION: i64 = 6;
+const SCHEMA_VERSION: i64 = 7;
 
 /// SQLite takes a few hundred parameters happily; a library's worth of paths is asked for in
 /// chunks of this size.
@@ -81,6 +81,7 @@ CREATE TABLE photo (
     location_city TEXT,
     tags_untidy INTEGER NOT NULL DEFAULT 0,
     regions     TEXT,
+    event_field TEXT,
     raw         TEXT NOT NULL
 );
 CREATE INDEX photo_content ON photo (content_id);
@@ -139,6 +140,8 @@ pub struct Said {
     pub tags_untidy: bool,
     /// The face regions and persons it names.
     pub regions: Option<Regions>,
+    /// The event its own field names.
+    pub event: Option<String>,
 }
 
 /// A photo as a change set needs it: where it is, how big it is, what it is, and what it says.
@@ -199,6 +202,8 @@ pub struct Tagged {
     pub event_dir: Option<String>,
     pub event_year: Option<i64>,
     pub event_name: Option<String>,
+    /// The event its own field names.
+    pub event_field: Option<String>,
 }
 
 /// A photo as the timeline of its event needs it: when, which camera, and what its position is.
@@ -549,7 +554,7 @@ impl Cache {
         for chunk in rel_paths.chunks(CHUNK) {
             let sql = format!(
                 "SELECT id, rel_path, size, content_id, taken_at, taken_offset, gps_lat, gps_lon, rating,
-                    gps_method, tags_untidy, regions
+                    gps_method, tags_untidy, regions, event_field
                  FROM photo WHERE rel_path IN ({})",
                 holes(chunk.len())
             );
@@ -571,6 +576,7 @@ impl Cache {
                             tags: Vec::new(),
                             tags_untidy: row.get(10)?,
                             regions: row.get::<_, Option<String>>(11)?.as_deref().and_then(Regions::read),
+                            event: row.get(12)?,
                         },
                     },
                 ))
@@ -893,7 +899,7 @@ impl Cache {
         for chunk in rel_paths.chunks(CHUNK) {
             let sql = format!(
                 "SELECT id, rel_path, tags_untidy, taken_at, nullif(trim(location_city), ''), coalesce({country}),
-                    country, event_dir, event_year, event_name
+                    country, event_dir, event_year, event_name, nullif(trim(event_field), '')
                  FROM photo WHERE rel_path IN ({})",
                 holes(chunk.len())
             );
@@ -912,6 +918,7 @@ impl Cache {
                         event_dir: row.get(7)?,
                         event_year: row.get(8)?,
                         event_name: row.get(9)?,
+                        event_field: row.get(10)?,
                     },
                 ))
             })?;
@@ -1253,9 +1260,9 @@ impl Writer<'_> {
             "INSERT INTO photo (rel_path, size, mtime_ns, inode, content_id, country, city, event_text,
                 event_year, event_month, event_day, event_name, sub_path, taken_at, taken_offset,
                 xmp_taken_at, gps_lat, gps_lon, camera_make, camera_model, orientation, rating,
-                width, height, raw, event_dir, location_city, gps_method, tags_untidy, regions)
+                width, height, raw, event_dir, location_city, gps_method, tags_untidy, regions, event_field)
              VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17,
-                ?18, ?19, ?20, ?21, ?22, ?23, ?24, ?25, ?26, ?27, ?28, ?29, ?30)",
+                ?18, ?19, ?20, ?21, ?22, ?23, ?24, ?25, ?26, ?27, ?28, ?29, ?30, ?31)",
             params![
                 rel_path,
                 fingerprint.size as i64,
@@ -1287,6 +1294,7 @@ impl Writer<'_> {
                 metadata.gps_method,
                 metadata.tags_untidy,
                 metadata.regions.as_ref().map(Regions::written),
+                metadata.event,
             ],
         )?;
         let id = self.transaction.last_insert_rowid();

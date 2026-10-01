@@ -22,6 +22,7 @@ shared, so an edit never writes and never draws anything itself.
 | Rename Tag | a tag and its new name | the tag and everything below it under the new name |
 | Tidy Tags | what becomes of the generated tags | every tag field the same |
 | Move Event | the folder of the scope's one event | its event folder moved there |
+| Rename Event | a name for the scope's one event | that name in the event field of every photo of the event |
 | Position from a Neighbour | a measured photo of one event, the photos taken where it was, how far off | the measured photo's position, marked as borrowed |
 
 Each asks its value in a form of its own, checked before the preview, and the form says what is
@@ -145,7 +146,7 @@ writers left.
   separator inside one, is refused before the preview.
 - **Tidy Tags** writes every photo of the scope the same in every field, and chooses what becomes
   of the generated tags: the year, place and event tags that repeat what the date, the place words
-  and the folder say. **Derived from the data** makes `timeline/<year>`,
+  and the event say - the photo's own event field, else its folder's name. **Derived from the data** makes `timeline/<year>`,
   `places/in<Country>/<City>` and `events/<year> <name>` from them, each replacing the whole
   branch of its root, so they can never disagree with it; they can also be **dropped**, or **left
   as they are**. A tidy photo that would say the same is left out.
@@ -182,6 +183,15 @@ folder, never a byte of a photo ([writing.md](writing.md#moving-a-folder)).
   again, faces included, so the people go into the files first
   ([suggestions.md](suggestions.md#people)).
 - **One pass**: a move is never written together with a change to a photo.
+
+## Rename Event
+
+Takes the scope's one event - a scope in several events or none is refused - and writes the name
+given into the event field of every photo of it, sub-folders too. The form starts from the name
+the photos give, or the folder's when they do not agree. The folder is not touched: once the
+photos say the new name, the [Folders suggestion](suggestions.md#folders) offers the move of the
+folder to it. Renaming an event is so two previewed steps, the fact and then its folder, never a
+move that leaves the field behind.
 
 ## Position from a Neighbour
 

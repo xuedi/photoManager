@@ -141,6 +141,7 @@ visited as few times as possible, and it is never left half written.
 | rating | `XMP-xmp:Rating`, and nowhere else |
 | faces | `XMP-mwg-rs:RegionInfo` (type Face, a name, a box centred and as a fraction of the stored picture, the stored size in pixels as `AppliedToDimensions`) and `XMP-iptcExt:PersonInImage`, both replaced as a whole |
 | persons | `XMP-iptcExt:PersonInImage` alone, the photo's whole list: every box's name, every name it had, and the new ones; the region list is not touched |
+| event | `XMP-iptcExt:Event`, the IPTC Extension field for the event a photo belongs to, as the default language: the event's name on one line, without its date |
 | leftovers | takes away `XMP-xmp:Label` and `XMP-mediapro:CatalogSets`, where older writers left keywords; [every tag write](tools.md#the-tags) takes both away |
 
 All five tag fields say the same thing, because different readers each read a different one, and
@@ -164,6 +165,12 @@ is a name in `PersonInImage` and nothing else: no box is made up for them. Such 
 whole list, so it is refused when the file, read just before, names anyone the list leaves out; a
 person is only ever added. The list is settled in any order, and a box keeps its name and its
 place byte for byte.
+
+The event is the name alone - `Summer Party`, not `2019-07-13 Summer Party` - because the date has
+fields of its own and a folder date with holes is no date. Once a photo carries it, the field is
+the truth and the folder follows it ([Folders](suggestions.md#folders)); the photo keeps its event
+when it is copied or exported out of its folder. digiKam and Lightroom show the field; Immich does
+not read it.
 
 The modification time is deliberately **not** preserved. Nextcloud and Immich both notice a changed
 file only by its mtime, so a write nothing notices would be worse than no write at all. For the

@@ -19,7 +19,8 @@
 //! phone that measured where it was, in the event folder and in a sub-folder, with a camera whose
 //! photos stand on the centre a places tag gave, or on nothing at all. A photo tagged with a person
 //! who has a box in another photo names nobody itself; a located photo carries a places tag finer
-//! than its town, and another the tag of a town far from where it stands.
+//! than its town, and another the tag of a town far from where it stands. One photo names its
+//! event in its own field as its folder does, and one names another event than its folder.
 //!
 //! Only for tests and for looking at the application without touching real photos.
 
@@ -131,6 +132,7 @@ const PHOTOS: &[Photo] = &[
             "-Make=FUJIFILM",
             PLACES_DENMARK,
             "-TagsList=events/2018 Wedding Trip",
+            "-XMP-iptcExt:Event=Wedding Trip",
         ],
     },
     Photo {
@@ -172,6 +174,7 @@ const PHOTOS: &[Photo] = &[
             "-XMP-microsoft:LastKeywordXMP=people/family/Tom",
             OLDER_REGIONS,
             "-XMP-iptcExt:PersonInImage=Anna",
+            "-XMP-iptcExt:Event=Sommerfest",
             "-XMP-iptcExt:PersonInImage=Tom",
         ],
     },

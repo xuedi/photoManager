@@ -34,7 +34,7 @@ pub struct Place {
     /// The folder inside the library, which is what a filter is narrowed to.
     pub folder: String,
     pub photos: i64,
-    pub gaps: [Measure; 6],
+    pub gaps: [Measure; Gap::COUNT],
     pub events: Vec<Place>,
 }
 
@@ -44,7 +44,7 @@ impl Place {
             name: name.to_string(),
             folder: folder.to_string(),
             photos: 0,
-            gaps: [Measure::default(); 6],
+            gaps: [Measure::default(); Gap::COUNT],
             events: Vec::new(),
         }
     }
@@ -57,7 +57,7 @@ impl Place {
         Filter::missing(gap).within(&self.folder)
     }
 
-    fn add(&mut self, photos: i64, gaps: &[Measure; 6]) {
+    fn add(&mut self, photos: i64, gaps: &[Measure; Gap::COUNT]) {
         self.photos += photos;
         for (sum, gap) in self.gaps.iter_mut().zip(gaps) {
             sum.of += gap.of;
@@ -184,8 +184,8 @@ fn gaps(cache: &Cache) -> Result<(Coverage, Vec<Place>)> {
         })
         .collect();
     let sums = sums.join(", ");
-    let measures = |row: &rusqlite::Row, from: usize| -> rusqlite::Result<[Measure; 6]> {
-        let mut gaps = [Measure::default(); 6];
+    let measures = |row: &rusqlite::Row, from: usize| -> rusqlite::Result<[Measure; Gap::COUNT]> {
+        let mut gaps = [Measure::default(); Gap::COUNT];
         for (at, gap) in gaps.iter_mut().enumerate() {
             gap.of = row.get::<_, Option<i64>>(from + at * 2)?.unwrap_or(0);
             gap.missing = row.get::<_, Option<i64>>(from + at * 2 + 1)?.unwrap_or(0);
