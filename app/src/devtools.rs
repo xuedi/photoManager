@@ -231,6 +231,7 @@ fn state(window: &Window, paths: &Paths, library: Option<&Library>) -> String {
             "lines": fix.lines.len(),
             "ticked": ticked.contains(&fix.key),
         })).collect::<Vec<_>>(),
+        "aside": listed.aside().iter().map(|fix| &fix.key).collect::<Vec<_>>(),
         "applied": listed.applied().map(|passes| passes.iter().map(|pass| serde_json::json!({
             "finder": pass.finder,
             "written": pass.summary.written,

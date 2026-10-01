@@ -3,7 +3,8 @@
 //! the list is found again: what was applied is gone because the photos now say it.
 //!
 //! The checks live only here, in memory. The fixes are found off the main thread, after every
-//! scan and whenever the view is shown.
+//! scan and whenever the view is shown. A fix the user set aside waits folded away at the end,
+//! never ticked and never counted, until it is brought back.
 
 use std::cell::{Cell, RefCell};
 use std::collections::{BTreeMap, BTreeSet};
@@ -37,8 +38,12 @@ mod imp {
         pub cancel: gtk::Button,
         pub progress: gtk::ProgressBar,
         pub library: RefCell<Option<Rc<Library>>>,
-        /// The newest that arrived, `None` until the first did.
+        /// The newest that arrived, `None` until the first did, less the fixes set aside.
         pub found: RefCell<Option<Vec<Fix>>>,
+        pub aside: RefCell<Vec<Fix>>,
+        pub aside_group: RefCell<Option<adw::PreferencesGroup>>,
+        /// Whether the fold of the fixes set aside is open, so it stays open while they are drawn again.
+        pub aside_open: Cell<bool>,
         pub ticked: RefCell<BTreeSet<String>>,
         /// Which finding is the newest, so one that arrives late is dropped.
         pub asking: Cell<u64>,
@@ -124,7 +129,9 @@ impl Suggestions {
         imp.busy.set(true);
 
         let page = self.downgrade();
+        let kept = library.clone();
         library.fixes(move |found| {
+            let library = kept;
             let Some(page) = page.upgrade() else {
                 return;
             };
@@ -135,9 +142,11 @@ impl Suggestions {
             imp.busy.set(false);
             match found {
                 Ok(found) => {
-                    let keys: BTreeSet<String> = found.iter().map(|fix| fix.key.clone()).collect();
+                    let (offered, aside) = library.split_aside(found);
+                    let keys: BTreeSet<String> = offered.iter().map(|fix| fix.key.clone()).collect();
                     imp.ticked.borrow_mut().retain(|key| keys.contains(key));
-                    *imp.found.borrow_mut() = Some(found);
+                    *imp.found.borrow_mut() = Some(offered);
+                    *imp.aside.borrow_mut() = aside;
                 }
                 Err(why) => tracing::error!(why, "the suggestions could not be found"),
             }
@@ -153,6 +162,63 @@ impl Suggestions {
 
     pub fn found(&self) -> Vec<Fix> {
         self.imp().found.borrow().clone().unwrap_or_default()
+    }
+
+    /// The fixes set aside that are still found.
+    pub fn aside(&self) -> Vec<Fix> {
+        self.imp().aside.borrow().clone()
+    }
+
+    /// Takes a fix out of the list, unticked, until it is brought back.
+    pub fn set_aside(&self, key: &str) {
+        let imp = self.imp();
+        let Some(library) = imp.library.borrow().clone() else {
+            return;
+        };
+        let Some(fix) = self.found().into_iter().find(|fix| fix.key == key) else {
+            tracing::warn!(fix = key, "no such suggestion to set aside");
+            return;
+        };
+        if !library.set_fix_aside(&fix) {
+            self.say("The fix could not be set aside");
+            return;
+        }
+        tracing::info!(fix = key, "suggestion set aside");
+        imp.ticked.borrow_mut().remove(key);
+        if let Some(found) = imp.found.borrow_mut().as_mut() {
+            found.retain(|fix| fix.key != key);
+        }
+        imp.aside.borrow_mut().push(fix);
+        self.show();
+        self.tell();
+    }
+
+    /// Offers a fix set aside again, in its place in the list.
+    pub fn bring_back(&self, key: &str) {
+        let imp = self.imp();
+        let Some(library) = imp.library.borrow().clone() else {
+            return;
+        };
+        let Some(at) = imp.aside.borrow().iter().position(|fix| fix.key == key) else {
+            tracing::warn!(fix = key, "no such suggestion set aside");
+            return;
+        };
+        if !library.bring_fix_back(key) {
+            self.say("The fix could not be brought back");
+            return;
+        }
+        tracing::info!(fix = key, "suggestion brought back");
+        let fix = imp.aside.borrow_mut().remove(at);
+        if let Some(found) = imp.found.borrow_mut().as_mut() {
+            let order = |fix: &Fix| FINDERS.iter().position(|finder| finder.key == fix.finder);
+            let at = found
+                .iter()
+                .position(|other| order(other) > order(&fix))
+                .unwrap_or(found.len());
+            found.insert(at, fix);
+        }
+        self.show();
+        self.tell();
     }
 
     pub fn ticked(&self) -> Vec<String> {
@@ -353,6 +419,9 @@ impl Suggestions {
         for group in imp.groups.borrow_mut().drain(..) {
             imp.content.remove(&group);
         }
+        if let Some(group) = imp.aside_group.take() {
+            imp.content.remove(&group);
+        }
         imp.checks.borrow_mut().clear();
         imp.everies.borrow_mut().clear();
         let found = imp.found.borrow().clone();
@@ -384,6 +453,10 @@ impl Suggestions {
             imp.content.insert_child_after(&group, Some(&after));
             after = group.clone().upcast();
             imp.groups.borrow_mut().push(group);
+        }
+        if let Some(group) = self.aside_group() {
+            imp.content.insert_child_after(&group, Some(&after));
+            *imp.aside_group.borrow_mut() = Some(group);
         }
         self.show_ticked();
         self.show_wanted();
@@ -429,8 +502,53 @@ impl Suggestions {
         });
     }
 
-    /// One fix: its check, what it is about and how many photos, and its lines below it where it
-    /// has any.
+    /// The fixes set aside, folded into one row with a Bring Back on each.
+    fn aside_group(&self) -> Option<adw::PreferencesGroup> {
+        let imp = self.imp();
+        let aside = imp.aside.borrow();
+        if aside.is_empty() {
+            return None;
+        }
+        let fold = adw::ExpanderRow::builder()
+            .title("Set Aside")
+            .subtitle(match aside.len() {
+                1 => "1 fix".to_string(),
+                count => format!("{count} fixes"),
+            })
+            .expanded(imp.aside_open.get())
+            .build();
+        fold.connect_expanded_notify(glib::clone!(
+            #[weak(rename_to = page)]
+            self,
+            move |fold| page.imp().aside_open.set(fold.is_expanded())
+        ));
+        for fix in aside.iter() {
+            let finder = fixes::finder(fix.finder).map_or(fix.finder, |finder| finder.title);
+            let row = adw::ActionRow::builder()
+                .title(glib::markup_escape_text(&fix.title))
+                .subtitle(glib::markup_escape_text(&format!(
+                    "{finder} - {}",
+                    photos_of(fix.photos)
+                )))
+                .subtitle_lines(2)
+                .build();
+            let back = gtk::Button::builder()
+                .label("Bring Back")
+                .valign(gtk::Align::Center)
+                .action_name("win.bring-fix-back")
+                .action_target(&fix.key.to_variant())
+                .build();
+            back.add_css_class("flat");
+            row.add_suffix(&back);
+            fold.add_row(&row);
+        }
+        let group = adw::PreferencesGroup::new();
+        group.add(&fold);
+        Some(group)
+    }
+
+    /// One fix: its check, what it is about and how many photos, its Set Aside, and its lines
+    /// below it where it has any.
     fn row(&self, fix: &Fix) -> gtk::Widget {
         let imp = self.imp();
         let check = gtk::CheckButton::builder()
@@ -451,6 +569,13 @@ impl Suggestions {
             }
         ));
         imp.checks.borrow_mut().insert(fix.key.clone(), check.clone());
+        let aside = gtk::Button::builder()
+            .label("Set Aside")
+            .valign(gtk::Align::Center)
+            .action_name("win.set-fix-aside")
+            .action_target(&fix.key.to_variant())
+            .build();
+        aside.add_css_class("flat");
         let title = glib::markup_escape_text(&fix.title);
         let subtitle = glib::markup_escape_text(&format!("{} - {}", fix.detail, photos_of(fix.photos)));
 
@@ -462,6 +587,7 @@ impl Suggestions {
                 .activatable_widget(&check)
                 .build();
             row.add_prefix(&check);
+            row.add_suffix(&aside);
             return row.upcast();
         }
         let row = adw::ExpanderRow::builder()
@@ -470,6 +596,7 @@ impl Suggestions {
             .subtitle_lines(2)
             .build();
         row.add_prefix(&check);
+        row.add_suffix(&aside);
         for (name, said) in &fix.lines {
             row.add_row(
                 &adw::ActionRow::builder()

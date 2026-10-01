@@ -6,6 +6,7 @@ use std::rc::Rc;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 
+use photomanager_core::aside;
 use photomanager_core::browse::{self, TagTree};
 use photomanager_core::cache::Cache;
 use photomanager_core::changeset::{self, ChangeSet, Wanted};
@@ -267,6 +268,44 @@ impl Library {
             },
             done,
         );
+    }
+
+    /// Splits what was found into the fixes offered and the fixes the user set aside, and forgets
+    /// the ones set aside that are no longer found. Without the settings, every fix is offered.
+    pub fn split_aside(&self, found: Vec<Fix>) -> (Vec<Fix>, Vec<Fix>) {
+        let mut settings = self.settings.borrow_mut();
+        let Some(settings) = settings.as_mut() else {
+            return (found, Vec::new());
+        };
+        match aside::split(settings, found.clone()) {
+            Ok(split) => split,
+            Err(error) => {
+                tracing::error!(%error, "the fixes set aside could not be read");
+                (found, Vec::new())
+            }
+        }
+    }
+
+    /// Keeps a fix out of the list until it is brought back. Says whether it was kept.
+    pub fn set_fix_aside(&self, fix: &Fix) -> bool {
+        let mut settings = self.settings.borrow_mut();
+        let Some(settings) = settings.as_mut() else {
+            return false;
+        };
+        aside::set_aside(settings, fix)
+            .map_err(|error| tracing::error!(%error, fix = fix.key, "the fix could not be set aside"))
+            .is_ok()
+    }
+
+    /// Offers a fix set aside again. Says whether that was kept.
+    pub fn bring_fix_back(&self, key: &str) -> bool {
+        let mut settings = self.settings.borrow_mut();
+        let Some(settings) = settings.as_mut() else {
+            return false;
+        };
+        aside::bring_back(settings, key)
+            .map_err(|error| tracing::error!(%error, fix = key, "the fix could not be brought back"))
+            .is_ok()
     }
 
     /// The places tags whose located photos stand in a town of another name, found off the main

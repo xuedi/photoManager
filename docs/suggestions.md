@@ -10,7 +10,7 @@ writes the ticked ones. What the app is not sure about is not here: it is done w
 
 A fix belongs to a **finder**, and says what it is about, what it does, the photos it changes, and
 where the title does not say it all, a line or two: the folder now and after. Nothing about a fix
-is kept anywhere. The list is found again after every scan - and every write is followed by one -
+is kept anywhere but whether it was [set aside](#set-aside). The list is found again after every scan - and every write is followed by one -
 and a fix that was applied is gone because the photos now say it. A fix whose photos would all be
 refused for good is no fix and is not listed.
 
@@ -59,6 +59,20 @@ flowchart TD
     again -- yes --> scan[the library read again] --> pass
     again -- no --> read[the library read again] --> trigger
 ```
+
+### Set aside
+
+A fix the person does not want now, or one that keeps failing, would otherwise come back after
+every apply, and the list would never empty. **Set Aside** on its row takes it out of the list:
+it is never ticked, never applied, not counted in the badge or on the dashboard, and waits folded
+under the groups, one row each with its finder and its current photo count. **Bring Back** puts it
+back in its place. Neither asks first, since neither touches a photo.
+
+Which fixes are set aside is a tool setting beside the others, not photo information: a list of
+the fixes' keys, with the title each had and when it was set aside. A fix keeps its key for as long
+as it is found, so it stays aside even when its photos change - an event that gains photos is still
+the same fix, and the count in the fold shows the change. Whenever the list is found, a key no
+longer found is dropped, so the fold only ever holds what is still there.
 
 ## Tag Tree
 

@@ -1,3 +1,4 @@
+pub mod aside;
 pub mod browse;
 pub mod cache;
 pub mod changeset;

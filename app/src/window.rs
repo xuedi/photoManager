@@ -361,6 +361,16 @@ impl Window {
                 })
                 .build()
         };
+        let fix_by_key = |name: &str, act: fn(&Suggestions, &str)| {
+            gtk::gio::ActionEntry::builder(name)
+                .parameter_type(Some(glib::VariantTy::STRING))
+                .activate(move |window: &Window, _, parameter| {
+                    if let Some(key) = parameter.and_then(|value| value.str()) {
+                        act(&window.imp().suggestions, key);
+                    }
+                })
+                .build()
+        };
         let apply_fixes = gtk::gio::ActionEntry::builder("apply-fixes")
             .activate(|window: &Window, _, _| window.imp().suggestions.apply())
             .build();
@@ -459,6 +469,8 @@ impl Window {
             tick_fix,
             select_fixes("fixes-select-all", true),
             select_fixes("fixes-select-none", false),
+            fix_by_key("set-fix-aside", |page, key| page.set_aside(key)),
+            fix_by_key("bring-fix-back", |page, key| page.bring_back(key)),
             apply_fixes,
             cancel_fixes,
             scan,

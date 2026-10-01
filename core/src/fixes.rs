@@ -2,8 +2,8 @@
 //! person, one places tag, one event: small enough to be ticked or not on its own, and worked out
 //! to the end, so ticking it is the whole decision.
 //!
-//! Nothing about a fix is kept. The list is found again after every write, and a fix that was
-//! applied is gone because the photos now say it.
+//! Nothing about a fix is kept but whether the user set it aside ([`crate::aside`]). The list is
+//! found again after every write, and a fix that was applied is gone because the photos now say it.
 //!
 //! The ticked fixes are applied finder by finder, in the order of [`FINDERS`], each finder one
 //! pass, with the library read again in between: the tags before the people, the

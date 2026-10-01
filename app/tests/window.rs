@@ -241,7 +241,46 @@ fn suggests_fixes_to_tick(window: &Window, opened: &Rc<Library>) {
     assert!(fresh.ticked().is_empty(), "a tick is not kept anywhere");
     other.close();
 
-    act("win.tick-fix", Some((FOLDER, false).to_variant()));
+    let count = found.len();
+    act("win.set-fix-aside", Some(FOLDER.to_variant()));
+    assert!(page.ticked().is_empty(), "a fix set aside is not ticked");
+    assert!(!page.found().iter().any(|fix| fix.key == FOLDER));
+    assert_eq!(
+        page.aside().iter().map(|fix| fix.key.as_str()).collect::<Vec<_>>(),
+        [FOLDER]
+    );
+    assert_eq!(
+        window.dashboard().suggestions_line(),
+        Some(format!("{} Suggestions", count - 1)),
+        "nor counted"
+    );
+    let shown = labels(page.upcast_ref());
+    assert!(shown.iter().any(|label| label == "Set Aside"), "folded at the end");
+    assert!(shown.iter().any(|label| label == "1 fix"));
+    act("win.fixes-select-all", Some("all".to_variant()));
+    assert!(
+        !page.ticked().iter().any(|key| key == FOLDER),
+        "nor ticked with every fix"
+    );
+    act("win.fixes-select-none", Some("all".to_variant()));
+
+    let again = Library::open(opened.paths().clone()).expect("open the library again");
+    let other: Window = gtk::glib::Object::builder().build();
+    other.set_library(Some(again));
+    let fresh = other.suggestions();
+    until(
+        || !fresh.is_busy() && !fresh.found().is_empty(),
+        "found in the other window",
+    );
+    assert_eq!(fresh.aside().len(), 1, "set aside is kept");
+    other.close();
+
+    act("win.bring-fix-back", Some(FOLDER.to_variant()));
+    assert!(page.aside().is_empty());
+    let keys: Vec<String> = page.found().iter().map(|fix| fix.key.clone()).collect();
+    let before: Vec<String> = found.iter().map(|fix| fix.key.clone()).collect();
+    assert_eq!(keys, before, "brought back in its place");
+    assert!(!labels(page.upcast_ref()).iter().any(|label| label == "1 fix"));
     assert!(page.applied().is_none(), "nothing was written");
     window.show_view("dashboard");
 }
