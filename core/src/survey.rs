@@ -78,6 +78,32 @@ pub struct Finding {
     pub filter: Filter,
 }
 
+/// How much of the library sits exactly where the layout puts it, and each way it falls short.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct Aligned {
+    pub events: i64,
+    /// The events with a photo that is not aligned.
+    pub off_events: i64,
+    /// The photos that are not aligned, which is what the line shows.
+    pub photos: i64,
+    /// One finding per reason; an event or a photo may be under several.
+    pub reasons: Vec<Finding>,
+}
+
+impl Aligned {
+    pub fn filter() -> Filter {
+        Filter::of(Kind::Unaligned)
+    }
+
+    /// The share of the events that are aligned, from 0 to 1.
+    pub fn present(&self) -> f64 {
+        match self.events {
+            0 => 1.0,
+            events => (events - self.off_events) as f64 / events as f64,
+        }
+    }
+}
+
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct Survey {
     pub photos: i64,
@@ -92,6 +118,7 @@ pub struct Survey {
     pub file_types: Vec<(String, i64)>,
     /// The whole library, in the order of `Gap::ALL`.
     pub coverage: Coverage,
+    pub aligned: Aligned,
     pub countries: Vec<Place>,
     pub tidy: Vec<Finding>,
     /// The events where a photo measured its position and others did not.
@@ -128,6 +155,7 @@ impl Survey {
             cameras,
             file_types: file_types(&cache.paths()?),
             coverage,
+            aligned: aligned(cache)?,
             countries,
             tidy: tidy(cache)?,
             neighbours: neighbour::events(cache)?,
@@ -153,6 +181,13 @@ impl Survey {
                 numbers.extend(Gap::ALL.map(|gap| (place.gap(gap).missing, place.filter(gap))));
             }
         }
+        numbers.push((self.aligned.photos, Aligned::filter()));
+        numbers.extend(
+            self.aligned
+                .reasons
+                .iter()
+                .map(|finding| (finding.count, finding.filter.clone())),
+        );
         numbers.extend(self.tidy.iter().map(|finding| (finding.count, finding.filter.clone())));
         numbers.extend(
             self.gps_left
@@ -268,6 +303,92 @@ fn file_types(paths: &[String]) -> Vec<(String, i64)> {
     types
 }
 
+/// The events that hold a photo of the set.
+fn events_of(cache: &Cache, filter: &Filter) -> Result<i64> {
+    let (ids, params) = filter.ids();
+    cache.connection().query_row(
+        &format!("SELECT count(DISTINCT event_dir) FROM photo WHERE id IN ({ids})"),
+        rusqlite::params_from_iter(params.iter()),
+        |row| row.get(0),
+    )
+}
+
+fn events(count: i64) -> String {
+    match count {
+        1 => "1 event".to_string(),
+        count => format!("{count} events"),
+    }
+}
+
+fn aligned(cache: &Cache) -> Result<Aligned> {
+    let layout = cache.layout().clone();
+    let mut reasons = Vec::new();
+    let mut add = |title: String, detail: String, filter: Filter, of_events: bool| -> Result<()> {
+        let count = filter.count(cache)?;
+        if count > 0 {
+            let detail = match of_events {
+                true => format!("{detail}, in {}", events(events_of(cache, &filter)?)),
+                false => detail,
+            };
+            reasons.push(Finding {
+                title,
+                detail,
+                count,
+                filter,
+            });
+        }
+        Ok(())
+    };
+    add(
+        "Off the layout".to_string(),
+        "events in other folders than the layout says, and folders without a date".to_string(),
+        Filter::of(Kind::OffLayout),
+        false,
+    )?;
+    add(
+        "Loose files".to_string(),
+        "in a folder of the layout or the library root, outside any event".to_string(),
+        Filter::of(Kind::Loose),
+        false,
+    )?;
+    for level in layout.levels.iter().filter(|level| level.optional) {
+        let title = level.component.title();
+        add(
+            format!("No {} folder", title.to_lowercase()),
+            format!("the {} level is left out", title.to_lowercase()),
+            Filter::of(Kind::NoLevel(level.component.key())),
+            true,
+        )?;
+    }
+    if !layout.sub_folders {
+        add(
+            "In event sub-folders".to_string(),
+            "flattened into their event once every photo has a date and a position".to_string(),
+            Filter::of(Kind::SubFolder),
+            true,
+        )?;
+    }
+    add(
+        "Not named by their date".to_string(),
+        "photos whose file name is not the date they were taken".to_string(),
+        Filter::of(Kind::OffName),
+        true,
+    )?;
+    add(
+        "Event disagrees with the folder".to_string(),
+        "photos naming another event than their folder".to_string(),
+        Filter::missing(Gap::EventOffFolder),
+        true,
+    )?;
+    let unaligned = Aligned::filter();
+    Ok(Aligned {
+        events: cache.event_count()?,
+        off_events: events_of(cache, &unaligned)?,
+        photos: unaligned.count(cache)?,
+        reasons,
+    })
+}
+
 fn tidy(cache: &Cache) -> Result<Vec<Finding>> {
     let mut found = Vec::new();
     let mut add = |title: String, detail: String, filter: Filter| -> Result<()> {
@@ -308,26 +429,6 @@ fn tidy(cache: &Cache) -> Result<Vec<Finding>> {
         )?;
     }
 
-    add(
-        "Loose files".to_string(),
-        "in a folder of the layout or the library root, outside any event".to_string(),
-        Filter::of(Kind::Loose),
-    )?;
-    add(
-        "In event sub-folders".to_string(),
-        "photos in a folder below their event's".to_string(),
-        Filter::of(Kind::SubFolder),
-    )?;
-    add(
-        "Off the layout".to_string(),
-        "events in other folders than the layout says, and folders without a date".to_string(),
-        Filter::of(Kind::OffLayout),
-    )?;
-    add(
-        "Not named by their date".to_string(),
-        "photos whose file name is not the date they were taken".to_string(),
-        Filter::of(Kind::OffName),
-    )?;
     for check in std::iter::once(Check::PlaceDisagrees).chain(Check::KEPT) {
         add(
             check.title().to_string(),
@@ -506,10 +607,55 @@ mod fixture_tests {
                 ("People and people", 3),
                 ("mixed/discusting and mixed/disgusting", 3),
                 ("places/inGreece/Atens and places/inGreece/athens", 3),
-                ("Loose files", 1),
-                ("In event sub-folders", 3),
-                ("Not named by their date", 39),
             ]
         );
+    }
+
+    #[test]
+    fn says_how_much_is_aligned_with_the_layout_and_why_the_rest_is_not() {
+        let mut cache = scanned("survey-aligned");
+        let survey = Survey::take(&cache).unwrap();
+        let reasons = |survey: &Survey| -> Vec<(String, i64)> {
+            survey
+                .aligned
+                .reasons
+                .iter()
+                .map(|finding| (finding.title.clone(), finding.count))
+                .collect()
+        };
+        assert_eq!(
+            (survey.aligned.events, survey.aligned.off_events, survey.aligned.photos),
+            (15, 15, 44),
+            "no fixture event has a city folder"
+        );
+        assert_eq!(
+            reasons(&survey),
+            [
+                ("Loose files".to_string(), 1),
+                ("No city folder".to_string(), 42),
+                ("In event sub-folders".to_string(), 3),
+                ("Not named by their date".to_string(), 39),
+                ("Event disagrees with the folder".to_string(), 1),
+            ]
+        );
+        assert_eq!(
+            survey.aligned.reasons[1].detail,
+            "the city level is left out, in 14 events"
+        );
+
+        cache
+            .follow_layout(&crate::layout::Layout::read("country/city?/*").unwrap())
+            .unwrap();
+        let grouped = Survey::take(&cache).unwrap();
+        assert!(
+            !reasons(&grouped)
+                .iter()
+                .any(|(title, _)| title == "In event sub-folders"),
+            "allowed, a sub-folder only groups"
+        );
+        assert_eq!(Filter::of(Kind::SubFolder).count(&cache).unwrap(), 0);
+        for (number, filter) in grouped.numbers() {
+            assert_eq!(filter.paths(&cache).unwrap().len() as i64, number, "{filter}");
+        }
     }
 }

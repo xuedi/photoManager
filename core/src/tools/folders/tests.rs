@@ -142,7 +142,18 @@ fn one_city_on_every_photo_is_sure_and_one_on_some_is_offered_with_its_count() {
 
     let settings = confirm_sure(&questions, None);
     let answers = Answers::read(&settings).unwrap();
-    assert_eq!(answers.0.keys().collect::<Vec<_>>(), [BEN], "only the sure one");
+    assert_eq!(
+        answers.0.keys().collect::<Vec<_>>(),
+        [
+            BEN,
+            "Denmark/2017-09-00 Autumn Walk",
+            "Germany/2014-03-22 Museum",
+            "Germany/2015-00-00 Seasons",
+            "Germany/2016-06-00 Harbour Walk",
+            "Greece/2010-04-10 Beach",
+        ],
+        "the sure ones: a city on every photo, or every photo with a position in one town"
+    );
 }
 
 #[test]
@@ -176,10 +187,11 @@ fn an_event_without_a_city_tag_is_offered_where_its_photos_are() {
         offered(question(&questions, HARBOUR)),
         [("Germany/Hamburg/2016-06-00 Harbour Walk", Some(3))]
     );
+    let harbour = &question(&questions, HARBOUR).offers[0];
+    assert!(harbour.words.ends_with("where every photo with a position is"));
     assert!(
-        question(&questions, HARBOUR).offers[0]
-            .words
-            .ends_with("where 3 of its photos are")
+        harbour.sure,
+        "every photo with a position stands in Hamburg, and no tag says else"
     );
     let without = tool().asked(&library.cache, None, &whole(), None).unwrap();
     assert!(

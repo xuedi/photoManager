@@ -404,6 +404,8 @@ struct Evidence {
     elsewhere: Vec<(String, usize)>,
     written: Vec<(String, usize)>,
     located: Vec<(String, usize)>,
+    /// How many photos have a position.
+    positioned: usize,
     named: Vec<String>,
     /// A city a folder above the event already names, from a layout it was in before.
     foldered: Option<String>,
@@ -412,6 +414,21 @@ struct Evidence {
 impl Evidence {
     fn several(&self) -> bool {
         self.tagged.len() > 1
+    }
+
+    /// The town every photo with a position stands in, when there is one, no places tag names a
+    /// city or another country, and no city folder another town. A places tag that names one
+    /// decides as before.
+    fn positions_say(&self) -> Option<&str> {
+        let [(town, count)] = self.located.as_slice() else {
+            return None;
+        };
+        let agrees = |city: &str| fold(city) == fold(town);
+        (*count == self.positioned
+            && self.with_city == 0
+            && self.elsewhere.is_empty()
+            && self.foldered.as_deref().is_none_or(agrees))
+        .then_some(town.as_str())
     }
 }
 
@@ -621,7 +638,9 @@ impl<'a> Survey<'a> {
         evidence.written = counted(written);
 
         let mut located: BTreeMap<String, usize> = BTreeMap::new();
-        for (lat, lon) in self.positions.get(&dir).cloned().unwrap_or_default() {
+        let positions = self.positions.get(&dir).cloned().unwrap_or_default();
+        evidence.positioned = positions.len();
+        for (lat, lon) in positions {
             let Some(town) = self.town(lat, lon) else { continue };
             if !country.is_empty()
                 && !self.countries.same(&country, &town.code)
@@ -718,6 +737,15 @@ impl<'a> Survey<'a> {
         let (country, total) = (event.country.clone(), event.photos.len());
         let mut choices = Vec::new();
         if self.layout.has(&Component::City) || self.layout.has(&Component::Region) {
+            if let Some(town) = evidence.positions_say() {
+                choices.push(Choice {
+                    country: country.clone(),
+                    city: Some(town.to_string()),
+                    why: "where every photo with a position is".to_string(),
+                    located: Some(evidence.positioned),
+                    sure: event.country_sure,
+                });
+            }
             if let Some(city) = &evidence.foldered {
                 choices.push(Choice {
                     country: country.clone(),

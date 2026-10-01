@@ -61,7 +61,7 @@ connection to the cache, so it can run while the cache itself is busy with somet
 | Part | Holds |
 |------|-------|
 | at a glance | photos, events, size on disk, the first and last date, cameras, file types as they are spelled |
-| coverage | per field, how many photos could carry it and how many do not |
+| coverage | per field, how many photos could carry it and how many do not, and how much is aligned with the layout |
 | where the gaps are | the same per top folder of the [layout](cache.md#folder-names) and per event, one field at a time, the most missing first |
 | tidy up | things that are untidy rather than missing; a finding with nothing in it is not shown |
 
@@ -99,6 +99,29 @@ each part opening its fix, and the parts add up to the gap:
 The split comes from the place check, which runs after every scan; while the check is older than
 the photos it would not add up, and it is not shown.
 
+## Aligned with the layout
+
+The last line of the coverage says how many events sit exactly where the
+[folder layout](cache.md#folder-names) puts them. A photo is **aligned** when it is in an event in
+the layout, with every level of the layout filled - an optional one too, so an event without its
+city folder is not aligned - in no folder inside its event unless the layout allows them, named by
+its date, and naming no other event in its own field than its folder does. An event is aligned when
+every photo in it is.
+
+The line counts the events that are not and opens their photos; below it each reason is a row of
+its own, counted in photos and in the events they are in, with its fix:
+
+| Reason | Fix opens |
+|--------|-----------|
+| off the layout, loose files | the Folders fixes |
+| no city folder, one row per optional level | the Folders fixes |
+| in event sub-folders, while the layout does not allow them | the Sub-Folders fixes |
+| not named by their date | the File Names fixes |
+| event disagrees with the folder | nothing: renamed by hand |
+
+A photo can stand under more than one reason, so the rows may add up to more than the line. With
+sub-folders allowed, a sub-folder is no reason at all.
+
 ## Tidy up
 
 - the photos still in the `mixed` bucket, and how many tags it holds,
@@ -106,11 +129,6 @@ the photos it would not add up, and it is not shown.
 - sibling tags a letter or two apart (`funny` and `funyn`). This is a hint, not a verdict: short
   names and names that differ only in a number (`2006 Summer`, `2007 Summer`) are left out, and
   nothing looks further than one parent,
-- loose files, photos in event sub-folders, and folders where an event should be but whose name
-  has no date, each on its own because each is fixed by a different step of the folder migration,
-- photos not named by their date: a photo with a date whose file name is not one of the names
-  the [File Names](suggestions.md#file-names) fix gives that date. It counts exactly the photos
-  that fix would rename,
 - sidecars, files that are not photos, unreadable files and duplicate content, from the issues,
 - photos whose **places tag and position disagree**: the tag names a town more than 25 km - a
   town's width - from where the photo stands, or a country-only tag names another country than the
@@ -142,7 +160,8 @@ those photos are fixed. What is fixed where is decided from the row's filter alo
 | no event | the Events from Folders fixes |
 | event disagrees with the folder | nothing: the photo or the folder is renamed by hand, with Rename Event or Move Event |
 | `mixed`, case twins, tags that look alike | the Tag Tree fixes |
-| loose files, sub-folders, off the layout | the Folders fixes |
+| loose files, off the layout, a missing level | the Folders fixes |
+| photos in sub-folders the layout does not allow | the Sub-Folders fixes |
 | not named by their date | the File Names fixes |
 | sidecars, not photos, unreadable, duplicate content | nothing: only a person can decide what goes |
 | places tag and position disagree | nothing: only a person can say which is wrong |
@@ -175,8 +194,10 @@ narrowed to a folder. It has a written form, which is what a click hands to the
 | `no-gps@Germany`, `no-gps@Germany/2019-07-13 Sommerfest` | the same, inside a folder or an event folder |
 | `tag:mixed`, `tag:mixed/funny\|mixed/Funny` | photos with any of these tags or a tag below them, compared as spelled |
 | `person:Anna`, `person:Anna\|Ben` | photos naming any of these persons, with a face box or without, compared as spelled |
-| `loose`, `sub-folder`, `off-layout` | the folder findings |
-| `off-name` | the photos not named by their date |
+| `loose`, `sub-folder`, `off-layout` | the folder findings; `sub-folder` only where the layout does not allow sub-folders |
+| `no-level:city` | photos in an event in the layout that leaves out this optional level |
+| `off-name` | the photos not named by their date: a photo with a date whose file name is not one of the names the [File Names](suggestions.md#file-names) fix gives that date |
+| `unaligned` | the photos not aligned with the layout, for any of the reasons above |
 | `issue:sidecar`, `issue:duplicate content` | files with that issue |
 | `all` | every photo |
 | `no-gps+tag:people@Germany` | parts joined by `+` must all hold: here, photos tagged under `people` in that folder, without GPS |

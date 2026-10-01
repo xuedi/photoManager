@@ -190,6 +190,7 @@ fn suggests_fixes_to_tick(window: &Window, opened: &Rc<Library>) {
         "events-from-folders:Germany/2019-07-13 Sommerfest",
         "redundant-tags:year",
         FOLDER,
+        "sub-folders:Germany/2018-05-12 Canal Tour/Evening",
         "file-names:Denmark/2018-10-00 Wedding Trip to Copenhagen",
     ] {
         assert!(keys.contains(&wanted), "{wanted} is not in {keys:?}");
@@ -206,6 +207,7 @@ fn suggests_fixes_to_tick(window: &Window, opened: &Rc<Library>) {
         "Places from Events",
         "Events from Folders",
         "Redundant Tags",
+        "Sub-Folders",
         "Folders",
         "File Names",
     ] {
@@ -225,7 +227,7 @@ fn suggests_fixes_to_tick(window: &Window, opened: &Rc<Library>) {
     assert!(labels(page.upcast_ref()).iter().any(|label| label == "1 fix selected"));
     assert!(!labels(page.upcast_ref()).iter().any(|label| label == "Unselect All"));
     act("win.fixes-select-all", Some("folders".to_variant()));
-    assert_eq!(page.ticked().len(), 2);
+    assert_eq!(page.ticked().len(), 7, "Beijing and the six sure folders");
     assert!(
         labels(page.upcast_ref()).iter().any(|label| label == "Unselect All"),
         "a group with every fix ticked offers to take the ticks away"
@@ -330,10 +332,15 @@ fn leads_a_finding_to_its_fix(window: &Window) {
         || page.revealed().as_deref() == Some("file-names"),
         "the File Names group was shown",
     );
-    act("sub-folder");
+    act("no-level:city");
     until(
         || page.revealed().as_deref() == Some("folders"),
         "the Folders group was shown",
+    );
+    act("sub-folder");
+    until(
+        || page.revealed().as_deref() == Some("sub-folders"),
+        "the Sub-Folders group was shown",
     );
 
     WidgetExt::activate_action(window, "win.tools-scope", Some(&"all".to_variant())).unwrap();
@@ -395,6 +402,27 @@ fn chooses_a_folder_layout(opened: &Rc<Library>) {
     again.choose_preset("Country / City / Event");
     again.save_now().unwrap();
     assert_eq!(opened.count(&Filter::of(Kind::OffLayout)), Some(0));
+
+    let in_sub_folders = opened.count(&Filter::of(Kind::SubFolder)).unwrap();
+    assert!(in_sub_folders > 0);
+    again.set_sub_folders(true);
+    assert_eq!(
+        again.preset().as_deref(),
+        Some("Country / City / Event"),
+        "still the preset"
+    );
+    assert!(again.can_save());
+    again.save_now().unwrap();
+    assert_eq!(opened.layout().to_string(), "country/city?/*");
+    assert_eq!(
+        opened.count(&Filter::of(Kind::SubFolder)),
+        Some(0),
+        "allowed, a sub-folder is no finding"
+    );
+    assert_eq!(walk(opened.paths().library()), before, "nothing moved");
+    again.set_sub_folders(false);
+    again.save_now().unwrap();
+    assert_eq!(opened.count(&Filter::of(Kind::SubFolder)), Some(in_sub_folders));
 }
 
 fn walk(root: &std::path::Path) -> Vec<std::path::PathBuf> {
@@ -785,7 +813,14 @@ fn surveys_what_is_missing(window: &Window, opened: &Rc<Library>) {
     dashboard.set_field(Gap::Gps);
 
     let shown = labels(dashboard.upcast_ref());
-    for wanted in ["Coverage", "Tidy Up", "Loose files", "People and people"] {
+    for wanted in [
+        "Coverage",
+        "Aligned with the layout",
+        "Tidy Up",
+        "Loose files",
+        "No city folder",
+        "People and people",
+    ] {
         assert!(shown.iter().any(|label| label == wanted), "no {wanted}: {shown:?}");
     }
     assert!(

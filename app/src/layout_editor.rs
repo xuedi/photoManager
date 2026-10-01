@@ -1,7 +1,8 @@
 //! The folder layout, chosen from the presets or put together level by level: each level a row
 //! that is dragged into place, or moved with its menu from the keyboard. The event folder is
 //! always last. An example of the library's own shows what the layout makes of it, and saving
-//! says how many events are then off it - nothing moves until Folder Migration moves them.
+//! says how many events are then off it - nothing moves until Folder Migration moves them. A
+//! switch says whether an event may have folders of its own.
 
 use std::cell::{Cell, RefCell};
 use std::rc::Rc;
@@ -26,6 +27,7 @@ pub struct LayoutEditor {
 struct Inner {
     library: Rc<Library>,
     levels: RefCell<Vec<Level>>,
+    sub_folders: adw::SwitchRow,
     /// The layout kept in the settings.
     saved: RefCell<Layout>,
     sample: Option<Placement>,
@@ -62,11 +64,17 @@ impl LayoutEditor {
         example.add_css_class("property");
         let save = adw::ButtonRow::builder().title("Save Layout").build();
         save.add_css_class("suggested-action");
+        let sub_folders = adw::SwitchRow::builder()
+            .title("Sub-Folders in Events")
+            .subtitle("Group an event's photos in folders. Their names are not read")
+            .active(saved.sub_folders)
+            .build();
 
         let inner = Rc::new(Inner {
             sample: library.sample_event(),
             library,
             levels: RefCell::new(saved.levels.clone()),
+            sub_folders,
             saved: RefCell::new(saved),
             group,
             presets,
@@ -89,6 +97,12 @@ impl LayoutEditor {
             }
         });
         let weak = Rc::downgrade(&inner);
+        inner.sub_folders.connect_active_notify(move |_| {
+            if let Some(inner) = weak.upgrade() {
+                inner.refresh();
+            }
+        });
+        let weak = Rc::downgrade(&inner);
         inner.save.connect_activated(move |row| {
             if let Some(inner) = weak.upgrade() {
                 inner.ask_to_save(row);
@@ -101,6 +115,7 @@ impl LayoutEditor {
     /// The groups to put on a preferences page, in order.
     pub fn groups(&self) -> [adw::PreferencesGroup; 2] {
         let saving = adw::PreferencesGroup::new();
+        saving.add(&self.inner.sub_folders);
         saving.add(&self.inner.example);
         saving.add(&self.inner.save);
         [self.inner.group.clone(), saving]
@@ -156,6 +171,10 @@ impl LayoutEditor {
         self.inner.add(component);
     }
 
+    pub fn set_sub_folders(&self, allowed: bool) {
+        self.inner.sub_folders.set_active(allowed);
+    }
+
     pub fn can_save(&self) -> bool {
         self.inner.save.is_sensitive()
     }
@@ -178,6 +197,7 @@ impl Inner {
     fn layout(&self) -> Result<Layout, String> {
         let layout = Layout {
             levels: self.levels.borrow().clone(),
+            sub_folders: self.sub_folders.is_active(),
         };
         layout.check()?;
         Ok(layout)
@@ -250,7 +270,8 @@ impl Inner {
         let preset = layout
             .as_ref()
             .ok()
-            .and_then(|layout| PRESETS.iter().position(|(_, text)| *text == layout.to_string()))
+            .and_then(Layout::preset)
+            .and_then(|name| PRESETS.iter().position(|(preset, _)| *preset == name))
             .unwrap_or(PRESETS.len());
         self.presets.set_selected(preset as u32);
         self.choosing.set(false);
@@ -394,6 +415,7 @@ impl Inner {
                             component: kind,
                             optional: false,
                         }],
+                        sub_folders: false,
                     }
                     .to_string();
                     item.set_action_and_target_value(Some("add.level"), Some(&key.to_variant()));

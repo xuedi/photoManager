@@ -3,6 +3,9 @@
 //! `YYYY-MM-DD Event`, then any sub-folders. The event folder is found by its date wherever it
 //! is, so a library in another layout still has its events - they are only off the layout. A date
 //! may have holes (`2006-09-00`), and what does not fit is reported, never guessed.
+//!
+//! Folders inside an event are allowed or not. Allowed, they only group its photos and say
+//! nothing; not allowed, they are a deviation that is flattened into the event.
 
 use std::fmt;
 
@@ -46,7 +49,8 @@ impl Component {
         }
     }
 
-    fn key(&self) -> String {
+    /// How it is kept and asked for: `city`, `tag:topics`.
+    pub fn key(&self) -> String {
         match self {
             Component::Country => "country".to_string(),
             Component::Region => "region".to_string(),
@@ -57,7 +61,7 @@ impl Component {
         }
     }
 
-    fn from_key(key: &str) -> Option<Component> {
+    pub fn from_key(key: &str) -> Option<Component> {
         Some(match key {
             "country" => Component::Country,
             "region" => Component::Region,
@@ -109,11 +113,18 @@ pub struct Level {
     pub optional: bool,
 }
 
-/// The folder levels above the event folder, in order.
+/// The folder levels above the event folder, in order, and whether an event may have folders.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct Layout {
     pub levels: Vec<Level>,
+    pub sub_folders: bool,
 }
+
+/// What a photo's path keeps from being exactly where the layout puts it, besides being off it.
+pub const IN_A_SUB_FOLDER: &str = "sub-folder";
+
+/// The part of the written layout that allows folders inside an event.
+const SUB_FOLDERS: &str = "*";
 
 /// The layouts offered by name. The first is the default.
 pub const PRESETS: [(&str, &str); 6] = [
@@ -132,24 +143,28 @@ impl Default for Layout {
 }
 
 impl fmt::Display for Layout {
-    /// The text it is kept as: `country/city?`, `year/tag:topics`, or nothing for events only.
+    /// The text it is kept as: `country/city?`, `year/tag:topics`, or nothing for events only,
+    /// with `/*` at the end when an event may have folders.
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        let levels: Vec<String> = self
-            .levels
-            .iter()
-            .map(|level| format!("{}{}", level.component.key(), if level.optional { "?" } else { "" }))
-            .collect();
-        write!(f, "{}", levels.join("/"))
+        let mut parts = vec![self.levels_text()];
+        if self.sub_folders {
+            parts.push(SUB_FOLDERS.to_string());
+        }
+        parts.retain(|part| !part.is_empty());
+        write!(f, "{}", parts.join("/"))
     }
 }
 
 impl Layout {
     /// A layout from the text it is kept as, checked.
     pub fn read(text: &str) -> Result<Layout, String> {
-        let levels = text
-            .split('/')
-            .map(str::trim)
-            .filter(|part| !part.is_empty())
+        let mut parts: Vec<&str> = text.split('/').map(str::trim).filter(|part| !part.is_empty()).collect();
+        let sub_folders = parts.last() == Some(&SUB_FOLDERS);
+        if sub_folders {
+            parts.pop();
+        }
+        let levels = parts
+            .into_iter()
             .map(|part| {
                 let (key, optional) = match part.strip_suffix('?') {
                     Some(key) => (key, true),
@@ -160,14 +175,24 @@ impl Layout {
                     .ok_or_else(|| format!("{key} is not a folder level"))
             })
             .collect::<Result<Vec<Level>, String>>()?;
-        let layout = Layout { levels };
+        let layout = Layout { levels, sub_folders };
         layout.check()?;
         Ok(layout)
     }
 
-    /// The preset this layout is, by its name.
+    /// The levels alone as they are kept, without whether an event may have folders.
+    fn levels_text(&self) -> String {
+        let levels: Vec<String> = self
+            .levels
+            .iter()
+            .map(|level| format!("{}{}", level.component.key(), if level.optional { "?" } else { "" }))
+            .collect();
+        levels.join("/")
+    }
+
+    /// The preset this layout's levels are, by its name.
     pub fn preset(&self) -> Option<&'static str> {
-        let text = self.to_string();
+        let text = self.levels_text();
         PRESETS
             .iter()
             .find(|(_, preset)| *preset == text)
@@ -210,6 +235,25 @@ impl Layout {
             .collect();
         folders.push(placement.event_folder().unwrap_or_else(|| date.to_string()));
         folders.join("/")
+    }
+
+    /// What keeps a path in the layout from being exactly where it puts it: each optional level
+    /// left out, by its key (`city`), and a folder inside the event when those are not allowed.
+    /// Nothing for a path off the layout, which is a finding of its own.
+    pub fn unfit(&self, placement: &Placement) -> Vec<String> {
+        if !placement.fits() {
+            return Vec::new();
+        }
+        let mut unfit: Vec<String> = self
+            .levels
+            .iter()
+            .filter(|level| !placement.levels.iter().any(|(found, _)| *found == level.component))
+            .map(|level| level.component.key())
+            .collect();
+        if placement.sub_path.is_some() && !self.sub_folders {
+            unfit.push(IN_A_SUB_FOLDER.to_string());
+        }
+        unfit
     }
 
     pub fn has(&self, component: &Component) -> bool {
@@ -610,6 +654,46 @@ mod tests {
         assert_eq!(own.preset(), None);
         assert_eq!(Layout::default().title(), "Country / (City) / Event");
         assert!(Layout::read("country/planet").is_err());
+
+        let grouped = Layout::read("country/city?/*").unwrap();
+        assert!(grouped.sub_folders);
+        assert_eq!(grouped.to_string(), "country/city?/*");
+        assert_eq!(grouped.preset(), Some("Country / City / Event"));
+        assert!(
+            !Layout::default().sub_folders,
+            "a layout kept before the switch has none"
+        );
+        let only = Layout::read("*").unwrap();
+        assert!(only.levels.is_empty() && only.sub_folders);
+        assert_eq!(only.to_string(), "*");
+    }
+
+    #[test]
+    fn says_what_keeps_a_path_from_its_exact_place() {
+        let flat = Layout::default();
+        let grouped = Layout::read("country/city?/*").unwrap();
+        let unfit = |layout: &Layout, path: &str| layout.unfit(&Placement::parse(path, layout));
+        assert!(unfit(&flat, "Germany/Hamburg/2019-07-13 Party/IMG.JPG").is_empty());
+        assert_eq!(unfit(&flat, "Germany/2019-07-13 Party/IMG.JPG"), ["city"]);
+        assert_eq!(
+            unfit(&flat, "Germany/2019-07-13 Party/by Kira/IMG.JPG"),
+            ["city", IN_A_SUB_FOLDER]
+        );
+        assert_eq!(unfit(&grouped, "Germany/2019-07-13 Party/by Kira/IMG.JPG"), ["city"]);
+        assert!(
+            unfit(&flat, "2019/Germany/2019-07-13 Party/IMG.JPG").is_empty(),
+            "off it is its own"
+        );
+        assert!(unfit(&flat, "Germany/IMG.JPG").is_empty());
+    }
+
+    #[test]
+    fn a_dated_folder_inside_an_event_is_never_an_event_of_its_own() {
+        let grouped = Layout::read("country/city?/*").unwrap();
+        let day = Placement::parse("China/2006-09-00 Besuch Ben/2006-08-21/IMG.JPG", &grouped);
+        assert_eq!(day.event_dir.as_deref(), Some("China/2006-09-00 Besuch Ben"));
+        assert_eq!(day.sub_path.as_deref(), Some("2006-08-21"));
+        assert!(day.fits());
     }
 
     #[test]

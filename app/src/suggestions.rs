@@ -213,7 +213,7 @@ impl Suggestions {
             let order = |fix: &Fix| FINDERS.iter().position(|finder| finder.key == fix.finder);
             let at = found
                 .iter()
-                .position(|other| order(other) > order(&fix))
+                .position(|other| (order(other), &other.key) > (order(&fix), &fix.key))
                 .unwrap_or(found.len());
             found.insert(at, fix);
         }

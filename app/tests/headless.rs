@@ -125,7 +125,7 @@ fn the_app_can_be_clicked_through_headless() {
     assert_eq!(survey["coverage"]["no-gps"]["missing"].as_u64(), Some(photos - 26));
     assert_eq!(survey["coverage"]["no-date"]["missing"].as_u64(), Some(5));
     assert!(
-        survey["tidy"]
+        survey["aligned"]["reasons"]
             .as_array()
             .unwrap()
             .iter()

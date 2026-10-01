@@ -265,10 +265,11 @@ field, so a tag whose field a fix of the same apply writes goes the next time.
 
 ## Folders
 
-Every event of the library off the [folder layout](cache.md#folder-names), and every event whose
-photos all name another event in their own field than its folder does, is looked at, level by
-level, from what its photos already say: the country from its folders or places tags, the city
-from the city folder it is in or the places tag of every photo, the region from that city, the
+Every event of the library off the [folder layout](cache.md#folder-names) or missing one of its
+optional levels, and every event whose photos all name another event in their own field than its
+folder does, is looked at, level by level, from what its photos already say: the country from its
+folders or places tags; the city from the city folder it is in, the places tag of every photo, or,
+when no places tag names a city, the town every photo with a position stands in; the region from that city, the
 year and month from the event's date, a tag level from the one tag below its root every photo
 carries. A city is spelled the way the library already spells it, so folders and tags agree.
 
@@ -276,7 +277,9 @@ carries. A city is spelled the way the library already spells it, so folders and
   So an event renamed with [Rename Event](tools.md#rename-event) is offered its folder under the
   new name, its date kept.
 - **Sure** is a folder whose every level is sure. Several cities, a city on only some photos, an
-  event without a year are not: Move Event moves them by hand.
+  event without a year are not: Move Event moves them by hand. A city from the positions is sure
+  when every photo with one stands in the same town; the photos without a position go along, as
+  they do in [Places from Events](#places-from-events).
 - **The people gate.** An event whose photos Immich names people in that the files do not say is
   held back until they are written ([People](#people)); its fix says it waits, and ticking the
   people too lets it go in the same apply. A file says a person with a face region or in the
@@ -287,6 +290,39 @@ carries. A city is spelled the way the library already spells it, so folders and
 
 Measured over a copy of a real cache, finding every fix takes a few seconds off the main thread,
 most of it the folders.
+
+## Sub-Folders
+
+Whether an event may have folders of its own is a switch of the layout, **Sub-Folders in Events**
+in Preferences. On, a sub-folder only groups its event's photos: its name is never read, it moves
+with its event, and nothing here looks at it. Off, the default, a sub-folder is something to fix:
+its photos go up into their event.
+
+```mermaid
+flowchart TD
+    sub[a sub-folder] --> allowed{allowed by the layout?}
+    allowed -- yes --> kept[left as it is]
+    allowed -- no --> said{every photo has a date<br/>and a position, nothing<br/>but photos in it?}
+    said -- no --> held[held: the dashboard says why]
+    said -- yes --> gate{Immich names someone<br/>the file does not?}
+    gate -- yes --> waits[waits for its people]
+    gate -- no --> up[its photos into the event, named by their date]
+```
+
+- **The name of the folder goes.** A day, a place or a photographer's name is not kept anywhere,
+  so a folder goes up only once its photos say when and where they were taken; a photo without a
+  position is given one with Set Place first.
+- **One fix per folder**, the deepest one: `Trip/Mum's film/2006-09-13` goes straight up into
+  `Trip`, and every folder it leaves empty goes too.
+- **Named as File Names would** name them, among every name the event folder has: a name that
+  already is one of the scheme's for the photo's date stays when it is free, any other takes the
+  first free one, told apart without regard to case. Nothing is overwritten, and photos of several
+  sub-folders of one event never get the same name.
+- **One pass of moves**, each a move of one photo ([writing.md](writing.md#moving-a-folder)), before
+  the Folders pass, so an event can be flat and in its new place after one apply.
+
+Measured over a copy of a real event with several sub-folders, finding them takes a few
+milliseconds and flattening them well under a second; every file had the same bytes afterwards.
 
 ## File Names
 

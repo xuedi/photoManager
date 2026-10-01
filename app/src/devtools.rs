@@ -148,6 +148,16 @@ fn state(window: &Window, paths: &Paths, library: Option<&Library>) -> String {
             "cameras": survey.camera_count(),
             "coverage": coverage,
             "countries": survey.countries.iter().map(|place| place.name.clone()).collect::<Vec<_>>(),
+            "aligned": {
+                "events": survey.aligned.events,
+                "off_events": survey.aligned.off_events,
+                "photos": survey.aligned.photos,
+                "reasons": survey.aligned.reasons.iter().map(|finding| serde_json::json!({
+                    "title": finding.title,
+                    "count": finding.count,
+                    "filter": finding.filter.to_string(),
+                })).collect::<Vec<_>>(),
+            },
             "tidy": survey.tidy.iter().map(|finding| serde_json::json!({
                 "title": finding.title,
                 "count": finding.count,

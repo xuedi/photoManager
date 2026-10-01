@@ -8,7 +8,7 @@ use gtk::glib::subclass::InitializingObject;
 use photomanager_core::filter::{Filter, Gap, Kind};
 use photomanager_core::remedy::Remedy;
 use photomanager_core::scan::Mode;
-use photomanager_core::survey::{Measure, Place, Survey};
+use photomanager_core::survey::{Aligned, Measure, Place, Survey};
 use photomanager_core::upkeep::{self, Facts, Job, Status};
 
 use crate::library::{Event, Library};
@@ -540,6 +540,7 @@ impl Dashboard {
                 self.keep(&group, neighbours_row(survey).upcast());
             }
         }
+        self.keep(&group, aligned_row(&survey.aligned).upcast());
     }
 
     /// The line of the events where a neighbour knows the position, and how many there are.
@@ -680,6 +681,56 @@ fn gps_left_row(survey: &Survey, missing: i64) -> adw::ExpanderRow {
             inner.add_suffix(&fix);
         }
         clickable(&inner, *count, &filter);
+        row.add_row(&inner);
+    }
+    row
+}
+
+/// How many events sit exactly where the layout puts them, and below it each way the rest falls
+/// short, each opening its photos and its fix.
+fn aligned_row(aligned: &Aligned) -> adw::ExpanderRow {
+    let row = adw::ExpanderRow::builder()
+        .title("Aligned with the layout")
+        .subtitle(format!(
+            "{} of {} events are not, {} photos",
+            aligned.off_events, aligned.events, aligned.photos
+        ))
+        .enable_expansion(!aligned.reasons.is_empty())
+        .build();
+    if aligned.photos > 0 {
+        let show = gtk::Button::builder()
+            .icon_name("go-next-symbolic")
+            .tooltip_text("Show These Photos")
+            .valign(gtk::Align::Center)
+            .action_name(SHOW_PHOTOS)
+            .action_target(&Aligned::filter().to_string().to_variant())
+            .build();
+        show.add_css_class("flat");
+        show.update_property(&[gtk::accessible::Property::Label(
+            "Show the photos not aligned with the layout",
+        )]);
+        row.add_suffix(&show);
+    }
+    // An expander row shows its suffixes last added first: the meter, then the arrow.
+    let bar = gtk::LevelBar::builder()
+        .value(aligned.present())
+        .valign(gtk::Align::Center)
+        .width_request(96)
+        .build();
+    bar.update_property(&[gtk::accessible::Property::Label("Aligned with the layout")]);
+    row.add_suffix(&bar);
+    for finding in &aligned.reasons {
+        let inner = adw::ActionRow::builder()
+            .title(glib::markup_escape_text(&finding.title))
+            .subtitle(glib::markup_escape_text(&finding.detail))
+            .build();
+        let count = gtk::Label::builder().label(finding.count.to_string()).build();
+        count.add_css_class("dim-label");
+        inner.add_suffix(&count);
+        if let Some(fix) = fix_button(finding.count, &finding.filter, &finding.title) {
+            inner.add_suffix(&fix);
+        }
+        clickable(&inner, finding.count, &finding.filter);
         row.add_row(&inner);
     }
     row

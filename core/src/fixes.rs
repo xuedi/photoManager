@@ -16,6 +16,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use crate::cache::Cache;
 use crate::changeset::{self, ChangeSet, Wanted};
 use crate::filter::Filter;
+use crate::flatten;
 use crate::geo::Geo;
 use crate::names;
 use crate::redundant;
@@ -41,7 +42,7 @@ pub struct Finder {
 }
 
 /// Every finder, in the order its fixes are applied.
-pub const FINDERS: [Finder; 11] = [
+pub const FINDERS: [Finder; 12] = [
     Finder {
         key: "tags",
         title: "Tag Tree",
@@ -97,6 +98,12 @@ pub const FINDERS: [Finder; 11] = [
         pass: "Take off the redundant tags",
     },
     Finder {
+        key: "sub-folders",
+        title: "Sub-Folders",
+        fixes: "Folders inside an event whose photos all have a date and a position, flattened into it",
+        pass: "Flatten sub-folders into their event",
+    },
+    Finder {
         key: "folders",
         title: "Folders",
         fixes: "Events with one sure folder in the layout",
@@ -140,6 +147,8 @@ enum What {
     },
     /// The folder whose photos are named by their date.
     Names(String),
+    /// The sub-folder whose photos go up into their event.
+    SubFolder(String),
     /// The person, by the name folded, named once in the photos that name them more than once.
     Doubled(String),
     /// The person, by Immich's id, written into the photos Immich finds them in.
@@ -246,6 +255,7 @@ fn find_one(key: &str, cache: &Cache, geo: Option<&Geo>) -> Result<Vec<Fix>, Str
             })
             .collect(),
         "redundant-tags" => redundant::sure(cache, geo)?.into_iter().map(redundant_fix).collect(),
+        "sub-folders" => sub_folder_fixes(cache)?,
         "folders" => folder_fixes(cache, geo)?,
         "file-names" => name_fixes(cache)?,
         other => return Err(format!("there is no finder {other}")),
@@ -406,6 +416,39 @@ const SHOWN_RENAMES: usize = 3;
 /// How many of the towns of a country are named before the rest is only counted.
 const SHOWN_TOWNS: usize = 5;
 
+fn sub_folder_fixes(cache: &Cache) -> Result<Vec<Fix>, String> {
+    let (found, _) = flatten::sub_folders(cache)?;
+    Ok(found
+        .into_iter()
+        .map(|folder| {
+            let mut lines = vec![("Into".to_string(), folder.event.clone())];
+            lines.extend(
+                folder
+                    .wanted
+                    .iter()
+                    .filter_map(|one| one.moved.as_ref())
+                    .take(SHOWN_RENAMES)
+                    .map(|moved| (file_name(&moved.from).to_string(), file_name(&moved.to).to_string())),
+            );
+            if folder.photos() > SHOWN_RENAMES {
+                lines.push(("And".to_string(), counted(folder.photos() - SHOWN_RENAMES)));
+            }
+            if let Some(why) = folder.waits.clone() {
+                lines.push(("Waits".to_string(), why));
+            }
+            Fix {
+                key: format!("sub-folders:{}", folder.dir),
+                finder: "sub-folders",
+                title: folder.dir.clone(),
+                detail: "Its photos go up into the event, named by their date, and the folder goes".to_string(),
+                photos: folder.photos(),
+                lines,
+                what: What::SubFolder(folder.dir),
+            }
+        })
+        .collect())
+}
+
 fn name_fixes(cache: &Cache) -> Result<Vec<Fix>, String> {
     Ok(names::folders(cache)?
         .into_iter()
@@ -530,6 +573,7 @@ pub fn change_set(finder: &Finder, fixes: &[&Fix], cache: &Cache, geo: Option<&G
     let mut tidy = false;
     let mut flatten = false;
     let mut named = BTreeSet::new();
+    let mut flattened = BTreeSet::new();
     let mut persons = BTreeSet::new();
     let mut doubled = BTreeSet::new();
     let mut tagged = std::collections::BTreeMap::new();
@@ -548,6 +592,9 @@ pub fn change_set(finder: &Finder, fixes: &[&Fix], cache: &Cache, geo: Option<&G
             What::Answer { question, answer } => answers.set(question, Some(answer.clone())),
             What::Names(dir) => {
                 named.insert(dir.clone());
+            }
+            What::SubFolder(dir) => {
+                flattened.insert(dir.clone());
             }
             What::Doubled(key) => {
                 doubled.insert(key.clone());
@@ -593,6 +640,12 @@ pub fn change_set(finder: &Finder, fixes: &[&Fix], cache: &Cache, geo: Option<&G
         "place-words" => place_words::wanted(cache, geo, &countries, &whole()).map_err(failed)?,
         "events-from-folders" => events_from_folders::wanted(cache, &events, &whole()).map_err(failed)?,
         "redundant-tags" => redundant::wanted(cache, geo, &roles, &whole()).map_err(failed)?,
+        "sub-folders" => flatten::sub_folders(cache)?
+            .0
+            .into_iter()
+            .filter(|folder| flattened.contains(&folder.dir))
+            .flat_map(|folder| folder.wanted)
+            .collect(),
         "folders" => FolderMigration.wanted(cache, geo, &whole(), &answers).map_err(failed)?,
         "file-names" => names::folders(cache)?
             .into_iter()
@@ -754,9 +807,8 @@ mod tests {
         );
 
         let folders: Vec<&Fix> = fixes.iter().filter(|fix| fix.finder == "folders").collect();
-        let [folder] = folders.as_slice() else {
-            panic!("one sure folder: {folders:?}");
-        };
+        assert_eq!(folders.len(), 6, "{folders:?}");
+        let folder = folders[0];
         assert_eq!(folder.title, "China/2006-09-00 Besuch Ben");
         assert_eq!(folder.photos, 2);
         assert_eq!(

@@ -51,8 +51,20 @@ CREATE TABLE IF NOT EXISTS checked (
 CREATE INDEX IF NOT EXISTS checked_kind ON checked (kind);
 ";
 
+/// What keeps a photo in the layout from its exact place: an optional level left out, by its key,
+/// or a folder inside its event that the layout does not allow. Added the same way as `checked`,
+/// and filled whenever a path is placed.
+const UNFIT: &str = "
+CREATE TABLE IF NOT EXISTS unfit (
+    photo_id INTEGER NOT NULL REFERENCES photo (id) ON DELETE CASCADE,
+    kind     TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS unfit_photo ON unfit (photo_id);
+CREATE INDEX IF NOT EXISTS unfit_kind ON unfit (kind);
+";
+
 /// Bumped when the reading of a path changes, so every row is placed again once.
-const PLACEMENT_VERSION: &str = "2";
+const PLACEMENT_VERSION: &str = "3";
 
 const SCHEMA: &str = "
 CREATE TABLE photo (
@@ -293,6 +305,7 @@ impl Cache {
         connection.execute_batch(ROLES)?;
         connection.execute_batch(RAN)?;
         connection.execute_batch(CHECKED)?;
+        connection.execute_batch(UNFIT)?;
         derive_persons(&connection)?;
         Ok(Some(Cache::with(connection, file)?))
     }
@@ -326,6 +339,7 @@ impl Cache {
         connection.execute_batch(RAN)?;
         connection.execute_batch(PERSON)?;
         connection.execute_batch(CHECKED)?;
+        connection.execute_batch(UNFIT)?;
         connection.pragma_update(None, "user_version", SCHEMA_VERSION)?;
         Cache::with(connection, file)
     }
@@ -1277,6 +1291,7 @@ impl Writer<'_> {
     /// What a row's path says, read with the layout, and the issue when it does not fit.
     fn place(&self, id: i64, rel_path: &str) -> Result<()> {
         let placement = Placement::parse(rel_path, self.layout);
+        self.note_unfit(id, &placement)?;
         self.transaction.execute(
             "UPDATE photo SET country = ?2, city = ?3, event_text = ?4, event_year = ?5,
                 event_month = ?6, event_day = ?7, event_name = ?8, sub_path = ?9, event_dir = ?10
@@ -1358,6 +1373,7 @@ impl Writer<'_> {
             ],
         )?;
         let id = self.transaction.last_insert_rowid();
+        self.note_unfit(id, placement)?;
 
         let mut tags = self
             .transaction
@@ -1373,6 +1389,18 @@ impl Writer<'_> {
             persons.execute(params![id, name, boxed])?;
         }
         Ok(id)
+    }
+
+    fn note_unfit(&self, id: i64, placement: &Placement) -> Result<()> {
+        self.transaction
+            .execute("DELETE FROM unfit WHERE photo_id = ?1", params![id])?;
+        let mut insert = self
+            .transaction
+            .prepare_cached("INSERT INTO unfit (photo_id, kind) VALUES (?1, ?2)")?;
+        for kind in self.layout.unfit(placement) {
+            insert.execute(params![id, kind])?;
+        }
+        Ok(())
     }
 
     pub fn add_issue(&self, issue: &Issue, photo_id: Option<i64>) -> Result<()> {

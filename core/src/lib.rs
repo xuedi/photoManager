@@ -9,6 +9,7 @@ pub mod details;
 pub mod edits;
 pub mod filter;
 pub mod fixes;
+pub mod flatten;
 pub mod geo;
 pub mod identity;
 pub mod immich;

@@ -184,6 +184,10 @@ in any layout. A date may have holes: `2006-09-00` is September 2006 without a d
 is an unknown date. The holes are kept as they are, never filled in with a guess. A year or
 month level has to say the event's own year or month.
 
+Whether an event may have folders of its own is part of the layout too. Allowed, they only group
+its photos and say nothing; not allowed, a photo in one is not where the layout puts it, and the
+[Sub-Folders](suggestions.md#sub-folders) fix takes it up into its event.
+
 What the folders above the event say is read as the layout's levels. When they do not fit, the
 event keeps its date and name and is **off the layout**; a file in a folder of the layout but in
 no event is **loose**. A layout that could read one path in two ways - an optional country next
@@ -196,7 +200,9 @@ follow.
 
 The layout is a setting, not photo information, so it lives in `app.db`. The cache remembers
 which layout its rows were placed with; when it changes, every row is placed again from its path,
-without reading a file, and the issues follow. Nothing on disk moves - that is the
+without reading a file, and the issues follow. Placing a row also notes what keeps it from its
+exact place - an optional level left out, a sub-folder the layout does not allow - which is what
+the dashboard's [aligned](dashboard.md#aligned-with-the-layout) line counts. Nothing on disk moves - that is the
 [Folders](suggestions.md#folders) suggestion and [Move Event](tools.md#move-event).
 
 ```mermaid

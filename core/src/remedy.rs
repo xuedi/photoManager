@@ -38,7 +38,9 @@ impl Remedy {
             Kind::Missing(Gap::EventOffFolder) => None,
             Kind::Tagged(_) => fixes("tags"),
             Kind::Person(_) => None,
-            Kind::SubFolder | Kind::Loose | Kind::OffLayout => fixes("folders"),
+            Kind::Unaligned => None,
+            Kind::NoLevel(_) | Kind::Loose | Kind::OffLayout => fixes("folders"),
+            Kind::SubFolder => fixes("sub-folders"),
             Kind::OffName => fixes("file-names"),
             Kind::Issue(_) => None,
             Kind::Checked(Check::GpsSure) => fixes("places-from-tags"),
@@ -98,9 +100,11 @@ mod tests {
         assert_eq!(finder("no-people"), "people");
         assert_eq!(finder("tag:mixed"), "tags");
         assert_eq!(finder("tag:mixed/funny|mixed/Funny"), "tags");
-        for written in ["loose", "sub-folder", "off-layout"] {
+        for written in ["loose", "no-level:city", "off-layout"] {
             assert_eq!(finder(written), "folders", "{written}");
         }
+        assert_eq!(finder("sub-folder"), "sub-folders");
+        assert_eq!(remedy("unaligned"), None, "each reason has its own row and fix");
         assert_eq!(finder("off-name"), "file-names");
         assert_eq!(finder("check:gps-sure"), "places-from-tags");
         assert_eq!(tool("check:gps-event"), (Edit::SetPlace, "check:gps-event".to_string()));

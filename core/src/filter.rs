@@ -139,7 +139,13 @@ pub enum Kind {
     Tagged(Vec<String>),
     /// Photos naming any of these persons, with a face box or without.
     Person(Vec<String>),
-    /// Photos in a folder below their event's.
+    /// Photos not exactly where the layout puts them: off it, loose, an optional level left
+    /// out, in a folder inside their event it does not allow, not named by their date, or naming
+    /// another event than their folder.
+    Unaligned,
+    /// Photos in an event in the layout that leaves out this optional level, by its key: `city`.
+    NoLevel(String),
+    /// Photos in a folder below their event's, where the layout does not allow one.
     SubFolder,
     /// Photos with a date whose file name is not one the naming scheme gives that date.
     OffName,
@@ -161,12 +167,14 @@ impl Kind {
             Kind::Missing(_) => 0,
             Kind::Tagged(_) => 1,
             Kind::Person(_) => 2,
-            Kind::SubFolder => 3,
-            Kind::OffName => 4,
-            Kind::Loose => 5,
-            Kind::OffLayout => 6,
-            Kind::Issue(_) => 7,
-            Kind::Checked(_) => 8,
+            Kind::Unaligned => 3,
+            Kind::NoLevel(_) => 4,
+            Kind::SubFolder => 5,
+            Kind::OffName => 6,
+            Kind::Loose => 7,
+            Kind::OffLayout => 8,
+            Kind::Issue(_) => 9,
+            Kind::Checked(_) => 10,
         }
     }
 
@@ -185,6 +193,8 @@ impl Kind {
             Kind::Missing(gap) => format!("Photos {}", gap.lacking()),
             Kind::Tagged(paths) => format!("Photos tagged {}", paths.join(" or ")),
             Kind::Person(names) => format!("Photos of {}", names.join(" or ")),
+            Kind::Unaligned => "Photos not aligned with the layout".to_string(),
+            Kind::NoLevel(key) => format!("Photos in an event without a {} folder", level_title(key)),
             Kind::SubFolder => "Photos in event sub-folders".to_string(),
             Kind::OffName => "Photos not named by their date".to_string(),
             Kind::Loose => "Loose files".to_string(),
@@ -200,6 +210,8 @@ impl Kind {
             Kind::Missing(gap) => gap.lacking().to_string(),
             Kind::Tagged(paths) => format!("tagged {}", paths.join(" or ")),
             Kind::Person(names) => format!("of {}", names.join(" or ")),
+            Kind::Unaligned => "not aligned with the layout".to_string(),
+            Kind::NoLevel(key) => format!("in an event without a {} folder", level_title(key)),
             Kind::SubFolder => "in event sub-folders".to_string(),
             Kind::OffName => "not named by their date".to_string(),
             Kind::Loose => "loose".to_string(),
@@ -228,7 +240,14 @@ impl Kind {
         if let Some(names) = text.strip_prefix("person:") {
             return Ok(groups(names, "an empty name")?.into_iter().map(Kind::Person).collect());
         }
+        if let Some(key) = text.strip_prefix("no-level:") {
+            return match crate::layout::Component::from_key(key) {
+                Some(_) => Ok(vec![Kind::NoLevel(key.to_string())]),
+                None => Err("no such folder level".to_string()),
+            };
+        }
         Ok(vec![match text {
+            "unaligned" => Kind::Unaligned,
             "sub-folder" => Kind::SubFolder,
             "off-name" => Kind::OffName,
             "loose" => Kind::Loose,
@@ -277,7 +296,23 @@ impl Kind {
                     holes.join(", ")
                 )
             }
-            Kind::SubFolder => "p.event_dir IS NOT NULL AND p.sub_path IS NOT NULL".to_string(),
+            Kind::Unaligned => format!(
+                "p.event_dir IS NULL
+                 OR p.id IN (SELECT photo_id FROM unfit)
+                 OR p.id IN (SELECT photo_id FROM issue WHERE kind = '{off_layout}' AND photo_id IS NOT NULL)
+                 OR ({})
+                 OR ({})",
+                off_name(),
+                Gap::EventOffFolder.predicate()
+            ),
+            Kind::NoLevel(key) => {
+                params.push(key.clone());
+                format!("p.id IN (SELECT photo_id FROM unfit WHERE kind = ?{})", params.len())
+            }
+            Kind::SubFolder => format!(
+                "p.id IN (SELECT photo_id FROM unfit WHERE kind = '{}')",
+                crate::layout::IN_A_SUB_FOLDER
+            ),
             Kind::OffName => off_name(),
             Kind::Loose => issue(format!(
                 "kind = '{off_layout}' AND detail IN ('{}', '{}')",
@@ -297,6 +332,13 @@ impl Kind {
             }
         }
     }
+}
+
+/// A level by its key, in lower case for a sentence: `city`, `tag under topics`.
+fn level_title(key: &str) -> String {
+    crate::layout::Component::from_key(key)
+        .map(|component| component.title().to_lowercase())
+        .unwrap_or_else(|| key.to_string())
 }
 
 /// Each kind as part of a title, the tags and the people asked for together each in one phrase:
@@ -645,6 +687,8 @@ impl std::fmt::Display for Filter {
                 Kind::Missing(gap) => write!(f, "{}", gap.key())?,
                 Kind::Tagged(paths) => write!(f, "tag:{}", paths.join("|"))?,
                 Kind::Person(names) => write!(f, "person:{}", names.join("|"))?,
+                Kind::Unaligned => write!(f, "unaligned")?,
+                Kind::NoLevel(key) => write!(f, "no-level:{key}")?,
                 Kind::SubFolder => write!(f, "sub-folder")?,
                 Kind::OffName => write!(f, "off-name")?,
                 Kind::Loose => write!(f, "loose")?,
@@ -747,6 +791,10 @@ pub(crate) mod tests {
             "tag:mixed/funny|mixed/Funny&mixed/food+person:Anna Maria|Tom&Mia@Germany",
             "sub-folder",
             "off-name",
+            "unaligned",
+            "no-level:city",
+            "no-level:tag:topics@Germany",
+            "no-gps+no-level:city",
             "no-gps+off-name@Greece",
             "loose",
             "off-layout",
@@ -768,6 +816,11 @@ pub(crate) mod tests {
         assert_eq!(filter("issue:sidecar"), Filter::of(Kind::Issue(IssueKind::Sidecar)));
         assert_eq!(filter("no-gps").title(), "Photos without GPS");
         assert_eq!(filter("loose@China").title(), "Loose files in China");
+        assert_eq!(
+            filter("no-level:city").title(),
+            "Photos in an event without a city folder"
+        );
+        assert!("no-level:planet".parse::<Filter>().is_err());
     }
 
     #[test]
@@ -911,6 +964,8 @@ pub(crate) mod tests {
             "person:Mia|Tom",
             "person:Nobody",
             "sub-folder",
+            "unaligned",
+            "no-level:city",
             "loose",
             "issue:no date",
         ] {
@@ -933,6 +988,7 @@ pub(crate) mod tests {
             ),
             ("no-date+tag:mixed", vec!["no-date", "tag:mixed"]),
             ("no-people+sub-folder", vec!["no-people", "sub-folder"]),
+            ("no-gps+no-level:city", vec!["no-gps", "no-level:city"]),
             ("no-gps+loose", vec!["no-gps", "loose"]),
             ("tag:people+issue:no date", vec!["tag:people", "issue:no date"]),
             ("tag:people+person:Tom", vec!["tag:people", "person:Tom"]),

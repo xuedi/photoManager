@@ -72,6 +72,46 @@ pub fn plan(photos: &[Photo], on_disk: &[String]) -> Vec<Verdict> {
         .collect()
 }
 
+/// The names photos coming into a folder get: each the scheme's name for its date, kept as it is
+/// when it already is one and nothing in the folder has it, else the first free one. `on_disk` is
+/// every name in the folder they come into, none of which is handed out, told apart without regard
+/// to case. A photo without a date is refused, as it has no name of the scheme.
+pub fn plan_into(photos: &[Photo], on_disk: &[String]) -> Vec<Verdict> {
+    let mut taken: HashSet<String> = on_disk.iter().map(|name| name.to_lowercase()).collect();
+    let mut verdicts: Vec<Option<Verdict>> = vec![None; photos.len()];
+    let mut moving = Vec::new();
+    for (index, photo) in photos.iter().enumerate() {
+        match photo.taken_at.as_deref().and_then(stem) {
+            None => verdicts[index] = Some(Verdict::Refused("it has no date".to_string())),
+            Some(stem) if fits(&photo.name, &stem) && taken.insert(photo.name.to_lowercase()) => {
+                verdicts[index] = Some(Verdict::Rename(photo.name.clone()));
+            }
+            Some(stem) => moving.push((index, stem)),
+        }
+    }
+    moving.sort_by(|(a, a_stem), (b, b_stem)| {
+        let order = |index: usize| {
+            (
+                fraction(photos[index].sub_second.as_deref()),
+                photos[index].name.as_str(),
+            )
+        };
+        a_stem.cmp(b_stem).then_with(|| order(*a).cmp(&order(*b)))
+    });
+    for (index, stem) in moving {
+        let name = (1..)
+            .map(|number| numbered(&stem, number))
+            .find(|name| !taken.contains(&name.to_lowercase()))
+            .expect("a free number");
+        taken.insert(name.to_lowercase());
+        verdicts[index] = Some(Verdict::Rename(name));
+    }
+    verdicts
+        .into_iter()
+        .map(|verdict| verdict.expect("every photo judged"))
+        .collect()
+}
+
 /// One folder whose photos are not all named by their date: a move of its own for every photo
 /// that gets a new name, and a refused row for every one that keeps its name for want of a date.
 #[derive(Debug, Clone)]
@@ -241,6 +281,27 @@ mod tests {
 
     fn renamed(name: &str) -> Verdict {
         Verdict::Rename(name.to_string())
+    }
+
+    #[test]
+    fn photos_coming_into_a_folder_never_take_a_name_it_has() {
+        let photos = [
+            photo("2019-07-14_153012.jpg", Some("2019-07-14 15:30:12"), None),
+            photo("IMG_0001.JPG", Some("2019-07-14 15:30:12"), None),
+            photo("2019-07-14_153013.jpg", Some("2019-07-14 15:30:13"), None),
+            photo("IMG_0002.JPG", None, None),
+        ];
+        let on_disk = ["2019-07-14_153013.JPG".to_string()];
+        assert_eq!(
+            plan_into(&photos, &on_disk),
+            [
+                Verdict::Rename("2019-07-14_153012.jpg".to_string()),
+                Verdict::Rename("2019-07-14_153012_2.jpg".to_string()),
+                Verdict::Rename("2019-07-14_153013_2.jpg".to_string()),
+                Verdict::Refused("it has no date".to_string()),
+            ],
+            "a settled name is kept while free; the folder's own, in any case, is never handed out"
+        );
     }
 
     #[test]
