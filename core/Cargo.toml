@@ -21,7 +21,7 @@ ureq = { version = "3.4.2", default-features = false, features = ["rustls"] }
 walkdir = "2.5.0"
 webp = { version = "0.3", default-features = false }
 xxhash-rust = { version = "0.8.18", features = ["xxh3"] }
-zip = { version = "8.6.0", default-features = false, features = ["deflate"] }
+zip = { version = "9.0.0", default-features = false, features = ["deflate"] }
 zune-jpeg = "0.5.15"
 
 [features]
@@ -31,4 +31,4 @@ demo = []
 
 [dev-dependencies]
 tracing-subscriber = { version = "0.3", features = ["fmt"] }
-zip = { version = "8.6.0", default-features = false, features = ["deflate"] }
+zip = { version = "9.0.0", default-features = false, features = ["deflate"] }
